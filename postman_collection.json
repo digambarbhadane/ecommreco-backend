@@ -1,0 +1,629 @@
+{
+	"info": {
+		"_postman_id": "b5c1a7d2-4f8e-4b9a-8c1d-9e6f5a4b3c2d",
+		"name": "Seller Insights Hub API - Enhanced",
+		"description": "Enhanced API Collection for Seller Insights Hub Backend with auto-save test scripts",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Auth",
+			"item": [
+				{
+					"name": "Login",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"if (jsonData.data && jsonData.data.accessToken) {",
+									"    pm.collectionVariables.set(\"token\", jsonData.data.accessToken);",
+									"    console.log(\"Token saved\");",
+									"}",
+									"if (jsonData.data && jsonData.data.user && jsonData.data.user.id) {",
+									"    pm.collectionVariables.set(\"userId\", jsonData.data.user.id);",
+									"    console.log(\"User ID saved: \" + jsonData.data.user.id);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"loginIdentifier\": \"admin@example.com\",\n  \"password\": \"Password@123\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/auth/login",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"auth",
+								"login"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Leads",
+			"item": [
+				{
+					"name": "Register Lead",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 201\", function () {",
+									"    pm.response.to.have.status(201);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"if (jsonData.data && (jsonData.data._id || jsonData.data.id)) {",
+									"    pm.collectionVariables.set(\"leadId\", jsonData.data._id || jsonData.data.id);",
+									"    console.log(\"Lead ID saved: \" + (jsonData.data._id || jsonData.data.id));",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"fullName\": \"John Doe\",\n  \"firmName\": \"Acme Corp\",\n  \"contactNumber\": \"+91 98765 43210\",\n  \"email\": \"john.doe@example.com\",\n  \"city\": \"Mumbai\",\n  \"state\": \"Maharashtra\",\n  \"businessType\": \"Retail\",\n  \"gstAvailable\": true,\n  \"website\": \"https://example.com\",\n  \"monthlyOrderVolume\": 500,\n  \"preferredMarketplace\": \"Amazon\",\n  \"notes\": \"Interested in onboarding\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/leads/register",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"leads",
+								"register"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "List Leads",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/leads?status=new&limit=10&skip=0",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"leads"
+							],
+							"query": [
+								{
+									"key": "status",
+									"value": "new"
+								},
+								{
+									"key": "limit",
+									"value": "10"
+								},
+								{
+									"key": "skip",
+									"value": "0"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get Lead",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/leads/{{leadId}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"leads",
+								"{{leadId}}"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Update Lead Status",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"leadStatus\": \"contacted\",\n  \"notes\": \"Called seller and shared onboarding info\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/leads/{{leadId}}/status",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"leads",
+								"{{leadId}}",
+								"status"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Convert Lead",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"if (jsonData.data && jsonData.data.seller && jsonData.data.seller._id) {",
+									"    pm.collectionVariables.set(\"sellerId\", jsonData.data.seller._id);",
+									"    console.log(\"Seller ID saved: \" + jsonData.data.seller._id);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"gstSlots\": 2,\n  \"durationYears\": 1\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/leads/{{leadId}}/convert",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"leads",
+								"{{leadId}}",
+								"convert"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Sellers",
+			"item": [
+				{
+					"name": "Register Seller",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 201\", function () {",
+									"    pm.response.to.have.status(201);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"if (jsonData.data && (jsonData.data._id || jsonData.data.id)) {",
+									"    pm.collectionVariables.set(\"sellerId\", jsonData.data._id || jsonData.data.id);",
+									"    console.log(\"Seller ID saved: \" + (jsonData.data._id || jsonData.data.id));",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"fullName\": \"Seller Example\",\n  \"firmName\": \"Example Corp\",\n  \"contactNumber\": \"+91 98765 43210\",\n  \"email\": \"seller@example.com\",\n  \"city\": \"Bangalore\",\n  \"state\": \"Karnataka\",\n  \"businessType\": \"Retail\",\n  \"gstAvailable\": true,\n  \"website\": \"https://example.com\",\n  \"monthlyOrderVolume\": 300,\n  \"preferredMarketplace\": \"Flipkart\",\n  \"notes\": \"Converted seller\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/sellers/register",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"sellers",
+								"register"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Mark Payment Completed",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/sellers/{{sellerId}}/payment-completed",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"sellers",
+								"{{sellerId}}",
+								"payment-completed"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "GSTs",
+			"item": [
+				{
+					"name": "Create GST",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 201\", function () {",
+									"    pm.response.to.have.status(201);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"if (jsonData.data && (jsonData.data._id || jsonData.data.id)) {",
+									"    pm.collectionVariables.set(\"gstId\", jsonData.data._id || jsonData.data.id);",
+									"    console.log(\"GST ID saved: \" + (jsonData.data._id || jsonData.data.id));",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"sellerId\": \"{{sellerId}}\",\n  \"gstNumber\": \"29ABCDE1234F1Z5\",\n  \"state\": \"Karnataka\",\n  \"status\": \"active\",\n  \"businessName\": \"Example Corp\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/gsts",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"gsts"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "List GSTs",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}",
+								"type": "text"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/gsts?limit=10&skip=0&sellerId={{sellerId}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"gsts"
+							],
+							"query": [
+								{
+									"key": "limit",
+									"value": "10"
+								},
+								{
+									"key": "skip",
+									"value": "0"
+								},
+								{
+									"key": "sellerId",
+									"value": "{{sellerId}}"
+								}
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "GSTIN Verification",
+			"item": [
+				{
+					"name": "Verify GSTIN",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{token}}",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"gstin\": \"29ABCDE1234F1Z5\",\n  \"businessName\": \"Example Corp\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/gstin/verify",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"gstin",
+								"verify"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Marketplaces",
+			"item": [
+				{
+					"name": "List Marketplaces",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/marketplaces?limit=10&skip=0&sellerId={{sellerId}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"marketplaces"
+							],
+							"query": [
+								{
+									"key": "limit",
+									"value": "10"
+								},
+								{
+									"key": "skip",
+									"value": "0"
+								},
+								{
+									"key": "sellerId",
+									"value": "{{sellerId}}"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Create Marketplace",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 201\", function () {",
+									"    pm.response.to.have.status(201);",
+									"});",
+									"",
+									"var jsonData = pm.response.json();",
+									"if (jsonData.data && jsonData.data._id) {",
+									"    pm.collectionVariables.set(\"marketplaceId\", jsonData.data._id);",
+									"    console.log(\"Marketplace ID saved: \" + jsonData.data._id);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"sellerId\": \"{{sellerId}}\",\n  \"gstId\": \"{{gstId}}\",\n  \"name\": \"Amazon\",\n  \"storeName\": \"Amazon Store\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/marketplaces",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"marketplaces"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Remove Marketplace",
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/marketplaces/{{marketplaceId}}",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"marketplaces",
+								"{{marketplaceId}}"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Platform Marketplaces",
+			"item": [
+				{
+					"name": "List Platform Marketplaces",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/platform-marketplaces",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"platform-marketplaces"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		}
+	],
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:5000/api/v1",
+			"type": "string"
+		},
+		{
+			"key": "token",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "userId",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "leadId",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "sellerId",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "gstId",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "marketplaceId",
+			"value": "",
+			"type": "string"
+		}
+	]
+}
