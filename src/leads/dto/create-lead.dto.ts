@@ -1,14 +1,11 @@
 import { Transform } from 'class-transformer';
 import {
-  IsBoolean,
   IsEmail,
   IsNotEmpty,
-  IsNumber,
   IsOptional,
   IsString,
   MaxLength,
   MinLength,
-  Min,
   Matches,
 } from 'class-validator';
 

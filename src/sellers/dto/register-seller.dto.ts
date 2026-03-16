@@ -1,14 +1,5 @@
 import { Transform } from 'class-transformer';
-import {
-  IsBoolean,
-  IsEmail,
-  IsNotEmpty,
-  IsNumber,
-  IsOptional,
-  IsString,
-  MaxLength,
-  Min,
-} from 'class-validator';
+import { IsEmail, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 
 export class RegisterSellerDto {
   @IsNotEmpty()

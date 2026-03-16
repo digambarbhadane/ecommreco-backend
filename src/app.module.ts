@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { ThrottlerModule } from '@nestjs/throttler';
+import * as mongoose from 'mongoose';
 import { AuthModule } from './auth/auth.module';
 import { GstsModule } from './gsts/gsts.module';
 import { GstinVerificationModule } from './gstin-verification/gstin-verification.module';
@@ -11,6 +12,10 @@ import { MarketplacesModule } from './marketplaces/marketplaces.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { PlatformMarketplacesModule } from './platform-marketplaces/platform-marketplaces.module';
 import { SellersModule } from './sellers/sellers.module';
+import { AccountManagerModule } from './account-manager/account-manager.module';
+import { RolesModule } from './roles/roles.module';
+import { UsersModule } from './users/users.module';
+import { ProfileModule } from './profile/profile.module';
 
 @Module({
   imports: [
@@ -24,26 +29,66 @@ import { SellersModule } from './sellers/sellers.module';
     MongooseModule.forRootAsync({
       inject: [ConfigService],
       useFactory: async (config: ConfigService) => {
-        const uri = config.get<string>('MONGODB_URI');
-        if (typeof uri === 'string' && uri.trim().length > 0) {
+        const dbName = config.get<string>('MONGODB_DB_NAME');
+        const buildOptions = (uri: string) => {
+          if (typeof dbName === 'string' && dbName.trim().length > 0) {
+            return { uri, dbName };
+          }
           return { uri };
-        }
-        if (config.get<string>('NODE_ENV') === 'production') {
+        };
+
+        const canConnect = async (uri: string) => {
+          const trimmed = uri.trim();
+          if (!trimmed) return false;
+          try {
+            const connection = await mongoose
+              .createConnection(trimmed, {
+                serverSelectionTimeoutMS: 3000,
+                connectTimeoutMS: 3000,
+                dbName:
+                  typeof dbName === 'string' && dbName.trim().length > 0
+                    ? dbName.trim()
+                    : undefined,
+              })
+              .asPromise();
+            await connection.close();
+            return true;
+          } catch {
+            return false;
+          }
+        };
+
+        const nodeEnv = config.get<string>('NODE_ENV') ?? 'development';
+        const uri = config.get<string>('MONGODB_URI');
+        if (nodeEnv === 'production') {
+          if (typeof uri === 'string' && uri.trim().length > 0) {
+            return buildOptions(uri);
+          }
           throw new Error('MONGODB_URI is not set');
         }
         const fallbackUri =
           config.get<string>('MONGODB_FALLBACK_URI') ??
           'mongodb://127.0.0.1:27017/seller-insights-hub';
-        const useMemory =
-          config.get<string>('USE_MEMORY_DB') === 'true' &&
-          config.get<string>('NODE_ENV') === 'test';
-        if (!useMemory) {
-          return { uri: fallbackUri };
+
+        const forceMemory = config.get<string>('USE_MEMORY_DB') === 'true';
+        if (!forceMemory && typeof uri === 'string' && uri.trim().length > 0) {
+          const ok = await canConnect(uri);
+          if (ok) return buildOptions(uri);
+        }
+
+        if (!forceMemory) {
+          const ok = await canConnect(fallbackUri);
+          if (ok) return buildOptions(fallbackUri);
+        }
+
+        const shouldUseMemory = forceMemory || nodeEnv === 'test';
+        if (!shouldUseMemory) {
+          return buildOptions(fallbackUri);
         }
         const memory = await MongoMemoryServer.create({
           instance: { dbName: 'seller-insights-hub', launchTimeout: 30000 },
         });
-        return { uri: memory.getUri() };
+        return buildOptions(memory.getUri());
       },
     }),
     AuthModule,
@@ -54,6 +99,10 @@ import { SellersModule } from './sellers/sellers.module';
     NotificationsModule,
     PlatformMarketplacesModule,
     SellersModule,
+    AccountManagerModule,
+    RolesModule,
+    UsersModule,
+    ProfileModule,
   ],
 })
 export class AppModule {}
