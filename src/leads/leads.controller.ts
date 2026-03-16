@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -14,6 +15,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
+import { Request } from 'express';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { ConvertLeadDto } from './dto/convert-lead.dto';
@@ -32,7 +34,10 @@ export class LeadsController {
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   @HttpCode(HttpStatus.CREATED)
-  createManualLead(@Body() dto: CreateManualLeadDto, @Req() req: any) {
+  createManualLead(
+    @Body() dto: CreateManualLeadDto,
+    @Req() req: RequestWithUser,
+  ) {
     const createdBy =
       req.user?.fullName || req.user?.username || req.user?.email || 'admin';
     const creatorRole = req.user?.role || 'admin';
@@ -58,8 +63,8 @@ export class LeadsController {
   @Get('dashboard-stats')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
-  getDashboardStats() {
-    return this.leadsService.getDashboardStats();
+  getDashboardStats(@Req() req: RequestWithUser) {
+    return this.leadsService.getDashboardStats(req.user);
   }
 
   @Get()
@@ -69,14 +74,18 @@ export class LeadsController {
     @Query('status') status?: string,
     @Query('limit') limit?: string,
     @Query('skip') skip?: string,
+    @Req() req?: RequestWithUser,
   ) {
     const parsedLimit = typeof limit === 'string' ? Number(limit) : undefined;
     const parsedSkip = typeof skip === 'string' ? Number(skip) : undefined;
-    return this.leadsService.listLeads({
-      status,
-      limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
-      skip: Number.isFinite(parsedSkip) ? parsedSkip : undefined,
-    });
+    return this.leadsService.listLeads(
+      {
+        status,
+        limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
+        skip: Number.isFinite(parsedSkip) ? parsedSkip : undefined,
+      },
+      req?.user,
+    );
   }
 
   @Get('follow-ups')
@@ -87,32 +96,44 @@ export class LeadsController {
     @Query('limit') limit?: string,
     @Query('leadId') leadId?: string,
     @Query('status') status?: string,
+    @Req() req?: RequestWithUser,
   ) {
     const parsedPage = typeof page === 'string' ? Number(page) : 1;
     const parsedLimit = typeof limit === 'string' ? Number(limit) : 10;
-    return this.leadsService.listFollowUps({
-      page: parsedPage,
-      limit: parsedLimit,
-      leadId,
-      status,
-    });
+    return this.leadsService.listFollowUps(
+      {
+        page: parsedPage,
+        limit: parsedLimit,
+        leadId,
+        status,
+      },
+      req?.user,
+    );
   }
 
   @Patch(':id/follow-ups/:followUpId/status')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
-  updateFollowUpStatus(
+  async updateFollowUpStatus(
     @Param('id') id: string,
     @Param('followUpId') followUpId: string,
     @Body('status') status: string,
-    @Req() req: any,
+    @Req() req: RequestWithUser,
   ) {
+    await this.leadsService.assertLeadAccess(id, req.user);
+    const nextStatus =
+      status === 'pending' || status === 'completed' || status === 'missed'
+        ? status
+        : undefined;
+    if (!nextStatus) {
+      throw new BadRequestException('Invalid follow-up status');
+    }
     const updatedBy =
       req.user?.fullName || req.user?.username || req.user?.email || 'admin';
     return this.leadsService.updateFollowUpStatus(
       id,
       followUpId,
-      status,
+      nextStatus,
       updatedBy,
     );
   }
@@ -124,24 +145,29 @@ export class LeadsController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('leadId') leadId?: string,
+    @Req() req?: RequestWithUser,
   ) {
     const parsedPage = typeof page === 'string' ? Number(page) : 1;
     const parsedLimit = typeof limit === 'string' ? Number(limit) : 10;
-    return this.leadsService.listNotes({
-      page: parsedPage,
-      limit: parsedLimit,
-      leadId,
-    });
+    return this.leadsService.listNotes(
+      {
+        page: parsedPage,
+        limit: parsedLimit,
+        leadId,
+      },
+      req?.user,
+    );
   }
 
   @Patch(':id/status')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
-  updateLeadStatus(
+  async updateLeadStatus(
     @Param('id') id: string,
     @Body() dto: UpdateLeadStatusDto,
-    @Req() req: any,
+    @Req() req: RequestWithUser,
   ) {
+    await this.leadsService.assertLeadAccess(id, req.user);
     return this.leadsService.updateLeadStatus(
       id,
       dto,
@@ -152,14 +178,24 @@ export class LeadsController {
   @Post(':id/convert')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
-  convertLead(@Param('id') id: string, @Body() dto: ConvertLeadDto) {
-    return this.leadsService.convertLead(id, dto);
+  async convertLead(
+    @Param('id') id: string,
+    @Body() dto: ConvertLeadDto,
+    @Req() req: RequestWithUser,
+  ) {
+    await this.leadsService.assertLeadAccess(id, req.user);
+    return this.leadsService.convertLead(id, dto, req.user);
   }
 
   @Post(':id/notes')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
-  addNote(@Param('id') id: string, @Body() body: any, @Req() req: any) {
+  async addNote(
+    @Param('id') id: string,
+    @Body() body: { content: string },
+    @Req() req: RequestWithUser,
+  ) {
+    await this.leadsService.assertLeadAccess(id, req.user);
     return this.leadsService.addNote(
       id,
       body.content,
@@ -170,11 +206,12 @@ export class LeadsController {
   @Post(':id/subscription')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
-  updateSubscription(
+  async updateSubscription(
     @Param('id') id: string,
-    @Body() body: any,
-    @Req() req: any,
+    @Body() body: { gstSlots: number; durationYears: number },
+    @Req() req: RequestWithUser,
   ) {
+    await this.leadsService.assertLeadAccess(id, req.user);
     return this.leadsService.updateSubscription(
       id,
       body,
@@ -185,7 +222,11 @@ export class LeadsController {
   @Post(':id/payment-link')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
-  generatePaymentLink(@Param('id') id: string, @Req() req: any) {
+  async generatePaymentLink(
+    @Param('id') id: string,
+    @Req() req: RequestWithUser,
+  ) {
+    await this.leadsService.assertLeadAccess(id, req.user);
     return this.leadsService.generatePaymentLink(
       id,
       req.user?.email || 'admin',
@@ -195,11 +236,12 @@ export class LeadsController {
   @Patch(':id/payment-status')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
-  updatePaymentStatus(
+  async updatePaymentStatus(
     @Param('id') id: string,
-    @Body() body: any,
-    @Req() req: any,
+    @Body() body: { status: string },
+    @Req() req: RequestWithUser,
   ) {
+    await this.leadsService.assertLeadAccess(id, req.user);
     return this.leadsService.updatePaymentStatus(
       id,
       body.status,
@@ -210,11 +252,12 @@ export class LeadsController {
   @Post(':id/follow-up')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
-  scheduleFollowUp(
+  async scheduleFollowUp(
     @Param('id') id: string,
-    @Body() body: any,
-    @Req() req: any,
+    @Body() body: { scheduledAt: string; notes: string },
+    @Req() req: RequestWithUser,
   ) {
+    await this.leadsService.assertLeadAccess(id, req.user);
     return this.leadsService.scheduleFollowUp(
       id,
       new Date(body.scheduledAt),
@@ -226,7 +269,20 @@ export class LeadsController {
   @Get(':id')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
-  getLead(@Param('id') id: string) {
-    return this.leadsService.getLead(id);
+  getLead(@Param('id') id: string, @Req() req: RequestWithUser) {
+    return this.leadsService.getLead(id, req.user);
   }
 }
+
+type RequestUser = {
+  id?: string;
+  role?: string;
+  email?: string;
+  fullName?: string;
+  username?: string;
+  name?: string;
+};
+
+type RequestWithUser = Request & {
+  user?: RequestUser;
+};

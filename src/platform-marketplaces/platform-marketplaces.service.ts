@@ -120,8 +120,8 @@ export class PlatformMarketplacesService implements OnModuleInit {
       Model<PlatformMarketplaceDocument>['bulkWrite']
     >[0] = defaults.map((item) => ({
       updateOne: {
-        filter: { slug: item.slug },
-        update: { $setOnInsert: { ...item, isActive: true } },
+        filter: { name: item.name },
+        update: { $set: { ...item, isActive: true } },
         upsert: true,
       },
     }));

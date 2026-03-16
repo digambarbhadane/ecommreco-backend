@@ -25,4 +25,27 @@ export class NotificationsService {
       isRead: false,
     });
   }
+
+  async findAll(recipientRole: string) {
+    return this.notificationModel
+      .find({ recipientRole })
+      .sort({ createdAt: -1 })
+      .limit(20)
+      .exec();
+  }
+
+  async markAsRead(id: string) {
+    return this.notificationModel.findByIdAndUpdate(
+      id,
+      { isRead: true },
+      { new: true },
+    );
+  }
+
+  async markAllAsRead(recipientRole: string) {
+    return this.notificationModel.updateMany(
+      { recipientRole, isRead: false },
+      { isRead: true },
+    );
+  }
 }

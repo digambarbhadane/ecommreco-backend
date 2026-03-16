@@ -4,9 +4,10 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
+import { Model, Types, UpdateQuery, PipelineStage } from 'mongoose';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Seller, SellerDocument } from '../sellers/schemas/seller.schema';
+import { generatePublicId } from '../common/public-id';
 import { CreateLeadDto } from './dto/create-lead.dto';
 import { CreateManualLeadDto } from './dto/create-manual-lead.dto';
 import { ConvertLeadDto } from './dto/convert-lead.dto';
@@ -15,6 +16,15 @@ import { Lead, LeadDocument } from './schemas/lead.schema';
 import { Counter, CounterDocument } from './schemas/counter.schema';
 
 const PRICE_PER_GST_PER_YEAR = 12000;
+
+type RequestUser = {
+  id?: string;
+  role?: string;
+  email?: string;
+  fullName?: string;
+  username?: string;
+  name?: string;
+};
 
 @Injectable()
 export class LeadsService {
@@ -28,24 +38,108 @@ export class LeadsService {
     private readonly notificationsService: NotificationsService,
   ) {}
 
-  private async getNextLeadId(): Promise<string> {
+  private async getNextLeadId(date = new Date()): Promise<string> {
+    const yyyy = date.getFullYear().toString();
+    const mm = (date.getMonth() + 1).toString().padStart(2, '0');
+    const yyyymm = `${yyyy}${mm}`;
+    const prefix = 'LEAD';
+
     const counter = await this.counterModel.findOneAndUpdate(
-      { id: 'leadId' },
+      { id: `leadId:${prefix}:${yyyymm}` },
       { $inc: { seq: 1 } },
       { new: true, upsert: true },
     );
-    return `LEAD-${counter.seq.toString().padStart(4, '0')}`;
+
+    const seq = counter.seq.toString().padStart(4, '0');
+    return `${prefix}-${yyyymm}-${seq}`;
   }
 
-  async listFollowUps(params: {
-    page: number;
-    limit: number;
-    leadId?: string;
-    status?: string;
-  }) {
+  private toDate(value: unknown): Date {
+    return value instanceof Date ? value : new Date();
+  }
+
+  private getSalesManagerIdentifiers(user?: RequestUser) {
+    const identifiers = [
+      typeof user?.email === 'string' ? user.email.toLowerCase() : undefined,
+      typeof user?.fullName === 'string' ? user.fullName : undefined,
+      typeof user?.username === 'string' ? user.username : undefined,
+      typeof user?.name === 'string' ? user.name : undefined,
+    ].filter((v): v is string => Boolean(v));
+    return Array.from(new Set(identifiers));
+  }
+
+  private buildSalesManagerLeadAccessFilter(user?: RequestUser) {
+    const role = typeof user?.role === 'string' ? user.role : undefined;
+    if (role !== 'sales_manager') return undefined;
+    const identifiers = this.getSalesManagerIdentifiers(user);
+    if (!identifiers.length) return undefined;
+
+    const unassignedFilter = {
+      $or: [
+        { assignedSalesManager: { $exists: false } },
+        { assignedSalesManager: null },
+        { assignedSalesManager: '' },
+      ],
+    };
+
+    const visibleUnassignedCreatorRoleFilter = {
+      $or: [
+        { creatorRole: { $exists: false } },
+        { creatorRole: { $ne: 'sales_manager' } },
+      ],
+    };
+
+    return {
+      $or: [
+        { createdBy: { $in: identifiers } },
+        { assignedSalesManager: { $in: identifiers } },
+        { $and: [unassignedFilter, visibleUnassignedCreatorRoleFilter] },
+      ],
+    };
+  }
+
+  private buildLeadIdentityFilter(id: string) {
+    const filters: Array<Record<string, unknown>> = [{ leadId: id }];
+    if (
+      typeof id === 'string' &&
+      id.length === 24 &&
+      Types.ObjectId.isValid(id)
+    ) {
+      filters.unshift({ _id: id });
+    }
+    return { $or: filters };
+  }
+
+  async assertLeadAccess(leadId: string, user?: RequestUser) {
+    const role = typeof user?.role === 'string' ? user.role : undefined;
+    if (role !== 'sales_manager') return;
+
+    const filter = this.buildSalesManagerLeadAccessFilter(user);
+    if (!filter) return;
+
+    const identityFilter = this.buildLeadIdentityFilter(leadId);
+    const exists = await this.leadModel
+      .findOne({ $and: [identityFilter, filter] })
+      .select('_id')
+      .lean()
+      .exec();
+    if (!exists) {
+      throw new NotFoundException('Lead not found');
+    }
+  }
+
+  async listFollowUps(
+    params: {
+      page: number;
+      limit: number;
+      leadId?: string;
+      status?: string;
+    },
+    user?: RequestUser,
+  ) {
     const skip = (params.page - 1) * params.limit;
     // Ensure followUps is a non-empty array
-    const matchStage: any = {
+    const matchStage: Record<string, unknown> = {
       followUps: {
         $exists: true,
         $type: 'array',
@@ -57,7 +151,12 @@ export class LeadsService {
       matchStage['leadId'] = { $regex: params.leadId, $options: 'i' };
     }
 
-    const followUpMatch: any = {};
+    const salesFilter = this.buildSalesManagerLeadAccessFilter(user);
+    if (salesFilter) {
+      Object.assign(matchStage, salesFilter);
+    }
+
+    const followUpMatch: Record<string, unknown> = {};
     if (params.status && params.status !== 'all') {
       followUpMatch['followUps.status'] = params.status;
     } else if (!params.status) {
@@ -65,7 +164,7 @@ export class LeadsService {
       followUpMatch['followUps.status'] = 'pending';
     }
 
-    const pipeline: any[] = [
+    const pipeline: Array<Record<string, unknown>> = [
       { $match: matchStage },
       { $unwind: '$followUps' },
       { $match: followUpMatch },
@@ -82,16 +181,20 @@ export class LeadsService {
       },
     ];
 
-    const data = await this.leadModel.aggregate(pipeline);
+    const data = await this.leadModel.aggregate(
+      pipeline as unknown as PipelineStage[],
+    );
 
-    const countPipeline: any[] = [
+    const countPipeline: Array<Record<string, unknown>> = [
       { $match: matchStage },
       { $unwind: '$followUps' },
       { $match: followUpMatch },
       { $count: 'total' },
     ];
-    const countResult = await this.leadModel.aggregate(countPipeline);
-    const total = countResult[0]?.total || 0;
+    const countResult = await this.leadModel.aggregate<{ total: number }>(
+      countPipeline as unknown as PipelineStage[],
+    );
+    const total = countResult[0]?.total ?? 0;
 
     return {
       success: true,
@@ -105,30 +208,40 @@ export class LeadsService {
   async updateFollowUpStatus(
     leadId: string,
     followUpId: string,
-    status: string,
+    status: 'pending' | 'completed' | 'missed',
     updatedBy: string,
   ) {
-    if (
-      !Types.ObjectId.isValid(leadId) ||
-      !Types.ObjectId.isValid(followUpId)
-    ) {
-      throw new BadRequestException('Invalid Lead ID or Follow-up ID');
+    if (!Types.ObjectId.isValid(followUpId)) {
+      throw new BadRequestException('Invalid Follow-up ID');
     }
 
-    const lead = await this.leadModel.findById(leadId);
+    const lead = await this.leadModel.findOne(
+      this.buildLeadIdentityFilter(leadId),
+    );
     if (!lead) {
       throw new NotFoundException('Lead not found');
     }
+    if (!lead.leadId) {
+      lead.leadId = await this.getNextLeadId(
+        this.toDate((lead as unknown as { createdAt?: unknown }).createdAt),
+      );
+    }
+    if (!(lead as unknown as { publicId?: string }).publicId) {
+      (lead as unknown as { publicId?: string }).publicId = generatePublicId(
+        'lead',
+        (lead as unknown as { email?: string }).email ?? '',
+      );
+    }
 
-    const followUp = lead.followUps.find(
-      (f) => f['_id'].toString() === followUpId,
-    );
+    type FollowUpWithId = Lead['followUps'][number] & { _id: Types.ObjectId };
+    const followUps = lead.followUps as FollowUpWithId[];
+    const followUp = followUps.find((f) => f._id.toString() === followUpId);
     if (!followUp) {
       throw new NotFoundException('Follow-up not found in this lead');
     }
 
     // Update the follow-up status
-    followUp.status = status as any;
+    followUp.status = status;
 
     // Add to activity timeline
     lead.activityTimeline.push({
@@ -142,10 +255,13 @@ export class LeadsService {
     return { success: true, data: savedLead };
   }
 
-  async listNotes(params: { page: number; limit: number; leadId?: string }) {
+  async listNotes(
+    params: { page: number; limit: number; leadId?: string },
+    user?: RequestUser,
+  ) {
     const skip = (params.page - 1) * params.limit;
     // Ensure notes is a non-empty array
-    const matchStage: any = {
+    const matchStage: Record<string, unknown> = {
       notes: {
         $exists: true,
         $type: 'array',
@@ -157,7 +273,12 @@ export class LeadsService {
       matchStage['leadId'] = { $regex: params.leadId, $options: 'i' };
     }
 
-    const pipeline: any[] = [
+    const salesFilter = this.buildSalesManagerLeadAccessFilter(user);
+    if (salesFilter) {
+      Object.assign(matchStage, salesFilter);
+    }
+
+    const pipeline: Array<Record<string, unknown>> = [
       { $match: matchStage },
       { $unwind: '$notes' },
       { $sort: { 'notes.createdAt': -1 } },
@@ -173,15 +294,19 @@ export class LeadsService {
       },
     ];
 
-    const data = await this.leadModel.aggregate(pipeline);
+    const data = await this.leadModel.aggregate(
+      pipeline as unknown as PipelineStage[],
+    );
 
-    const countPipeline: any[] = [
+    const countPipeline: Array<Record<string, unknown>> = [
       { $match: matchStage },
       { $unwind: '$notes' },
       { $count: 'total' },
     ];
-    const countResult = await this.leadModel.aggregate(countPipeline);
-    const total = countResult[0]?.total || 0;
+    const countResult = await this.leadModel.aggregate<{ total: number }>(
+      countPipeline as unknown as PipelineStage[],
+    );
+    const total = countResult[0]?.total ?? 0;
 
     return {
       success: true,
@@ -192,10 +317,17 @@ export class LeadsService {
     };
   }
 
-  async getDashboardStats() {
-    const totalLeads = await this.leadModel.countDocuments();
+  async getDashboardStats(user?: RequestUser) {
+    const salesFilter = this.buildSalesManagerLeadAccessFilter(user);
+    const baseFilter: Record<string, unknown> = salesFilter ? salesFilter : {};
 
-    const leadsByStatus = await this.leadModel.aggregate([
+    const totalLeads = await this.leadModel.countDocuments(baseFilter);
+
+    const leadsByStatus = await this.leadModel.aggregate<{
+      _id: Lead['leadStatus'];
+      count: number;
+    }>([
+      ...(salesFilter ? [{ $match: baseFilter }] : []),
       {
         $group: {
           _id: '$leadStatus',
@@ -204,23 +336,30 @@ export class LeadsService {
       },
     ]);
 
-    const statusMap = leadsByStatus.reduce((acc, curr) => {
-      acc[curr._id] = curr.count;
-      return acc;
-    }, {});
+    const statusMap = leadsByStatus.reduce<Record<string, number>>(
+      (acc, curr) => {
+        acc[curr._id] = curr.count;
+        return acc;
+      },
+      {},
+    );
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const newLeadsToday = await this.leadModel.countDocuments({
+      ...(salesFilter ? baseFilter : {}),
       createdAt: { $gte: today },
     });
 
-    const pendingFollowUpsResult = await this.leadModel.aggregate([
+    const pendingFollowUpsResult = await this.leadModel.aggregate<{
+      count: number;
+    }>([
+      ...(salesFilter ? [{ $match: baseFilter }] : []),
       { $unwind: '$followUps' },
       { $match: { 'followUps.status': 'pending' } },
       { $count: 'count' },
     ]);
-    const pendingFollowUps = pendingFollowUpsResult[0]?.count || 0;
+    const pendingFollowUps = pendingFollowUpsResult[0]?.count ?? 0;
 
     const convertedLeads = statusMap['converted'] || 0;
     const conversionRate =
@@ -228,7 +367,7 @@ export class LeadsService {
 
     // Get recent leads (last 5)
     const recentLeads = await this.leadModel
-      .find()
+      .find(baseFilter)
       .sort({ createdAt: -1 })
       .limit(5)
       .select('fullName email contactNumber leadStatus createdAt leadId')
@@ -241,6 +380,7 @@ export class LeadsService {
     endOfDay.setHours(23, 59, 59, 999);
 
     const todaysFollowUps = await this.leadModel.aggregate([
+      ...(salesFilter ? [{ $match: baseFilter }] : []),
       { $unwind: '$followUps' },
       {
         $match: {
@@ -290,6 +430,7 @@ export class LeadsService {
     // 4. Create Lead
     const created = await this.leadModel.create({
       ...dto,
+      publicId: generatePublicId('lead', dto.email),
       leadId,
       source: dto.source || 'manual',
       leadStatus: 'new',
@@ -340,7 +481,7 @@ export class LeadsService {
     userAgent?: string,
   ) {
     // 1. Validate CAPTCHA
-    await this.validateCaptcha(dto.captchaToken);
+    this.validateCaptcha(dto.captchaToken);
 
     // 2. Check for duplicates (Lead & Seller)
     await this.checkDuplicates(dto);
@@ -359,6 +500,7 @@ export class LeadsService {
     // 6. Create Lead
     const created = await this.leadModel.create({
       ...dto,
+      publicId: generatePublicId('lead', dto.email),
       leadId,
       source,
       leadStatus: 'new',
@@ -404,7 +546,7 @@ export class LeadsService {
     };
   }
 
-  private async validateCaptcha(token: string) {
+  private validateCaptcha(token: string) {
     // TODO: Implement actual CAPTCHA validation with Google/Cloudflare
     // For now, we assume if token is present, it's valid (or mock check)
     if (!token || token === 'invalid-token') {
@@ -521,20 +663,65 @@ export class LeadsService {
     return score;
   }
 
-  async listLeads(params: { status?: string; limit?: number; skip?: number }) {
+  async listLeads(
+    params: { status?: string; limit?: number; skip?: number },
+    user?: RequestUser,
+  ) {
     const limit = Math.max(0, params.limit ?? 10);
     const skip = Math.max(0, params.skip ?? 0);
     const filter: Record<string, unknown> = {};
     if (params.status) {
       filter.leadStatus = params.status;
     }
+    const salesFilter = this.buildSalesManagerLeadAccessFilter(user);
+    if (salesFilter) {
+      Object.assign(filter, salesFilter);
+    }
     const data = await this.leadModel
       .find(filter)
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
-      .lean()
+      .lean<
+        Array<Lead & { _id: Types.ObjectId; createdAt?: Date; leadId?: string }>
+      >()
       .exec();
+
+    const ops: Array<{
+      updateOne: {
+        filter: { _id: Types.ObjectId };
+        update: { $set: { leadId?: string; publicId?: string } };
+      };
+    }> = [];
+    for (const lead of data) {
+      const setUpdate: { leadId?: string; publicId?: string } = {};
+      const currentLeadId = (lead as unknown as { leadId?: string }).leadId;
+      if (!currentLeadId) {
+        const leadId = await this.getNextLeadId(this.toDate(lead.createdAt));
+        (lead as unknown as { leadId?: string }).leadId = leadId;
+        setUpdate.leadId = leadId;
+      }
+      const currentPublicId = (lead as unknown as { publicId?: string })
+        .publicId;
+      if (!currentPublicId) {
+        const email = (lead as unknown as { email?: string }).email ?? '';
+        const publicId = generatePublicId('lead', email);
+        (lead as unknown as { publicId?: string }).publicId = publicId;
+        setUpdate.publicId = publicId;
+      }
+      if (Object.keys(setUpdate).length) {
+        ops.push({
+          updateOne: {
+            filter: { _id: lead._id },
+            update: { $set: setUpdate },
+          },
+        });
+      }
+    }
+    if (ops.length) {
+      await this.leadModel.bulkWrite(ops);
+    }
+
     const total = await this.leadModel.countDocuments(filter);
     return {
       success: true,
@@ -545,26 +732,49 @@ export class LeadsService {
     };
   }
 
-  async getLead(id: string) {
-    const lead = await this.leadModel.findById(id).lean().exec();
+  async getLead(id: string, user?: RequestUser) {
+    const salesFilter = this.buildSalesManagerLeadAccessFilter(user);
+    const identityFilter = this.buildLeadIdentityFilter(id);
+    const query = salesFilter
+      ? { $and: [identityFilter, salesFilter] }
+      : identityFilter;
+    const lead = await this.leadModel.findOne(query).exec();
     if (!lead) {
       throw new NotFoundException('Lead not found');
     }
+    if (!lead.leadId) {
+      lead.leadId = await this.getNextLeadId(
+        this.toDate((lead as unknown as { createdAt?: unknown }).createdAt),
+      );
+    }
+    if (!(lead as unknown as { publicId?: string }).publicId) {
+      (lead as unknown as { publicId?: string }).publicId = generatePublicId(
+        'lead',
+        (lead as unknown as { email?: string }).email ?? '',
+      );
+    }
+    if (lead.isModified()) {
+      await lead.save();
+    }
     return {
       success: true,
-      data: lead,
+      data: lead.toObject(),
     };
   }
 
   async addNote(id: string, content: string, addedBy: string) {
+    const identityFilter = this.buildLeadIdentityFilter(id);
     // Check if notes is an array, if not (e.g. string or null), reset it to empty array
-    const existing = await this.leadModel.findById(id).select('notes').lean();
+    const existing = await this.leadModel
+      .findOne(identityFilter)
+      .select('notes')
+      .lean();
     if (existing && !Array.isArray(existing.notes)) {
-      await this.leadModel.findByIdAndUpdate(id, { $set: { notes: [] } });
+      await this.leadModel.updateOne(identityFilter, { $set: { notes: [] } });
     }
 
-    const lead = await this.leadModel.findByIdAndUpdate(
-      id,
+    const lead = await this.leadModel.findOneAndUpdate(
+      identityFilter,
       {
         $push: {
           notes: {
@@ -592,8 +802,8 @@ export class LeadsService {
   ) {
     const amount =
       config.gstSlots * config.durationYears * PRICE_PER_GST_PER_YEAR;
-    const lead = await this.leadModel.findByIdAndUpdate(
-      id,
+    const lead = await this.leadModel.findOneAndUpdate(
+      this.buildLeadIdentityFilter(id),
       {
         $set: {
           subscriptionConfig: {
@@ -619,18 +829,33 @@ export class LeadsService {
   }
 
   async generatePaymentLink(id: string, generatedBy: string) {
-    const lead = await this.leadModel.findById(id);
+    const identityFilter = this.buildLeadIdentityFilter(id);
+    const lead = await this.leadModel.findOne(identityFilter);
     if (!lead) throw new NotFoundException('Lead not found');
     if (!lead.subscriptionConfig) {
       throw new BadRequestException('Subscription configuration missing');
     }
+    if (!lead.leadId) {
+      lead.leadId = await this.getNextLeadId(
+        this.toDate((lead as unknown as { createdAt?: unknown }).createdAt),
+      );
+    }
+    if (!(lead as unknown as { publicId?: string }).publicId) {
+      (lead as unknown as { publicId?: string }).publicId = generatePublicId(
+        'lead',
+        (lead as unknown as { email?: string }).email ?? '',
+      );
+    }
+    if (lead.isModified()) {
+      await lead.save();
+    }
 
     // Mock payment link generation
-    const paymentLink = `https://pay.example.com/${id}?amount=${lead.subscriptionConfig.amount}`;
+    const paymentLink = `https://pay.example.com/${lead.leadId}?amount=${lead.subscriptionConfig.amount}`;
     const transactionId = `TXN-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
-    const updated = await this.leadModel.findByIdAndUpdate(
-      id,
+    const updated = await this.leadModel.findOneAndUpdate(
+      identityFilter,
       {
         $set: {
           paymentDetails: {
@@ -659,8 +884,8 @@ export class LeadsService {
   }
 
   async updatePaymentStatus(id: string, status: string, updatedBy: string) {
-    const lead = await this.leadModel.findByIdAndUpdate(
-      id,
+    const lead = await this.leadModel.findOneAndUpdate(
+      this.buildLeadIdentityFilter(id),
       {
         $set: {
           'paymentDetails.status': status,
@@ -680,6 +905,19 @@ export class LeadsService {
       },
       { new: true },
     );
+
+    if (!lead) {
+      throw new NotFoundException('Lead not found');
+    }
+
+    if (status === 'completed') {
+      await this.notificationsService.createNotification({
+        event: 'payment_completed',
+        recipientRole: 'accounts_manager',
+        message: `Payment completed for lead ${lead.fullName}. Please verify and proceed with onboarding.`,
+      });
+    }
+
     return { success: true, data: lead };
   }
 
@@ -689,8 +927,8 @@ export class LeadsService {
     notes: string,
     createdBy: string,
   ) {
-    const lead = await this.leadModel.findByIdAndUpdate(
-      id,
+    const lead = await this.leadModel.findOneAndUpdate(
+      this.buildLeadIdentityFilter(id),
       {
         $push: {
           followUps: {
@@ -717,14 +955,17 @@ export class LeadsService {
     dto: UpdateLeadStatusDto,
     updatedBy: string = 'system',
   ) {
+    const identityFilter = this.buildLeadIdentityFilter(leadId);
     // Safety check for notes and activityTimeline fields
+    type LeadNotesAndTimeline = Pick<Lead, 'notes' | 'activityTimeline'>;
     const existing = await this.leadModel
-      .findById(leadId)
+      .findOne(identityFilter)
       .select('notes activityTimeline')
-      .lean();
+      .lean<LeadNotesAndTimeline>()
+      .exec();
 
     if (existing) {
-      const updates: any = {};
+      const updates: Partial<LeadNotesAndTimeline> = {};
       if (!Array.isArray(existing.notes)) {
         updates.notes = [];
       }
@@ -733,12 +974,12 @@ export class LeadsService {
       }
 
       if (Object.keys(updates).length > 0) {
-        await this.leadModel.findByIdAndUpdate(leadId, { $set: updates });
+        await this.leadModel.updateOne(identityFilter, { $set: updates });
       }
     }
 
     // Map leadStatus to pipelineStage
-    let pipelineStage = 'New Lead';
+    let pipelineStage: Lead['pipelineStage'] = 'New Lead';
     switch (dto.leadStatus) {
       case 'new':
         pipelineStage = 'New Lead';
@@ -760,33 +1001,43 @@ export class LeadsService {
         break;
     }
 
-    const updateOps: any = {
-      $set: { leadStatus: dto.leadStatus },
-      $push: {
-        activityTimeline: {
-          action: 'status_updated',
-          description: `Status updated to ${dto.leadStatus}`,
-          performedBy: updatedBy,
-          timestamp: new Date(),
-        },
-      },
+    const activityTimelineEntry = {
+      action: 'status_updated',
+      description: `Status updated to ${dto.leadStatus}`,
+      performedBy: updatedBy,
+      timestamp: new Date(),
     };
 
+    const setUpdate: Partial<Pick<Lead, 'leadStatus' | 'pipelineStage'>> = {
+      leadStatus: dto.leadStatus,
+    };
     if (dto.leadStatus !== 'rejected') {
-      updateOps.$set.pipelineStage = pipelineStage;
+      setUpdate.pipelineStage = pipelineStage;
     }
 
+    const pushUpdate: Record<string, unknown> = {
+      activityTimeline: activityTimelineEntry,
+    };
+
     if (dto.notes) {
-      updateOps.$push.notes = {
+      pushUpdate.notes = {
         content: dto.notes,
         addedBy: updatedBy,
         createdAt: new Date(),
       };
-      updateOps.$push.activityTimeline.description += `. Note: ${dto.notes}`;
+      activityTimelineEntry.description += `. Note: ${dto.notes}`;
     }
 
+    const updateOps = { $set: setUpdate, $push: pushUpdate };
+
     const updated = await this.leadModel
-      .findByIdAndUpdate(leadId, updateOps, { new: true })
+      .findOneAndUpdate(
+        identityFilter,
+        updateOps as unknown as UpdateQuery<LeadDocument>,
+        {
+          new: true,
+        },
+      )
       .lean()
       .exec();
 
@@ -802,13 +1053,34 @@ export class LeadsService {
     };
   }
 
-  async convertLead(leadId: string, dto: ConvertLeadDto) {
-    const lead = await this.leadModel.findById(leadId).exec();
+  async convertLead(leadId: string, dto: ConvertLeadDto, user?: RequestUser) {
+    const identityFilter = this.buildLeadIdentityFilter(leadId);
+    const lead = await this.leadModel.findOne(identityFilter).exec();
     if (!lead) {
       throw new NotFoundException({
         success: false,
         message: 'Lead not found',
       });
+    }
+    if (typeof lead.sellerId === 'string' && lead.sellerId.trim().length > 0) {
+      throw new BadRequestException({
+        success: false,
+        message: 'Seller already created for this lead',
+      });
+    }
+    if (!lead.leadId) {
+      lead.leadId = await this.getNextLeadId(
+        this.toDate((lead as unknown as { createdAt?: unknown }).createdAt),
+      );
+    }
+    if (!(lead as unknown as { publicId?: string }).publicId) {
+      (lead as unknown as { publicId?: string }).publicId = generatePublicId(
+        'lead',
+        (lead as unknown as { email?: string }).email ?? '',
+      );
+    }
+    if (lead.isModified()) {
+      await lead.save();
     }
     if (lead.leadStatus === 'converted') {
       throw new BadRequestException({
@@ -845,23 +1117,37 @@ export class LeadsService {
 
     // Force payment completion as per Sales Manager action
     const paymentCompletedAt = new Date();
+    const subscriptionId = this.generateSubscriptionId();
+    const leadCreatedAt = (lead as unknown as { createdAt?: Date }).createdAt;
+    const leadEmail = typeof lead.email === 'string' ? lead.email.trim() : '';
+    const leadContactNumber =
+      typeof lead.contactNumber === 'string' ? lead.contactNumber.trim() : '';
+    const leadGstNumber =
+      typeof lead.gstNumber === 'string' ? lead.gstNumber.trim() : '';
 
-    // Create Seller Record
-    const createdSeller = await this.sellerModel.create({
-      fullName: lead.fullName,
-      contactNumber: lead.contactNumber,
-      email: lead.email,
-      gstNumber: lead.gstNumber,
-      leadId: lead._id.toString(),
-      gstSlots,
-      durationYears,
-      amount,
-      paymentCompletedAt,
-      onboardingStatus: 'payment_completed',
-    });
-    const seller = Array.isArray(createdSeller)
-      ? createdSeller[0]
-      : createdSeller;
+    if (!leadEmail || !leadContactNumber || !leadGstNumber || !lead.fullName) {
+      throw new BadRequestException({
+        success: false,
+        message: 'Lead is missing required details to create seller',
+      });
+    }
+
+    const conflict = await this.sellerModel
+      .findOne({
+        $or: [
+          { email: leadEmail.toLowerCase() },
+          { contactNumber: leadContactNumber },
+          { gstNumber: leadGstNumber },
+        ],
+      })
+      .lean()
+      .exec();
+    if (conflict) {
+      throw new BadRequestException({
+        success: false,
+        message: 'A seller already exists with this lead details',
+      });
+    }
 
     // Update Lead Status
     lead.leadStatus = 'converted';
@@ -878,30 +1164,111 @@ export class LeadsService {
     paymentDetails.paymentDate = paymentCompletedAt;
     lead.paymentDetails = paymentDetails;
 
+    lead.subscriptionConfig = {
+      gstSlots,
+      durationYears,
+      amount,
+      updatedAt: new Date(),
+      updatedBy: user?.email || 'sales_manager',
+    };
+
+    (
+      lead as unknown as { conversionRequestedAt?: Date }
+    ).conversionRequestedAt = paymentCompletedAt;
+    (
+      lead as unknown as { conversionRequestedBy?: string }
+    ).conversionRequestedBy = user?.email || 'system';
+    (
+      lead as unknown as { conversionSubscriptionId?: string }
+    ).conversionSubscriptionId = subscriptionId;
+    (lead as unknown as { conversionAmount?: number }).conversionAmount =
+      amount;
+    (
+      lead as unknown as { conversionLeadCreatedAt?: Date }
+    ).conversionLeadCreatedAt = leadCreatedAt;
+
+    await lead.save();
+
+    const salesManagerEmail =
+      typeof user?.email === 'string' ? user.email.toLowerCase() : '';
+
+    const seller = await this.sellerModel.create({
+      publicId: generatePublicId('seller', leadEmail.toLowerCase()),
+      fullName: lead.fullName,
+      contactNumber: leadContactNumber,
+      email: leadEmail.toLowerCase(),
+      gstNumber: leadGstNumber,
+      leadId: lead.leadId || lead._id.toString(),
+      gstSlots,
+      gstSlotsPurchased: gstSlots,
+      gstSlotsUsed: 0,
+      durationYears,
+      subscriptionDuration: durationYears,
+      amount,
+      subscriptionId,
+      onboardingStatus: 'payment_completed',
+      paymentStatus: 'payment_completed',
+      paymentDate: paymentCompletedAt,
+      paymentCompletedAt,
+      paymentCompletedBy: salesManagerEmail || 'sales_manager',
+      paymentAmount: amount,
+      paymentId: '',
+      transactionId: '',
+      username: '',
+      trainingStatus: '',
+      salesManager: salesManagerEmail,
+      firmName: '',
+      city: '',
+      state: '',
+      salesNotes: '',
+      verificationNotes: '',
+      credentialGeneratedBy: '',
+      businessType: lead.businessType || '',
+      leadSource: lead.source || '',
+      leadCreatedAt: leadCreatedAt || new Date(),
+      leadContactedAt: undefined,
+      leadConvertedAt: paymentCompletedAt,
+      leadConvertedBy: salesManagerEmail || 'sales_manager',
+      leadCreatedBy: lead.createdBy || '',
+      leadContactedBy: '',
+      paymentLinkGeneratedBy: lead.paymentDetails?.generatedBy || '',
+      accountCreatedBy: '',
+      adminApprovalRequestedBy: '',
+    });
+
+    lead.sellerId = seller._id.toString();
     await lead.save();
 
     await this.notificationsService.createNotification({
-      event: 'lead_converted',
-      recipientRole: 'operations_admin', // Notify ops/accounts
-      message: `Lead ${lead.fullName} converted to seller ${seller._id.toString()}. Payment marked as completed.`,
+      event: 'lead_conversion_requested',
+      recipientRole: 'operations_admin',
+      message: `Lead ${lead.fullName} marked as paid and sent for account creation.`,
     });
 
-    // Also notify accounts manager specifically if needed, or rely on 'operations_admin' role covering it.
-    // Assuming 'accounts_manager' is a separate role, let's add notification for them too.
     await this.notificationsService.createNotification({
-      event: 'lead_converted',
+      event: 'lead_conversion_requested',
       recipientRole: 'accounts_manager',
-      message: `New Seller ${lead.fullName} onboarded. Payment of ₹${amount} marked as completed.`,
+      message: `New conversion request: ${lead.fullName} (Lead ID: ${lead.leadId}). Payment marked completed.`,
     });
 
     return {
       success: true,
       data: {
-        seller,
+        leadId: lead.leadId,
+        sellerId: seller._id.toString(),
         amount,
         paymentCompletedAt,
       },
     };
+  }
+
+  private generateSubscriptionId() {
+    const date = new Date();
+    const y = date.getFullYear().toString();
+    const m = (date.getMonth() + 1).toString().padStart(2, '0');
+    const d = date.getDate().toString().padStart(2, '0');
+    const rand = Math.random().toString(36).slice(2, 8).toUpperCase();
+    return `SUB-${y}${m}${d}-${rand}`;
   }
 
   private buildPaymentLink(params: {
