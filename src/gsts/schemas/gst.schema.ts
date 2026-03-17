@@ -12,6 +12,9 @@ export class Gst {
   gstNumber: string;
 
   @Prop()
+  businessName?: string;
+
+  @Prop()
   state?: string;
 
   @Prop({ default: 'active' })

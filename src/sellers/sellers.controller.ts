@@ -11,6 +11,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
+import { Request } from 'express';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { GenerateCredentialsDto } from './dto/generate-credentials.dto';
@@ -42,6 +43,7 @@ export class SellersController {
     @Query('limit') limit?: string,
     @Query('skip') skip?: string,
     @Query('search') search?: string,
+    @Req() req?: RequestWithUser,
   ) {
     const parsedLimit = typeof limit === 'string' ? Number(limit) : undefined;
     const parsedSkip = typeof skip === 'string' ? Number(skip) : undefined;
@@ -103,8 +105,8 @@ export class SellersController {
   @Post(':id/payment-completed')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'accounts_manager')
-  markPaymentCompleted(@Param('id') id: string) {
-    return this.sellersService.markPaymentCompleted(id);
+  markPaymentCompleted(@Param('id') id: string, @Req() req: RequestWithUser) {
+    return this.sellersService.markPaymentCompleted(id, req.user);
   }
 
   @Post(':id/generate-credentials')
@@ -113,22 +115,23 @@ export class SellersController {
   generateCredentials(
     @Param('id') id: string,
     @Body() dto: GenerateCredentialsDto,
+    @Req() req: RequestWithUser,
   ) {
-    return this.sellersService.generateCredentials(id, dto);
+    return this.sellersService.generateCredentials(id, dto, req.user);
   }
 
   @Post(':id/approve-credentials')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin')
-  approveCredentials(@Param('id') id: string) {
-    return this.sellersService.approveCredentials(id);
+  approveCredentials(@Param('id') id: string, @Req() req: RequestWithUser) {
+    return this.sellersService.approveCredentials(id, req.user);
   }
 
   @Post(':id/complete-training')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('training_and_support_manager', 'super_admin')
-  completeTraining(@Param('id') id: string) {
-    return this.sellersService.completeTraining(id);
+  completeTraining(@Param('id') id: string, @Req() req: RequestWithUser) {
+    return this.sellersService.completeTraining(id, req.user);
   }
 
   @Post(':id/account-status')
@@ -141,3 +144,13 @@ export class SellersController {
     return this.sellersService.updateAccountStatus(id, body.status ?? '');
   }
 }
+
+type RequestUser = {
+  id?: string;
+  role?: string;
+  email?: string;
+};
+
+type RequestWithUser = Request & {
+  user?: RequestUser;
+};

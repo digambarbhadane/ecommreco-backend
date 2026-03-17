@@ -5,8 +5,11 @@ export type LeadDocument = HydratedDocument<Lead>;
 
 @Schema({ timestamps: true, collection: 'leads' })
 export class Lead {
-  @Prop({ unique: true, index: true })
-  leadId: string; // Custom human-readable ID (e.g., LEAD-1001)
+  @Prop({ unique: true, index: true, required: true })
+  publicId: string;
+
+  @Prop({ unique: true, index: true, required: true })
+  leadId: string;
 
   @Prop({ required: true, index: true })
   fullName: string;
@@ -111,7 +114,28 @@ export class Lead {
   };
 
   @Prop()
+  sellerId?: string;
+
+  @Prop()
   assignedSalesManager?: string; // ID or Name of the sales manager
+
+  @Prop()
+  assignedAccountsManager?: string;
+
+  @Prop()
+  conversionRequestedAt?: Date;
+
+  @Prop()
+  conversionRequestedBy?: string;
+
+  @Prop()
+  conversionSubscriptionId?: string;
+
+  @Prop()
+  conversionAmount?: number;
+
+  @Prop()
+  conversionLeadCreatedAt?: Date;
 
   @Prop({ default: 'new' })
   pipelineStage:

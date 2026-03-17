@@ -5,6 +5,9 @@ export type SellerDocument = Seller & Document;
 
 @Schema({ timestamps: true })
 export class Seller {
+  @Prop({ unique: true, index: true })
+  publicId?: string;
+
   @Prop({ required: true, index: true })
   fullName: string;
 
@@ -27,7 +30,13 @@ export class Seller {
   gstSlots?: number;
 
   @Prop()
+  gstSlotsPurchased?: number;
+
+  @Prop()
   durationYears?: number;
+
+  @Prop()
+  subscriptionDuration?: number;
 
   @Prop()
   amount?: number;
@@ -42,16 +51,28 @@ export class Seller {
   paymentCompletedAt?: Date;
 
   @Prop()
+  paymentCompletedBy?: string;
+
+  @Prop()
+  paymentVerifiedBy?: string;
+
+  @Prop()
   credentialsGeneratedAt?: Date;
 
   @Prop()
   credentialsApprovedAt?: Date;
 
   @Prop()
+  credentialsApprovedBy?: string;
+
+  @Prop()
   credentialsSentAt?: Date;
 
   @Prop()
   trainingCompletedAt?: Date;
+
+  @Prop()
+  trainingCompletedBy?: string;
 
   @Prop()
   subscriptionStartsAt?: Date;
@@ -65,6 +86,8 @@ export class Seller {
     | 'sales_contacted'
     | 'payment_pending'
     | 'payment_completed'
+    | 'payment_verified'
+    | 'account_created'
     | 'credentials_generated'
     | 'awaiting_super_admin_approval'
     | 'credentials_sent'
