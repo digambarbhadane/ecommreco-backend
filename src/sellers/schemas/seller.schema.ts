@@ -71,6 +71,9 @@ export class Seller {
     | 'training_pending'
     | 'training_completed'
     | 'active';
+
+  @Prop({ default: 'active' })
+  accountStatus: 'active' | 'paused' | 'suspended' | 'suspected';
 }
 
 export const SellerSchema = SchemaFactory.createForClass(Seller);

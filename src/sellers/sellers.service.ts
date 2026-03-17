@@ -12,6 +12,14 @@ import { SendPaymentLinkDto } from './dto/send-payment-link.dto';
 import { Seller, SellerDocument } from './schemas/seller.schema';
 import { LeadsService } from '../leads/leads.service';
 
+type ViewerRole =
+  | 'super_admin'
+  | 'sales_manager'
+  | 'accounts_manager'
+  | 'training_and_support_manager'
+  | 'seller'
+  | (string & {});
+
 @Injectable()
 export class SellersService {
   constructor(
@@ -21,11 +29,33 @@ export class SellersService {
     private readonly notificationsService: NotificationsService,
   ) {}
 
+  private sanitizeSellerForRole(
+    seller: Record<string, unknown>,
+    role: ViewerRole,
+  ) {
+    const { password, ...rest } = seller;
+    void password;
+
+    const sanitized: Record<string, unknown> = { ...rest };
+
+    if (role !== 'super_admin' && role !== 'sales_manager') {
+      delete sanitized.paymentLink;
+      delete sanitized.paymentLinkSentAt;
+    }
+
+    if (role !== 'super_admin') {
+      delete sanitized.credentialsGeneratedAt;
+      delete sanitized.credentialsApprovedAt;
+      delete sanitized.credentialsSentAt;
+    }
+
+    return sanitized;
+  }
+
   async register(dto: RegisterSellerDto) {
     return this.leadsService.createLead(
       {
         ...dto,
-        captchaToken: dto.captchaToken || 'manual-entry',
       },
       'website',
     );
@@ -36,6 +66,7 @@ export class SellersService {
     limit?: number;
     skip?: number;
     search?: string;
+    role: ViewerRole;
   }) {
     const limit = Math.max(0, params.limit ?? 10);
     const skip = Math.max(0, params.skip ?? 0);
@@ -60,16 +91,23 @@ export class SellersService {
       .lean()
       .exec();
     const total = await this.sellerModel.countDocuments(filter);
+
+    const sanitizedData = data.map((seller) =>
+      this.sanitizeSellerForRole(
+        seller as unknown as Record<string, unknown>,
+        params.role,
+      ),
+    );
     return {
       success: true,
-      data,
+      data: sanitizedData,
       total,
       limit,
       skip,
     };
   }
 
-  async getSeller(sellerId: string) {
+  async getSeller(sellerId: string, role: ViewerRole) {
     const seller = await this.sellerModel.findById(sellerId).lean().exec();
     if (!seller) {
       throw new NotFoundException({
@@ -79,7 +117,10 @@ export class SellersService {
     }
     return {
       success: true,
-      data: seller,
+      data: this.sanitizeSellerForRole(
+        seller as unknown as Record<string, unknown>,
+        role,
+      ),
     };
   }
 
@@ -262,6 +303,42 @@ export class SellersService {
     return {
       success: true,
       data: seller.toObject(),
+    };
+  }
+
+  async updateAccountStatus(sellerId: string, status: string) {
+    const allowed = new Set(['active', 'paused', 'suspended', 'suspected']);
+    if (!allowed.has(status)) {
+      throw new BadRequestException({
+        success: false,
+        message: 'Invalid account status',
+      });
+    }
+
+    const updated = await this.sellerModel
+      .findByIdAndUpdate(sellerId, { accountStatus: status }, { new: true })
+      .lean()
+      .exec();
+
+    if (!updated) {
+      throw new NotFoundException({
+        success: false,
+        message: 'Seller not found',
+      });
+    }
+
+    await this.notificationsService.createNotification({
+      event: 'seller_account_status_updated',
+      recipientRole: 'super_admin',
+      message: `Seller ${updated._id.toString()} account status updated to ${status}.`,
+    });
+
+    return {
+      success: true,
+      data: this.sanitizeSellerForRole(
+        updated as unknown as Record<string, unknown>,
+        'super_admin',
+      ),
     };
   }
 }

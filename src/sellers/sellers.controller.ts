@@ -7,6 +7,7 @@ import {
   Param,
   Post,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
@@ -36,6 +37,7 @@ export class SellersController {
     'training_and_support_manager',
   )
   list(
+    @Req() req: { user?: { role?: string } },
     @Query('status') status?: string,
     @Query('limit') limit?: string,
     @Query('skip') skip?: string,
@@ -48,19 +50,47 @@ export class SellersController {
       limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
       skip: Number.isFinite(parsedSkip) ? parsedSkip : undefined,
       search,
+      role: req.user?.role ?? 'seller',
+    });
+  }
+
+  @Get('super-admin')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('super_admin')
+  listSuperAdmin(
+    @Query('status') status?: string,
+    @Query('limit') limit?: string,
+    @Query('skip') skip?: string,
+    @Query('search') search?: string,
+  ) {
+    const parsedLimit = typeof limit === 'string' ? Number(limit) : undefined;
+    const parsedSkip = typeof skip === 'string' ? Number(skip) : undefined;
+    return this.sellersService.listSellers({
+      status,
+      limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
+      skip: Number.isFinite(parsedSkip) ? parsedSkip : undefined,
+      search,
+      role: 'super_admin',
     });
   }
 
   @Get(':id')
-  @UseGuards(RolesGuard)
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles(
     'super_admin',
     'sales_manager',
     'accounts_manager',
     'training_and_support_manager',
   )
-  getSeller(@Param('id') id: string) {
-    return this.sellersService.getSeller(id);
+  getSeller(@Req() req: { user?: { role?: string } }, @Param('id') id: string) {
+    return this.sellersService.getSeller(id, req.user?.role ?? 'seller');
+  }
+
+  @Get('super-admin/:id')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('super_admin')
+  getSellerSuperAdmin(@Param('id') id: string) {
+    return this.sellersService.getSeller(id, 'super_admin');
   }
 
   @Post(':id/payment-link')
@@ -99,5 +129,15 @@ export class SellersController {
   @Roles('training_and_support_manager', 'super_admin')
   completeTraining(@Param('id') id: string) {
     return this.sellersService.completeTraining(id);
+  }
+
+  @Post(':id/account-status')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('super_admin')
+  updateAccountStatus(
+    @Param('id') id: string,
+    @Body() body: { status?: string },
+  ) {
+    return this.sellersService.updateAccountStatus(id, body.status ?? '');
   }
 }

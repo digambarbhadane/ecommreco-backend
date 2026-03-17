@@ -4,7 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
+import { Model, PipelineStage, Types } from 'mongoose';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Seller, SellerDocument } from '../sellers/schemas/seller.schema';
 import { CreateLeadDto } from './dto/create-lead.dto';
@@ -45,7 +45,7 @@ export class LeadsService {
   }) {
     const skip = (params.page - 1) * params.limit;
     // Ensure followUps is a non-empty array
-    const matchStage: any = {
+    const matchStage: Record<string, unknown> = {
       followUps: {
         $exists: true,
         $type: 'array',
@@ -54,10 +54,10 @@ export class LeadsService {
     };
 
     if (params.leadId) {
-      matchStage['leadId'] = { $regex: params.leadId, $options: 'i' };
+      matchStage.leadId = { $regex: params.leadId, $options: 'i' };
     }
 
-    const followUpMatch: any = {};
+    const followUpMatch: Record<string, unknown> = {};
     if (params.status && params.status !== 'all') {
       followUpMatch['followUps.status'] = params.status;
     } else if (!params.status) {
@@ -65,10 +65,10 @@ export class LeadsService {
       followUpMatch['followUps.status'] = 'pending';
     }
 
-    const pipeline: any[] = [
-      { $match: matchStage },
+    const pipeline: PipelineStage[] = [
+      { $match: matchStage as PipelineStage.Match['$match'] },
       { $unwind: '$followUps' },
-      { $match: followUpMatch },
+      { $match: followUpMatch as PipelineStage.Match['$match'] },
       { $sort: { 'followUps.scheduledAt': 1 } }, // Ascending: Oldest (overdue) first
       { $skip: skip },
       { $limit: params.limit },
@@ -82,15 +82,22 @@ export class LeadsService {
       },
     ];
 
-    const data = await this.leadModel.aggregate(pipeline);
+    const data = await this.leadModel.aggregate<{
+      _id: Types.ObjectId;
+      leadId: string;
+      fullName: string;
+      followUp: unknown;
+    }>(pipeline);
 
-    const countPipeline: any[] = [
-      { $match: matchStage },
+    const countPipeline: PipelineStage[] = [
+      { $match: matchStage as PipelineStage.Match['$match'] },
       { $unwind: '$followUps' },
-      { $match: followUpMatch },
+      { $match: followUpMatch as PipelineStage.Match['$match'] },
       { $count: 'total' },
     ];
-    const countResult = await this.leadModel.aggregate(countPipeline);
+    const countResult = await this.leadModel.aggregate<{ total: number }>(
+      countPipeline,
+    );
     const total = countResult[0]?.total || 0;
 
     return {
@@ -108,6 +115,11 @@ export class LeadsService {
     status: string,
     updatedBy: string,
   ) {
+    const allowedStatuses = ['pending', 'completed', 'missed'] as const;
+    if (!allowedStatuses.includes(status as (typeof allowedStatuses)[number])) {
+      throw new BadRequestException('Invalid follow-up status');
+    }
+
     if (
       !Types.ObjectId.isValid(leadId) ||
       !Types.ObjectId.isValid(followUpId)
@@ -120,15 +132,15 @@ export class LeadsService {
       throw new NotFoundException('Lead not found');
     }
 
-    const followUp = lead.followUps.find(
-      (f) => f['_id'].toString() === followUpId,
-    );
+    type FollowUpSubdoc = Lead['followUps'][number] & { _id: Types.ObjectId };
+    const followUps = lead.followUps as unknown as FollowUpSubdoc[];
+    const followUp = followUps.find((f) => f._id.toString() === followUpId);
     if (!followUp) {
       throw new NotFoundException('Follow-up not found in this lead');
     }
 
     // Update the follow-up status
-    followUp.status = status as any;
+    followUp.status = status as FollowUpSubdoc['status'];
 
     // Add to activity timeline
     lead.activityTimeline.push({
@@ -145,7 +157,7 @@ export class LeadsService {
   async listNotes(params: { page: number; limit: number; leadId?: string }) {
     const skip = (params.page - 1) * params.limit;
     // Ensure notes is a non-empty array
-    const matchStage: any = {
+    const matchStage: Record<string, unknown> = {
       notes: {
         $exists: true,
         $type: 'array',
@@ -154,11 +166,11 @@ export class LeadsService {
     };
 
     if (params.leadId) {
-      matchStage['leadId'] = { $regex: params.leadId, $options: 'i' };
+      matchStage.leadId = { $regex: params.leadId, $options: 'i' };
     }
 
-    const pipeline: any[] = [
-      { $match: matchStage },
+    const pipeline: PipelineStage[] = [
+      { $match: matchStage as PipelineStage.Match['$match'] },
       { $unwind: '$notes' },
       { $sort: { 'notes.createdAt': -1 } },
       { $skip: skip },
@@ -173,14 +185,21 @@ export class LeadsService {
       },
     ];
 
-    const data = await this.leadModel.aggregate(pipeline);
+    const data = await this.leadModel.aggregate<{
+      _id: Types.ObjectId;
+      leadId: string;
+      fullName: string;
+      note: unknown;
+    }>(pipeline);
 
-    const countPipeline: any[] = [
-      { $match: matchStage },
+    const countPipeline: PipelineStage[] = [
+      { $match: matchStage as PipelineStage.Match['$match'] },
       { $unwind: '$notes' },
       { $count: 'total' },
     ];
-    const countResult = await this.leadModel.aggregate(countPipeline);
+    const countResult = await this.leadModel.aggregate<{ total: number }>(
+      countPipeline,
+    );
     const total = countResult[0]?.total || 0;
 
     return {
@@ -195,7 +214,10 @@ export class LeadsService {
   async getDashboardStats() {
     const totalLeads = await this.leadModel.countDocuments();
 
-    const leadsByStatus = await this.leadModel.aggregate([
+    const leadsByStatus = await this.leadModel.aggregate<{
+      _id: string;
+      count: number;
+    }>([
       {
         $group: {
           _id: '$leadStatus',
@@ -204,10 +226,13 @@ export class LeadsService {
       },
     ]);
 
-    const statusMap = leadsByStatus.reduce((acc, curr) => {
-      acc[curr._id] = curr.count;
-      return acc;
-    }, {});
+    const statusMap = leadsByStatus.reduce<Record<string, number>>(
+      (acc, curr) => {
+        acc[curr._id] = curr.count;
+        return acc;
+      },
+      {},
+    );
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -215,7 +240,9 @@ export class LeadsService {
       createdAt: { $gte: today },
     });
 
-    const pendingFollowUpsResult = await this.leadModel.aggregate([
+    const pendingFollowUpsResult = await this.leadModel.aggregate<{
+      count: number;
+    }>([
       { $unwind: '$followUps' },
       { $match: { 'followUps.status': 'pending' } },
       { $count: 'count' },
@@ -240,7 +267,12 @@ export class LeadsService {
     const endOfDay = new Date();
     endOfDay.setHours(23, 59, 59, 999);
 
-    const todaysFollowUps = await this.leadModel.aggregate([
+    const todaysFollowUps = await this.leadModel.aggregate<{
+      leadId: string;
+      fullName: string;
+      contactNumber: string;
+      followUp: unknown;
+    }>([
       { $unwind: '$followUps' },
       {
         $match: {
@@ -340,7 +372,7 @@ export class LeadsService {
     userAgent?: string,
   ) {
     // 1. Validate CAPTCHA
-    await this.validateCaptcha(dto.captchaToken);
+    this.validateCaptcha(dto.captchaToken);
 
     // 2. Check for duplicates (Lead & Seller)
     await this.checkDuplicates(dto);
@@ -404,14 +436,9 @@ export class LeadsService {
     };
   }
 
-  private async validateCaptcha(token: string) {
-    // TODO: Implement actual CAPTCHA validation with Google/Cloudflare
-    // For now, we assume if token is present, it's valid (or mock check)
+  private validateCaptcha(token: string) {
     if (!token || token === 'invalid-token') {
-      // In a real scenario, we would call an external API here
-      // throw new BadRequestException('Invalid CAPTCHA');
-      // For development ease, we allow bypassing if needed or just log
-      console.log('Mock CAPTCHA validation passed');
+      throw new BadRequestException('Invalid CAPTCHA');
     }
   }
 
@@ -558,7 +585,11 @@ export class LeadsService {
 
   async addNote(id: string, content: string, addedBy: string) {
     // Check if notes is an array, if not (e.g. string or null), reset it to empty array
-    const existing = await this.leadModel.findById(id).select('notes').lean();
+    const existing = await this.leadModel
+      .findById(id)
+      .select('notes')
+      .lean<{ notes?: unknown }>()
+      .exec();
     if (existing && !Array.isArray(existing.notes)) {
       await this.leadModel.findByIdAndUpdate(id, { $set: { notes: [] } });
     }
@@ -625,9 +656,14 @@ export class LeadsService {
       throw new BadRequestException('Subscription configuration missing');
     }
 
-    // Mock payment link generation
-    const paymentLink = `https://pay.example.com/${id}?amount=${lead.subscriptionConfig.amount}`;
-    const transactionId = `TXN-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    const expiryDate = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const paymentLink = this.buildPaymentLink({
+      sellerEmail: lead.email,
+      gstSlots: lead.subscriptionConfig.gstSlots,
+      durationYears: lead.subscriptionConfig.durationYears,
+      amount: lead.subscriptionConfig.amount,
+      expiryDate,
+    });
 
     const updated = await this.leadModel.findByIdAndUpdate(
       id,
@@ -635,11 +671,10 @@ export class LeadsService {
         $set: {
           paymentDetails: {
             link: paymentLink,
-            status: 'pending',
-            transactionId,
+            status: 'sent',
             generatedBy,
             generatedAt: new Date(),
-            expiryDate: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours expiry
+            expiryDate,
           },
           pipelineStage: 'Payment Link Generated',
         },
@@ -721,10 +756,11 @@ export class LeadsService {
     const existing = await this.leadModel
       .findById(leadId)
       .select('notes activityTimeline')
-      .lean();
+      .lean<{ notes?: unknown; activityTimeline?: unknown }>()
+      .exec();
 
     if (existing) {
-      const updates: any = {};
+      const updates: Record<string, unknown> = {};
       if (!Array.isArray(existing.notes)) {
         updates.notes = [];
       }
@@ -760,15 +796,20 @@ export class LeadsService {
         break;
     }
 
-    const updateOps: any = {
+    const activityTimelineEntry = {
+      action: 'status_updated',
+      description: `Status updated to ${dto.leadStatus}`,
+      performedBy: updatedBy,
+      timestamp: new Date(),
+    };
+
+    const updateOps: {
+      $set: Record<string, unknown>;
+      $push: Record<string, unknown>;
+    } = {
       $set: { leadStatus: dto.leadStatus },
       $push: {
-        activityTimeline: {
-          action: 'status_updated',
-          description: `Status updated to ${dto.leadStatus}`,
-          performedBy: updatedBy,
-          timestamp: new Date(),
-        },
+        activityTimeline: activityTimelineEntry,
       },
     };
 
@@ -782,7 +823,7 @@ export class LeadsService {
         addedBy: updatedBy,
         createdAt: new Date(),
       };
-      updateOps.$push.activityTimeline.description += `. Note: ${dto.notes}`;
+      activityTimelineEntry.description = `${activityTimelineEntry.description}. Note: ${dto.notes}`;
     }
 
     const updated = await this.leadModel
@@ -847,7 +888,7 @@ export class LeadsService {
     const paymentCompletedAt = new Date();
 
     // Create Seller Record
-    const createdSeller = await this.sellerModel.create({
+    const seller = await this.sellerModel.create({
       fullName: lead.fullName,
       contactNumber: lead.contactNumber,
       email: lead.email,
@@ -859,9 +900,6 @@ export class LeadsService {
       paymentCompletedAt,
       onboardingStatus: 'payment_completed',
     });
-    const seller = Array.isArray(createdSeller)
-      ? createdSeller[0]
-      : createdSeller;
 
     // Update Lead Status
     lead.leadStatus = 'converted';
@@ -883,7 +921,7 @@ export class LeadsService {
     await this.notificationsService.createNotification({
       event: 'lead_converted',
       recipientRole: 'operations_admin', // Notify ops/accounts
-      message: `Lead ${lead.fullName} converted to seller ${seller._id.toString()}. Payment marked as completed.`,
+      message: `Lead ${lead.fullName} converted to seller ${seller.id}. Payment marked as completed.`,
     });
 
     // Also notify accounts manager specifically if needed, or rely on 'operations_admin' role covering it.

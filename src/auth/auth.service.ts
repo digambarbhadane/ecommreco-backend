@@ -1,8 +1,4 @@
-import {
-  Injectable,
-  OnModuleInit,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
@@ -35,7 +31,7 @@ const allowedSellerStatuses = new Set([
 ]);
 
 @Injectable()
-export class AuthService implements OnModuleInit {
+export class AuthService {
   constructor(
     private readonly jwtService: JwtService,
     @InjectModel(Seller.name)
@@ -43,104 +39,6 @@ export class AuthService implements OnModuleInit {
     @InjectModel(User.name)
     private readonly userModel: Model<UserDocument>,
   ) {}
-
-  async onModuleInit() {
-    await this.seedAdminUsers();
-    await this.seedSellerUser();
-  }
-
-  private async seedAdminUsers() {
-    const superAdminEmail = 'superadmin@example.com';
-    const salesManagerEmail = 'sales.manager@example.com';
-    const accountsManagerEmail = 'accounts.manager@example.com';
-    const trainingSupportManagerEmail = 'training.support@example.com';
-
-    const superAdmin = await this.userModel
-      .findOne({ email: superAdminEmail })
-      .lean()
-      .exec();
-    if (!superAdmin) {
-      await this.userModel.create({
-        fullName: 'Super Admin',
-        email: superAdminEmail,
-        password: 'password123',
-        role: 'super_admin',
-        companyName: 'EcommReco',
-        mobile: '+91 90000 00002',
-        status: 'approved',
-        profileCompleted: true,
-      });
-    }
-
-    const salesManager = await this.userModel
-      .findOne({ email: salesManagerEmail })
-      .lean()
-      .exec();
-    if (!salesManager) {
-      await this.userModel.create({
-        fullName: 'Sales Manager',
-        email: salesManagerEmail,
-        password: 'password123',
-        role: 'sales_manager',
-        companyName: 'Seller Insights Hub',
-        mobile: '+91 90000 00003',
-        status: 'approved',
-        profileCompleted: true,
-      });
-    }
-
-    const accountsManager = await this.userModel
-      .findOne({ email: accountsManagerEmail })
-      .lean()
-      .exec();
-    if (!accountsManager) {
-      await this.userModel.create({
-        fullName: 'Accounts Manager',
-        email: accountsManagerEmail,
-        password: 'password123',
-        role: 'accounts_manager',
-        companyName: 'Seller Insights Hub',
-        mobile: '+91 90000 00004',
-        status: 'approved',
-        profileCompleted: true,
-      });
-    }
-
-    const trainingSupportManager = await this.userModel
-      .findOne({ email: trainingSupportManagerEmail })
-      .lean()
-      .exec();
-    if (!trainingSupportManager) {
-      await this.userModel.create({
-        fullName: 'Training & Support Manager',
-        email: trainingSupportManagerEmail,
-        password: 'password123',
-        role: 'training_and_support_manager',
-        companyName: 'Seller Insights Hub',
-        mobile: '+91 90000 00005',
-        status: 'approved',
-        profileCompleted: true,
-      });
-    }
-  }
-
-  private async seedSellerUser() {
-    const sellerEmail = 'seller@example.com';
-    const existing = await this.sellerModel
-      .findOne({ email: sellerEmail })
-      .lean()
-      .exec();
-    if (!existing) {
-      await this.sellerModel.create({
-        fullName: 'Seller User',
-        gstNumber: '27ABCDE1234F1Z5',
-        contactNumber: '+91 90000 00000',
-        email: sellerEmail,
-        password: 'password123',
-        onboardingStatus: 'credentials_sent',
-      });
-    }
-  }
 
   async login(dto: LoginDto) {
     const email = dto.email.toLowerCase();

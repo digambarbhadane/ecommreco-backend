@@ -23,6 +23,24 @@ import { UpdateLeadStatusDto } from './dto/update-lead-status.dto';
 import { LeadsService } from './leads.service';
 
 import { ThrottlerGuard } from '@nestjs/throttler';
+import type { Request } from 'express';
+
+type AuthenticatedUser = {
+  fullName?: string;
+  username?: string;
+  email?: string;
+  role?: string;
+};
+
+type AuthenticatedRequest = Request & { user?: AuthenticatedUser };
+
+type AddNoteBody = { content: string };
+type SubscriptionBody = { gstSlots: number; durationYears: number };
+type PaymentStatusBody = { status: string };
+type ScheduleFollowUpBody = {
+  scheduledAt: string | number | Date;
+  notes: string;
+};
 
 @Controller('leads')
 export class LeadsController {
@@ -32,7 +50,10 @@ export class LeadsController {
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   @HttpCode(HttpStatus.CREATED)
-  createManualLead(@Body() dto: CreateManualLeadDto, @Req() req: any) {
+  createManualLead(
+    @Body() dto: CreateManualLeadDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
     const createdBy =
       req.user?.fullName || req.user?.username || req.user?.email || 'admin';
     const creatorRole = req.user?.role || 'admin';
@@ -105,7 +126,7 @@ export class LeadsController {
     @Param('id') id: string,
     @Param('followUpId') followUpId: string,
     @Body('status') status: string,
-    @Req() req: any,
+    @Req() req: AuthenticatedRequest,
   ) {
     const updatedBy =
       req.user?.fullName || req.user?.username || req.user?.email || 'admin';
@@ -140,7 +161,7 @@ export class LeadsController {
   updateLeadStatus(
     @Param('id') id: string,
     @Body() dto: UpdateLeadStatusDto,
-    @Req() req: any,
+    @Req() req: AuthenticatedRequest,
   ) {
     return this.leadsService.updateLeadStatus(
       id,
@@ -159,7 +180,11 @@ export class LeadsController {
   @Post(':id/notes')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
-  addNote(@Param('id') id: string, @Body() body: any, @Req() req: any) {
+  addNote(
+    @Param('id') id: string,
+    @Body() body: AddNoteBody,
+    @Req() req: AuthenticatedRequest,
+  ) {
     return this.leadsService.addNote(
       id,
       body.content,
@@ -172,8 +197,8 @@ export class LeadsController {
   @Roles('super_admin', 'sales_manager')
   updateSubscription(
     @Param('id') id: string,
-    @Body() body: any,
-    @Req() req: any,
+    @Body() body: SubscriptionBody,
+    @Req() req: AuthenticatedRequest,
   ) {
     return this.leadsService.updateSubscription(
       id,
@@ -185,7 +210,10 @@ export class LeadsController {
   @Post(':id/payment-link')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
-  generatePaymentLink(@Param('id') id: string, @Req() req: any) {
+  generatePaymentLink(
+    @Param('id') id: string,
+    @Req() req: AuthenticatedRequest,
+  ) {
     return this.leadsService.generatePaymentLink(
       id,
       req.user?.email || 'admin',
@@ -197,8 +225,8 @@ export class LeadsController {
   @Roles('super_admin', 'sales_manager')
   updatePaymentStatus(
     @Param('id') id: string,
-    @Body() body: any,
-    @Req() req: any,
+    @Body() body: PaymentStatusBody,
+    @Req() req: AuthenticatedRequest,
   ) {
     return this.leadsService.updatePaymentStatus(
       id,
@@ -212,8 +240,8 @@ export class LeadsController {
   @Roles('super_admin', 'sales_manager')
   scheduleFollowUp(
     @Param('id') id: string,
-    @Body() body: any,
-    @Req() req: any,
+    @Body() body: ScheduleFollowUpBody,
+    @Req() req: AuthenticatedRequest,
   ) {
     return this.leadsService.scheduleFollowUp(
       id,

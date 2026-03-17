@@ -55,6 +55,23 @@ async function testEndpoint(name, url, token, expectedStatus, role, method = 'GE
   }
 }
 
+async function testSellerPasswordHidden(url, token, role) {
+  try {
+    const response = await axios.get(url, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const seller = response.data?.data ?? {};
+    const hasPassword = Object.prototype.hasOwnProperty.call(seller, 'password');
+    if (!hasPassword) {
+      console.log(`✅ [PASS] ${role} cannot read seller password field`);
+      return;
+    }
+    console.log(`❌ [FAIL] ${role} can read seller password field`);
+  } catch (error) {
+    console.log(`❌ [FAIL] ${role} seller password visibility request failed (${error.message})`);
+  }
+}
+
 async function runTests() {
   console.log('Starting RBAC Tests...');
 
@@ -77,6 +94,13 @@ async function runTests() {
     // Test 2: Sellers (Allowed for sales_manager, Forbidden for seller)
     await testEndpoint('GET /sellers', `${BASE_URL}/sellers`, salesToken, 200, 'sales_manager');
     await testEndpoint('GET /sellers', `${BASE_URL}/sellers`, sellerToken, 403, 'seller');
+    await testEndpoint('GET /sellers/:id', `${BASE_URL}/sellers/${sellerId}`, adminToken, 200, 'super_admin');
+    await testEndpoint('GET /sellers/:id', `${BASE_URL}/sellers/${sellerId}`, salesToken, 200, 'sales_manager');
+    await testEndpoint('GET /sellers/:id', `${BASE_URL}/sellers/${sellerId}`, sellerToken, 403, 'seller');
+    await testSellerPasswordHidden(`${BASE_URL}/sellers/${sellerId}`, adminToken, 'super_admin');
+    await testSellerPasswordHidden(`${BASE_URL}/sellers/${sellerId}`, salesToken, 'sales_manager');
+    await testEndpoint('GET /activity-logs', `${BASE_URL}/activity-logs`, adminToken, 200, 'super_admin');
+    await testEndpoint('GET /activity-logs', `${BASE_URL}/activity-logs`, salesToken, 403, 'sales_manager');
 
     // Test 3: Leads (Allowed for sales_manager, Forbidden for seller)
     await testEndpoint('GET /leads', `${BASE_URL}/leads`, salesToken, 200, 'sales_manager');

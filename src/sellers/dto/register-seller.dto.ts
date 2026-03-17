@@ -1,14 +1,5 @@
 import { Transform } from 'class-transformer';
-import {
-  IsBoolean,
-  IsEmail,
-  IsNotEmpty,
-  IsNumber,
-  IsOptional,
-  IsString,
-  MaxLength,
-  Min,
-} from 'class-validator';
+import { IsEmail, IsNotEmpty, IsString } from 'class-validator';
 
 export class RegisterSellerDto {
   @IsNotEmpty()
@@ -39,7 +30,7 @@ export class RegisterSellerDto {
   )
   gstNumber: string;
 
-  @IsOptional()
+  @IsNotEmpty()
   @IsString()
-  captchaToken?: string;
+  captchaToken: string;
 }
