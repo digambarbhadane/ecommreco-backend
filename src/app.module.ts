@@ -31,10 +31,17 @@ import { ProfileModule } from './profile/profile.module';
       useFactory: async (config: ConfigService) => {
         const dbName = config.get<string>('MONGODB_DB_NAME');
         const buildOptions = (uri: string) => {
+          const base = {
+            uri,
+            serverSelectionTimeoutMS: 10000,
+            connectTimeoutMS: 10000,
+            socketTimeoutMS: 20000,
+            bufferCommands: false,
+          };
           if (typeof dbName === 'string' && dbName.trim().length > 0) {
-            return { uri, dbName };
+            return { ...base, dbName };
           }
-          return { uri };
+          return base;
         };
 
         const canConnect = async (uri: string) => {

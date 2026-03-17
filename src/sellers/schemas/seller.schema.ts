@@ -17,11 +17,26 @@ export class Seller {
   @Prop({ required: true, index: true })
   email: string;
 
+  @Prop()
+  firmName?: string;
+
+  @Prop()
+  address?: string;
+
+  @Prop()
+  bio?: string;
+
+  @Prop()
+  businessType?: string;
+
   @Prop({ required: true })
   gstNumber: string;
 
   @Prop()
   password?: string;
+
+  @Prop()
+  username?: string;
 
   @Prop()
   leadId?: string;
@@ -31,6 +46,9 @@ export class Seller {
 
   @Prop()
   gstSlotsPurchased?: number;
+
+  @Prop({ default: 0 })
+  gstSlotsUsed?: number;
 
   @Prop()
   durationYears?: number;
@@ -54,10 +72,19 @@ export class Seller {
   paymentCompletedBy?: string;
 
   @Prop()
+  paymentVerifiedAt?: Date;
+
+  @Prop()
   paymentVerifiedBy?: string;
 
   @Prop()
+  verificationNotes?: string;
+
+  @Prop()
   credentialsGeneratedAt?: Date;
+
+  @Prop()
+  credentialGeneratedBy?: string;
 
   @Prop()
   credentialsApprovedAt?: Date;
@@ -79,6 +106,81 @@ export class Seller {
 
   @Prop()
   subscriptionEndsAt?: Date;
+
+  @Prop()
+  subscriptionId?: string;
+
+  @Prop()
+  paymentStatus?: string;
+
+  @Prop()
+  paymentDate?: Date;
+
+  @Prop()
+  paymentAmount?: number;
+
+  @Prop()
+  paymentId?: string;
+
+  @Prop()
+  transactionId?: string;
+
+  @Prop()
+  salesManager?: string;
+
+  @Prop()
+  leadSource?: string;
+
+  @Prop()
+  leadCreatedAt?: Date;
+
+  @Prop()
+  leadContactedAt?: Date;
+
+  @Prop()
+  leadConvertedAt?: Date;
+
+  @Prop()
+  leadConvertedBy?: string;
+
+  @Prop()
+  leadCreatedBy?: string;
+
+  @Prop()
+  leadContactedBy?: string;
+
+  @Prop()
+  paymentLinkGeneratedBy?: string;
+
+  @Prop()
+  accountCreatedAt?: Date;
+
+  @Prop()
+  accountCreatedBy?: string;
+
+  @Prop()
+  adminApprovalRequestedAt?: Date;
+
+  @Prop()
+  adminApprovalRequestedBy?: string;
+
+  @Prop()
+  trainingStatus?: string;
+
+  @Prop()
+  city?: string;
+
+  @Prop()
+  state?: string;
+
+  @Prop()
+  salesNotes?: string;
+
+  @Prop()
+  assignedAccountsManager?: string;
+
+  @Prop()
+  assignedTrainingSupportManager?: string;
 
   @Prop({ default: 'payment_pending' })
   onboardingStatus:

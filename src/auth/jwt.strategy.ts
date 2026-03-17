@@ -34,7 +34,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-  async validate(payload: { sub: string; role?: string }) {
+  async validate(payload: JwtPayload) {
     const { sub: id, role } = payload;
 
     if (role === 'seller') {

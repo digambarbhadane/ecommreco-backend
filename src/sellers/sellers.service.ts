@@ -73,16 +73,19 @@ export class SellersService {
     );
   }
 
-  async listSellers(params: {
-    status?: string;
-    limit?: number;
-    skip?: number;
-    search?: string;
-    role: ViewerRole;
-  }) {
+  async listSellers(
+    params: {
+      status?: string;
+      limit?: number;
+      skip?: number;
+      search?: string;
+      role: ViewerRole;
+    },
+    user?: RequestUser,
+  ) {
     const limit = Math.max(0, params.limit ?? 10);
     const skip = Math.max(0, params.skip ?? 0);
-    const role = typeof user?.role === 'string' ? user.role : undefined;
+    const role = params.role;
     const email =
       typeof user?.email === 'string' ? user.email.toLowerCase() : undefined;
     const requestedStatus =
@@ -219,8 +222,8 @@ export class SellersService {
     };
   }
 
-  async getSeller(sellerId: string, role: ViewerRole) {
-    const seller = await this.sellerModel.findById(sellerId).lean().exec();
+  async getSeller(sellerId: string, role: ViewerRole, user?: RequestUser) {
+    const seller = await this.sellerModel.findById(sellerId).exec();
     if (!seller) {
       throw new NotFoundException({
         success: false,
@@ -234,7 +237,13 @@ export class SellersService {
     }
 
     if (role === 'sales_manager') {
-      if (!email || (seller.salesManager ?? '').toLowerCase() !== email) {
+      const email =
+        typeof user?.email === 'string' ? user.email.toLowerCase() : undefined;
+      const managerEmail =
+        typeof seller.salesManager === 'string'
+          ? seller.salesManager.toLowerCase()
+          : '';
+      if (!email || managerEmail !== email) {
         throw new ForbiddenException({
           success: false,
           message: 'Access denied',
@@ -243,6 +252,8 @@ export class SellersService {
     }
 
     if (role === 'accounts_manager') {
+      const email =
+        typeof user?.email === 'string' ? user.email.toLowerCase() : undefined;
       const allowed = new Set([
         'payment_completed',
         'payment_verified',
@@ -258,7 +269,8 @@ export class SellersService {
         });
       }
       if (
-        seller.assignedAccountsManager &&
+        typeof seller.assignedAccountsManager === 'string' &&
+        typeof email === 'string' &&
         seller.assignedAccountsManager.toLowerCase() !== email
       ) {
         throw new ForbiddenException({
@@ -273,6 +285,8 @@ export class SellersService {
     }
 
     if (role === 'training_and_support_manager') {
+      const email =
+        typeof user?.email === 'string' ? user.email.toLowerCase() : undefined;
       const allowed = new Set(['training_pending', 'active']);
       if (!allowed.has(seller.onboardingStatus)) {
         throw new ForbiddenException({
@@ -282,7 +296,8 @@ export class SellersService {
       }
       if (seller.onboardingStatus === 'training_pending') {
         if (
-          seller.assignedTrainingSupportManager &&
+          typeof seller.assignedTrainingSupportManager === 'string' &&
+          typeof email === 'string' &&
           seller.assignedTrainingSupportManager.toLowerCase() !== email
         ) {
           throw new ForbiddenException({
@@ -312,7 +327,7 @@ export class SellersService {
     return {
       success: true,
       data: this.sanitizeSellerForRole(
-        seller as unknown as Record<string, unknown>,
+        seller.toObject() as unknown as Record<string, unknown>,
         role,
       ),
     };
@@ -590,5 +605,14 @@ export class SellersService {
         'super_admin',
       ),
     };
+  }
+
+  private generateSubscriptionId() {
+    const date = new Date();
+    const y = date.getFullYear().toString();
+    const m = (date.getMonth() + 1).toString().padStart(2, '0');
+    const d = date.getDate().toString().padStart(2, '0');
+    const rand = Math.random().toString(36).slice(2, 8).toUpperCase();
+    return `SUB-${y}${m}${d}-${rand}`;
   }
 }

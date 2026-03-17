@@ -4,7 +4,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import * as bcrypt from 'bcrypt';
 import { LoginDto } from './dto/login.dto';
-import { Request } from 'express';
+import type { Request } from 'express';
 import { randomUUID } from 'crypto';
 import { Seller, SellerDocument } from '../sellers/schemas/seller.schema';
 import { User, UserDocument } from '../users/schemas/user.schema';
@@ -53,8 +53,9 @@ export class AuthService {
     private readonly userActivityLogModel: Model<UserActivityLogDocument>,
   ) {}
 
-  async login(dto: LoginDto) {
-    const email = dto.email.toLowerCase();
+  async login(dto: LoginDto, req: Request) {
+    const identifier = dto.email.toLowerCase();
+    const email = identifier;
     const seller = await this.sellerModel.findOne({ email }).lean().exec();
     const sellerUser = seller
       ? {
@@ -254,5 +255,18 @@ export class AuthService {
       return bcrypt.compare(provided, stored);
     }
     return stored === provided;
+  }
+
+  private getIp(req: Request) {
+    const forwardedFor = req.headers['x-forwarded-for'];
+    if (typeof forwardedFor === 'string' && forwardedFor.length > 0) {
+      return forwardedFor.split(',')[0]?.trim() || req.ip || 'unknown';
+    }
+    return req.ip || 'unknown';
+  }
+
+  private getDevice(req: Request) {
+    const ua = req.headers['user-agent'];
+    return typeof ua === 'string' && ua.length > 0 ? ua : 'unknown';
   }
 }

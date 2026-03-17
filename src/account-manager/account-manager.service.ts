@@ -293,7 +293,8 @@ export class AccountManagerService {
       salesNotes: '',
     });
 
-    lead.sellerId = seller._id.toString();
+    const sellerId = String((seller as unknown as { _id: unknown })._id);
+    lead.sellerId = sellerId;
     await lead.save();
 
     await this.notificationsService.createNotification({
@@ -302,7 +303,8 @@ export class AccountManagerService {
       message: `Seller created for lead ${lead.fullName} by ${user?.email || 'Account Manager'}.`,
     });
 
-    return { success: true, data: seller.toObject() };
+    const created = await this.sellerModel.findById(sellerId).lean().exec();
+    return { success: true, data: created };
   }
 
   async findAllPaymentCompletedSellers(user?: RequestUser) {

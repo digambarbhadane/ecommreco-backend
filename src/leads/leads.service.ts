@@ -4,7 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model, PipelineStage, Types } from 'mongoose';
+import { Model, PipelineStage, Types, UpdateQuery } from 'mongoose';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Seller, SellerDocument } from '../sellers/schemas/seller.schema';
 import { generatePublicId } from '../common/public-id';
@@ -128,15 +128,12 @@ export class LeadsService {
     }
   }
 
-  async listFollowUps(
-    params: {
-      page: number;
-      limit: number;
-      leadId?: string;
-      status?: string;
-    },
-    user?: RequestUser,
-  ) {
+  async listFollowUps(params: {
+    page: number;
+    limit: number;
+    leadId?: string;
+    status?: string;
+  }) {
     const skip = (params.page - 1) * params.limit;
     // Ensure followUps is a non-empty array
     const matchStage: Record<string, unknown> = {
@@ -210,7 +207,7 @@ export class LeadsService {
     updatedBy: string,
   ) {
     const allowedStatuses = ['pending', 'completed', 'missed'] as const;
-    if (!allowedStatuses.includes(status as (typeof allowedStatuses)[number])) {
+    if (!allowedStatuses.includes(status)) {
       throw new BadRequestException('Invalid follow-up status');
     }
 
@@ -247,7 +244,7 @@ export class LeadsService {
     }
 
     // Update the follow-up status
-    followUp.status = status as FollowUpSubdoc['status'];
+    followUp.status = status;
 
     // Add to activity timeline
     lead.activityTimeline.push({
@@ -261,10 +258,7 @@ export class LeadsService {
     return { success: true, data: savedLead };
   }
 
-  async listNotes(
-    params: { page: number; limit: number; leadId?: string },
-    user?: RequestUser,
-  ) {
+  async listNotes(params: { page: number; limit: number; leadId?: string }) {
     const skip = (params.page - 1) * params.limit;
     // Ensure notes is a non-empty array
     const matchStage: Record<string, unknown> = {
@@ -325,10 +319,13 @@ export class LeadsService {
     const salesFilter = this.buildSalesManagerLeadAccessFilter(user);
     const baseFilter: Record<string, unknown> = salesFilter ? salesFilter : {};
 
+    const totalLeads = await this.leadModel.countDocuments(baseFilter);
+
     const leadsByStatus = await this.leadModel.aggregate<{
       _id: string;
       count: number;
     }>([
+      { $match: baseFilter as PipelineStage.Match['$match'] },
       {
         $group: {
           _id: '$leadStatus',
@@ -355,6 +352,7 @@ export class LeadsService {
     const pendingFollowUpsResult = await this.leadModel.aggregate<{
       count: number;
     }>([
+      { $match: baseFilter as PipelineStage.Match['$match'] },
       { $unwind: '$followUps' },
       { $match: { 'followUps.status': 'pending' } },
       { $count: 'count' },
@@ -961,7 +959,6 @@ export class LeadsService {
   ) {
     const identityFilter = this.buildLeadIdentityFilter(leadId);
     // Safety check for notes and activityTimeline fields
-    type LeadNotesAndTimeline = Pick<Lead, 'notes' | 'activityTimeline'>;
     const existing = await this.leadModel
       .findOne(identityFilter)
       .select('notes activityTimeline')
@@ -1012,16 +1009,6 @@ export class LeadsService {
       timestamp: new Date(),
     };
 
-    const updateOps: {
-      $set: Record<string, unknown>;
-      $push: Record<string, unknown>;
-    } = {
-      $set: { leadStatus: dto.leadStatus },
-      $push: {
-        activityTimeline: activityTimelineEntry,
-      },
-    };
-
     const setUpdate: Partial<Pick<Lead, 'leadStatus' | 'pipelineStage'>> = {
       leadStatus: dto.leadStatus,
     };
@@ -1029,7 +1016,7 @@ export class LeadsService {
       setUpdate.pipelineStage = pipelineStage;
     }
 
-    const pushUpdate: Record<string, unknown> = {
+    const pushUpdate: NonNullable<UpdateQuery<LeadDocument>['$push']> = {
       activityTimeline: activityTimelineEntry,
     };
 
@@ -1042,16 +1029,15 @@ export class LeadsService {
       activityTimelineEntry.description = `${activityTimelineEntry.description}. Note: ${dto.notes}`;
     }
 
-    const updateOps = { $set: setUpdate, $push: pushUpdate };
+    const updateOps: UpdateQuery<LeadDocument> = {
+      $set: setUpdate,
+      $push: pushUpdate,
+    };
 
     const updated = await this.leadModel
-      .findOneAndUpdate(
-        identityFilter,
-        updateOps as unknown as UpdateQuery<LeadDocument>,
-        {
-          new: true,
-        },
-      )
+      .findOneAndUpdate(identityFilter, updateOps, {
+        new: true,
+      })
       .lean()
       .exec();
 
@@ -1138,20 +1124,6 @@ export class LeadsService {
       typeof lead.contactNumber === 'string' ? lead.contactNumber.trim() : '';
     const leadGstNumber =
       typeof lead.gstNumber === 'string' ? lead.gstNumber.trim() : '';
-
-    // Create Seller Record
-    const seller = await this.sellerModel.create({
-      fullName: lead.fullName,
-      contactNumber: lead.contactNumber,
-      email: lead.email,
-      gstNumber: lead.gstNumber,
-      leadId: lead._id.toString(),
-      gstSlots,
-      durationYears,
-      amount,
-      paymentCompletedAt,
-      onboardingStatus: 'payment_completed',
-    });
 
     // Update Lead Status
     lead.leadStatus = 'converted';
@@ -1240,7 +1212,7 @@ export class LeadsService {
       adminApprovalRequestedBy: '',
     });
 
-    lead.sellerId = seller._id.toString();
+    lead.sellerId = String((seller as unknown as { _id: unknown })._id);
     await lead.save();
 
     await this.notificationsService.createNotification({

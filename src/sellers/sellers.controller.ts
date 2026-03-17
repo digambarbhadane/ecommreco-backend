@@ -38,28 +38,31 @@ export class SellersController {
     'training_and_support_manager',
   )
   list(
-    @Req() req: { user?: { role?: string } },
+    @Req() req: RequestWithUser,
     @Query('status') status?: string,
     @Query('limit') limit?: string,
     @Query('skip') skip?: string,
     @Query('search') search?: string,
-    @Req() req?: RequestWithUser,
   ) {
     const parsedLimit = typeof limit === 'string' ? Number(limit) : undefined;
     const parsedSkip = typeof skip === 'string' ? Number(skip) : undefined;
-    return this.sellersService.listSellers({
-      status,
-      limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
-      skip: Number.isFinite(parsedSkip) ? parsedSkip : undefined,
-      search,
-      role: req.user?.role ?? 'seller',
-    });
+    return this.sellersService.listSellers(
+      {
+        status,
+        limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
+        skip: Number.isFinite(parsedSkip) ? parsedSkip : undefined,
+        search,
+        role: req.user?.role ?? 'seller',
+      },
+      req.user,
+    );
   }
 
   @Get('super-admin')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin')
   listSuperAdmin(
+    @Req() req: RequestWithUser,
     @Query('status') status?: string,
     @Query('limit') limit?: string,
     @Query('skip') skip?: string,
@@ -67,13 +70,16 @@ export class SellersController {
   ) {
     const parsedLimit = typeof limit === 'string' ? Number(limit) : undefined;
     const parsedSkip = typeof skip === 'string' ? Number(skip) : undefined;
-    return this.sellersService.listSellers({
-      status,
-      limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
-      skip: Number.isFinite(parsedSkip) ? parsedSkip : undefined,
-      search,
-      role: 'super_admin',
-    });
+    return this.sellersService.listSellers(
+      {
+        status,
+        limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
+        skip: Number.isFinite(parsedSkip) ? parsedSkip : undefined,
+        search,
+        role: 'super_admin',
+      },
+      req.user,
+    );
   }
 
   @Get(':id')
@@ -84,15 +90,19 @@ export class SellersController {
     'accounts_manager',
     'training_and_support_manager',
   )
-  getSeller(@Req() req: { user?: { role?: string } }, @Param('id') id: string) {
-    return this.sellersService.getSeller(id, req.user?.role ?? 'seller');
+  getSeller(@Req() req: RequestWithUser, @Param('id') id: string) {
+    return this.sellersService.getSeller(
+      id,
+      req.user?.role ?? 'seller',
+      req.user,
+    );
   }
 
   @Get('super-admin/:id')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin')
-  getSellerSuperAdmin(@Param('id') id: string) {
-    return this.sellersService.getSeller(id, 'super_admin');
+  getSellerSuperAdmin(@Param('id') id: string, @Req() req: RequestWithUser) {
+    return this.sellersService.getSeller(id, 'super_admin', req.user);
   }
 
   @Post(':id/payment-link')

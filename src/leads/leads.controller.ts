@@ -15,7 +15,6 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { Request } from 'express';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { ConvertLeadDto } from './dto/convert-lead.dto';
@@ -114,19 +113,15 @@ export class LeadsController {
     @Query('limit') limit?: string,
     @Query('leadId') leadId?: string,
     @Query('status') status?: string,
-    @Req() req?: RequestWithUser,
   ) {
     const parsedPage = typeof page === 'string' ? Number(page) : 1;
     const parsedLimit = typeof limit === 'string' ? Number(limit) : 10;
-    return this.leadsService.listFollowUps(
-      {
-        page: parsedPage,
-        limit: parsedLimit,
-        leadId,
-        status,
-      },
-      req?.user,
-    );
+    return this.leadsService.listFollowUps({
+      page: parsedPage,
+      limit: parsedLimit,
+      leadId,
+      status,
+    });
   }
 
   @Patch(':id/follow-ups/:followUpId/status')
@@ -163,18 +158,14 @@ export class LeadsController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('leadId') leadId?: string,
-    @Req() req?: RequestWithUser,
   ) {
     const parsedPage = typeof page === 'string' ? Number(page) : 1;
     const parsedLimit = typeof limit === 'string' ? Number(limit) : 10;
-    return this.leadsService.listNotes(
-      {
-        page: parsedPage,
-        limit: parsedLimit,
-        leadId,
-      },
-      req?.user,
-    );
+    return this.leadsService.listNotes({
+      page: parsedPage,
+      limit: parsedLimit,
+      leadId,
+    });
   }
 
   @Patch(':id/status')
