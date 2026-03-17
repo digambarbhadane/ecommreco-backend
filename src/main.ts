@@ -72,7 +72,10 @@ async function bootstrap() {
     }
     next();
   });
-  const port = config.get<number>('PORT') ?? 5000;
+  const configuredPort = config.get<string>('PORT');
+  const parsedPort =
+    typeof configuredPort === 'string' ? Number(configuredPort) : undefined;
+  const port = Number.isFinite(parsedPort) ? (parsedPort as number) : 5000;
   await app.listen(port, '0.0.0.0');
   Logger.log(`API running on port ${port}`);
 }
