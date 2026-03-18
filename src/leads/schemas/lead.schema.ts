@@ -120,6 +120,15 @@ export class Lead {
   assignedSalesManager?: string; // ID or Name of the sales manager
 
   @Prop()
+  assignedSalesManagerId?: string;
+
+  @Prop()
+  assignedBy?: string;
+
+  @Prop()
+  assignedAt?: Date;
+
+  @Prop()
   assignedAccountsManager?: string;
 
   @Prop()
@@ -182,6 +191,9 @@ export class Lead {
 
   @Prop()
   createdBy?: string;
+
+  @Prop()
+  createdByUserId?: string;
 
   @Prop()
   creatorRole?: string;

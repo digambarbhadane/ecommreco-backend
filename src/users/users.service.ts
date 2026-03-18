@@ -53,6 +53,25 @@ export class UsersService {
     return { success: true, data, total, limit, skip };
   }
 
+  async listSalesManagers() {
+    const data = await this.userModel
+      .find({ role: 'sales_manager', status: 'approved' })
+      .sort({ fullName: 1, createdAt: 1 })
+      .select('_id fullName email role status')
+      .lean<Array<{ _id: Types.ObjectId; fullName: string; email: string }>>()
+      .exec();
+
+    return {
+      success: true,
+      data: data.map((u) => ({
+        id: u._id.toString(),
+        fullName: u.fullName,
+        email: u.email,
+      })),
+      total: data.length,
+    };
+  }
+
   async get(id: string) {
     if (!Types.ObjectId.isValid(id)) {
       throw new BadRequestException('Invalid user ID');

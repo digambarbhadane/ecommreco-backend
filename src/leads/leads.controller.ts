@@ -20,6 +20,7 @@ import { RolesGuard } from '../auth/roles.guard';
 import { ConvertLeadDto } from './dto/convert-lead.dto';
 import { CreateLeadDto } from './dto/create-lead.dto';
 import { CreateManualLeadDto } from './dto/create-manual-lead.dto';
+import { ImportLeadsDto } from './dto/import-leads.dto';
 import { UpdateLeadStatusDto } from './dto/update-lead-status.dto';
 import { LeadsService } from './leads.service';
 
@@ -27,6 +28,7 @@ import { ThrottlerGuard } from '@nestjs/throttler';
 import type { Request } from 'express';
 
 type AuthenticatedUser = {
+  id?: string;
   fullName?: string;
   username?: string;
   email?: string;
@@ -53,12 +55,9 @@ export class LeadsController {
   @HttpCode(HttpStatus.CREATED)
   createManualLead(
     @Body() dto: CreateManualLeadDto,
-    @Req() req: AuthenticatedRequest,
+    @Req() req: RequestWithUser,
   ) {
-    const createdBy =
-      req.user?.fullName || req.user?.username || req.user?.email || 'admin';
-    const creatorRole = req.user?.role || 'admin';
-    return this.leadsService.createManualLead(dto, createdBy, creatorRole);
+    return this.leadsService.createManualLead(dto, req.user);
   }
 
   @Post('register')
@@ -75,6 +74,14 @@ export class LeadsController {
       ip,
       userAgent,
     );
+  }
+
+  @Post('import')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('super_admin')
+  @HttpCode(HttpStatus.CREATED)
+  importLeads(@Body() dto: ImportLeadsDto, @Req() req: RequestWithUser) {
+    return this.leadsService.importLeads(dto, req.user);
   }
 
   @Get('dashboard-stats')
@@ -113,6 +120,7 @@ export class LeadsController {
     @Query('limit') limit?: string,
     @Query('leadId') leadId?: string,
     @Query('status') status?: string,
+    @Req() req?: RequestWithUser,
   ) {
     const parsedPage = typeof page === 'string' ? Number(page) : 1;
     const parsedLimit = typeof limit === 'string' ? Number(limit) : 10;
@@ -121,6 +129,7 @@ export class LeadsController {
       limit: parsedLimit,
       leadId,
       status,
+      user: req?.user,
     });
   }
 
@@ -158,6 +167,7 @@ export class LeadsController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('leadId') leadId?: string,
+    @Req() req?: RequestWithUser,
   ) {
     const parsedPage = typeof page === 'string' ? Number(page) : 1;
     const parsedLimit = typeof limit === 'string' ? Number(limit) : 10;
@@ -165,6 +175,7 @@ export class LeadsController {
       page: parsedPage,
       limit: parsedLimit,
       leadId,
+      user: req?.user,
     });
   }
 
@@ -199,11 +210,12 @@ export class LeadsController {
   @Post(':id/notes')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
-  addNote(
+  async addNote(
     @Param('id') id: string,
     @Body() body: AddNoteBody,
     @Req() req: AuthenticatedRequest,
   ) {
+    await this.leadsService.assertLeadAccess(id, req.user);
     return this.leadsService.addNote(
       id,
       body.content,
@@ -234,10 +246,11 @@ export class LeadsController {
     @Param('id') id: string,
     @Req() req: AuthenticatedRequest,
   ) {
-    return this.leadsService.generatePaymentLink(
-      id,
-      req.user?.email || 'admin',
-    );
+    return this.leadsService
+      .assertLeadAccess(id, req.user)
+      .then(() =>
+        this.leadsService.generatePaymentLink(id, req.user?.email || 'admin'),
+      );
   }
 
   @Patch(':id/payment-status')

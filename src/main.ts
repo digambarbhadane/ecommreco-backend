@@ -1,7 +1,6 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { NextFunction, Request, Response } from 'express';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
@@ -19,7 +18,7 @@ async function bootstrap() {
   app.enableCors({
     origin: (
       origin: string | undefined,
-      callback: (err: Error | null, allow?: boolean) => void,
+      callback: (err: Error | null, allow?: boolean | string) => void,
     ) => {
       const whitelist = new Set(
         [
@@ -29,15 +28,15 @@ async function bootstrap() {
           process.env.FRONTEND_URL,
         ].filter((v): v is string => typeof v === 'string' && v.length > 0),
       );
-      if (
-        !origin ||
-        whitelist.has(origin) ||
-        (typeof origin === 'string' && origin.startsWith('http://localhost'))
-      ) {
+      if (!origin) {
         callback(null, true);
-      } else {
-        callback(null, true);
+        return;
       }
+      if (whitelist.has(origin)) {
+        callback(null, origin);
+        return;
+      }
+      callback(null, origin);
     },
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
     credentials: true,
@@ -52,27 +51,6 @@ async function bootstrap() {
     optionsSuccessStatus: 204,
   });
 
-  app.use((req: Request, res: Response, next: NextFunction) => {
-    const origin =
-      typeof req.headers.origin === 'string' ? req.headers.origin : '*';
-    res.header('Access-Control-Allow-Origin', origin);
-    res.header('Vary', 'Origin');
-    res.header('Access-Control-Allow-Credentials', 'true');
-    res.header(
-      'Access-Control-Allow-Methods',
-      'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
-    );
-    const requestedHeaders =
-      typeof req.headers['access-control-request-headers'] === 'string'
-        ? req.headers['access-control-request-headers']
-        : 'Content-Type, Accept, Authorization, X-Requested-With, Origin, x-setup-token';
-    res.header('Access-Control-Allow-Headers', requestedHeaders);
-    if (req.method === 'OPTIONS') {
-      res.sendStatus(204);
-      return;
-    }
-    next();
-  });
   const configuredPort = config.get<string>('PORT');
   const parsedPort =
     typeof configuredPort === 'string' ? Number(configuredPort) : undefined;

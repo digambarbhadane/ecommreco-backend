@@ -25,6 +25,11 @@ import { UsersService } from './users.service';
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
+  @Get('sales-managers')
+  listSalesManagers() {
+    return this.usersService.listSalesManagers();
+  }
+
   @Get()
   list(
     @Query('limit') limit?: string,

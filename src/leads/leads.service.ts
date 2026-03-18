@@ -7,10 +7,12 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, PipelineStage, Types, UpdateQuery } from 'mongoose';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Seller, SellerDocument } from '../sellers/schemas/seller.schema';
+import { User, UserDocument } from '../users/schemas/user.schema';
 import { generatePublicId } from '../common/public-id';
 import { CreateLeadDto } from './dto/create-lead.dto';
 import { CreateManualLeadDto } from './dto/create-manual-lead.dto';
 import { ConvertLeadDto } from './dto/convert-lead.dto';
+import { ImportLeadsDto } from './dto/import-leads.dto';
 import { UpdateLeadStatusDto } from './dto/update-lead-status.dto';
 import { Lead, LeadDocument } from './schemas/lead.schema';
 import { Counter, CounterDocument } from './schemas/counter.schema';
@@ -33,6 +35,8 @@ export class LeadsService {
     private readonly leadModel: Model<LeadDocument>,
     @InjectModel(Seller.name)
     private readonly sellerModel: Model<SellerDocument>,
+    @InjectModel(User.name)
+    private readonly userModel: Model<UserDocument>,
     @InjectModel(Counter.name)
     private readonly counterModel: Model<CounterDocument>,
     private readonly notificationsService: NotificationsService,
@@ -68,32 +72,108 @@ export class LeadsService {
     return Array.from(new Set(identifiers));
   }
 
+  private normalizeEmail(value: unknown) {
+    return typeof value === 'string' ? value.trim().toLowerCase() : '';
+  }
+
+  private async resolveSalesManager(params: {
+    id?: string;
+    email?: string;
+  }): Promise<{ id: string; email: string; fullName?: string } | undefined> {
+    const byId =
+      typeof params.id === 'string' && params.id.trim() ? params.id.trim() : '';
+    const byEmail = this.normalizeEmail(params.email);
+    if (!byId && !byEmail) return undefined;
+
+    const filter: Record<string, unknown> = { role: 'sales_manager' };
+    if (byId && Types.ObjectId.isValid(byId)) {
+      filter._id = new Types.ObjectId(byId);
+    } else if (byEmail) {
+      filter.email = byEmail;
+    } else {
+      return undefined;
+    }
+
+    const found = await this.userModel
+      .findOne(filter)
+      .select('_id email fullName status role')
+      .lean<{
+        _id: Types.ObjectId;
+        email: string;
+        fullName?: string;
+        status?: string;
+      }>()
+      .exec();
+    if (!found) return undefined;
+    if (found.status && found.status !== 'approved') return undefined;
+
+    return {
+      id: found._id.toString(),
+      email: this.normalizeEmail(found.email),
+      fullName: found.fullName,
+    };
+  }
+
+  private async pickNextSalesManager() {
+    const salesManagers = await this.userModel
+      .find({ role: 'sales_manager', status: 'approved' })
+      .select('email fullName createdAt')
+      .sort({ createdAt: 1, _id: 1 })
+      .lean<
+        Array<{
+          _id: Types.ObjectId;
+          email?: string;
+          fullName?: string;
+        }>
+      >()
+      .exec();
+
+    const candidates = salesManagers
+      .map((u) => {
+        const email = this.normalizeEmail(u.email);
+        if (!email) return undefined;
+        return { id: u._id.toString(), email };
+      })
+      .filter((v): v is { id: string; email: string } => Boolean(v));
+
+    if (candidates.length === 0) {
+      return undefined;
+    }
+
+    const counter = await this.counterModel.findOneAndUpdate(
+      { id: 'leadAssign:sales_manager' },
+      { $inc: { seq: 1 } },
+      { new: true, upsert: true },
+    );
+    const seq = typeof counter.seq === 'number' ? counter.seq : 1;
+    const index = (seq - 1) % candidates.length;
+    return candidates[index];
+  }
+
   private buildSalesManagerLeadAccessFilter(user?: RequestUser) {
     const role = typeof user?.role === 'string' ? user.role : undefined;
     if (role !== 'sales_manager') return undefined;
     const identifiers = this.getSalesManagerIdentifiers(user);
-    if (!identifiers.length) return undefined;
-
-    const unassignedFilter = {
-      $or: [
-        { assignedSalesManager: { $exists: false } },
-        { assignedSalesManager: null },
-        { assignedSalesManager: '' },
-      ],
-    };
-
-    const visibleUnassignedCreatorRoleFilter = {
-      $or: [
-        { creatorRole: { $exists: false } },
-        { creatorRole: { $ne: 'sales_manager' } },
-      ],
-    };
+    const userId =
+      typeof user?.id === 'string' && user.id.trim() ? user.id.trim() : '';
+    const hasUserId = userId && Types.ObjectId.isValid(userId);
+    if (!identifiers.length && !hasUserId) return undefined;
 
     return {
       $or: [
-        { createdBy: { $in: identifiers } },
-        { assignedSalesManager: { $in: identifiers } },
-        { $and: [unassignedFilter, visibleUnassignedCreatorRoleFilter] },
+        ...(hasUserId ? [{ assignedSalesManagerId: userId }] : []),
+        ...(identifiers.length
+          ? [{ assignedSalesManager: { $in: identifiers } }]
+          : []),
+        {
+          $and: [
+            { creatorRole: 'sales_manager' },
+            ...(hasUserId ? [{ createdByUserId: userId }] : []),
+            ...(identifiers.length
+              ? [{ createdBy: { $in: identifiers } }]
+              : []),
+          ],
+        },
       ],
     };
   }
@@ -133,6 +213,7 @@ export class LeadsService {
     limit: number;
     leadId?: string;
     status?: string;
+    user?: RequestUser;
   }) {
     const skip = (params.page - 1) * params.limit;
     // Ensure followUps is a non-empty array
@@ -148,6 +229,11 @@ export class LeadsService {
       matchStage.leadId = { $regex: params.leadId, $options: 'i' };
     }
 
+    const salesFilter = this.buildSalesManagerLeadAccessFilter(params.user);
+    const leadMatch = salesFilter
+      ? ({ $and: [matchStage, salesFilter] } as Record<string, unknown>)
+      : matchStage;
+
     const followUpMatch: Record<string, unknown> = {};
     if (params.status && params.status !== 'all') {
       followUpMatch['followUps.status'] = params.status;
@@ -157,7 +243,7 @@ export class LeadsService {
     }
 
     const pipeline: PipelineStage[] = [
-      { $match: matchStage as PipelineStage.Match['$match'] },
+      { $match: leadMatch as PipelineStage.Match['$match'] },
       { $unwind: '$followUps' },
       { $match: followUpMatch as PipelineStage.Match['$match'] },
       { $sort: { 'followUps.scheduledAt': 1 } }, // Ascending: Oldest (overdue) first
@@ -181,7 +267,7 @@ export class LeadsService {
     }>(pipeline);
 
     const countPipeline: PipelineStage[] = [
-      { $match: matchStage as PipelineStage.Match['$match'] },
+      { $match: leadMatch as PipelineStage.Match['$match'] },
       { $unwind: '$followUps' },
       { $match: followUpMatch as PipelineStage.Match['$match'] },
       { $count: 'total' },
@@ -258,7 +344,12 @@ export class LeadsService {
     return { success: true, data: savedLead };
   }
 
-  async listNotes(params: { page: number; limit: number; leadId?: string }) {
+  async listNotes(params: {
+    page: number;
+    limit: number;
+    leadId?: string;
+    user?: RequestUser;
+  }) {
     const skip = (params.page - 1) * params.limit;
     // Ensure notes is a non-empty array
     const matchStage: Record<string, unknown> = {
@@ -273,8 +364,13 @@ export class LeadsService {
       matchStage.leadId = { $regex: params.leadId, $options: 'i' };
     }
 
+    const salesFilter = this.buildSalesManagerLeadAccessFilter(params.user);
+    const leadMatch = salesFilter
+      ? ({ $and: [matchStage, salesFilter] } as Record<string, unknown>)
+      : matchStage;
+
     const pipeline: PipelineStage[] = [
-      { $match: matchStage as PipelineStage.Match['$match'] },
+      { $match: leadMatch as PipelineStage.Match['$match'] },
       { $unwind: '$notes' },
       { $sort: { 'notes.createdAt': -1 } },
       { $skip: skip },
@@ -297,7 +393,7 @@ export class LeadsService {
     }>(pipeline);
 
     const countPipeline: PipelineStage[] = [
-      { $match: matchStage as PipelineStage.Match['$match'] },
+      { $match: leadMatch as PipelineStage.Match['$match'] },
       { $unwind: '$notes' },
       { $count: 'total' },
     ];
@@ -415,11 +511,16 @@ export class LeadsService {
     };
   }
 
-  async createManualLead(
-    dto: CreateManualLeadDto,
-    createdBy: string,
-    creatorRole: string,
-  ) {
+  async createManualLead(dto: CreateManualLeadDto, user?: RequestUser) {
+    const creatorRole = typeof user?.role === 'string' ? user.role : 'admin';
+    const requesterEmail = this.normalizeEmail(user?.email);
+    const requesterId =
+      typeof user?.id === 'string' && user.id.trim() ? user.id.trim() : '';
+    const createdBy =
+      creatorRole === 'sales_manager' || creatorRole === 'super_admin'
+        ? requesterEmail || user?.username || user?.fullName || 'admin'
+        : user?.fullName || user?.username || requesterEmail || 'admin';
+
     // 1. Check for duplicates (Lead & Seller)
     await this.checkDuplicates(dto as CreateLeadDto);
 
@@ -430,6 +531,20 @@ export class LeadsService {
     const leadId = await this.getNextLeadId();
 
     // 4. Create Lead
+    const explicitAssignee = await this.resolveSalesManager({
+      id: (dto as unknown as { assignedSalesManagerId?: string })
+        .assignedSalesManagerId,
+      email: (dto as unknown as { assignedSalesManagerEmail?: string })
+        .assignedSalesManagerEmail,
+    });
+
+    const autoAssignee = await this.pickNextSalesManager();
+
+    const assigned =
+      creatorRole === 'sales_manager' && requesterEmail
+        ? { id: requesterId, email: requesterEmail }
+        : (explicitAssignee ?? autoAssignee);
+
     const created = await this.leadModel.create({
       ...dto,
       publicId: generatePublicId('lead', dto.email),
@@ -441,10 +556,16 @@ export class LeadsService {
       verificationMethod: 'manual',
       createdBy,
       creatorRole,
+      createdByUserId: requesterId || undefined,
+      assignedSalesManager: assigned?.email,
+      assignedSalesManagerId: assigned?.id,
+      assignedBy: requesterEmail || createdBy,
+      assignedAt: assigned ? new Date() : undefined,
       metadata: {
         createdBy,
         creatorRole,
         createdAt: new Date(),
+        ...(dto.metadata ?? {}),
       },
       lastRegistrationAttempt: new Date(),
       activityTimeline: [
@@ -497,6 +618,8 @@ export class LeadsService {
     const leadId = await this.getNextLeadId();
 
     // 5. Create Lead
+    const assigned = await this.pickNextSalesManager();
+
     const created = await this.leadModel.create({
       ...dto,
       publicId: generatePublicId('lead', dto.email),
@@ -505,6 +628,10 @@ export class LeadsService {
       leadStatus: 'new',
       createdBy: dto.fullName,
       creatorRole: 'seller',
+      assignedSalesManager: assigned?.email,
+      assignedSalesManagerId: assigned?.id,
+      assignedBy: assigned ? 'system' : undefined,
+      assignedAt: assigned ? new Date() : undefined,
       ipAddress,
       userAgent,
       leadScore,
@@ -542,6 +669,201 @@ export class LeadsService {
     return {
       success: true,
       data: created,
+    };
+  }
+
+  async importLeads(dto: ImportLeadsDto, user?: RequestUser) {
+    const requesterEmail = this.normalizeEmail(user?.email);
+    const requesterId =
+      typeof user?.id === 'string' && user.id.trim() ? user.id.trim() : '';
+
+    const leads = Array.isArray(dto.leads) ? dto.leads : [];
+    if (!leads.length) {
+      throw new BadRequestException('No leads provided');
+    }
+
+    const mode = dto.assignmentMode ?? 'auto';
+    const selectedIds = Array.isArray(dto.salesManagerIds)
+      ? dto.salesManagerIds.filter((id) => typeof id === 'string' && id.trim())
+      : [];
+
+    let resolvedSelected: Array<{ id: string; email: string }> = [];
+    if (mode === 'round_robin_selected' || mode === 'random_selected') {
+      const unique = Array.from(new Set(selectedIds));
+      const found = await this.userModel
+        .find({
+          _id: { $in: unique.filter((id) => Types.ObjectId.isValid(id)) },
+          role: 'sales_manager',
+          status: 'approved',
+        })
+        .select('_id email')
+        .lean<Array<{ _id: Types.ObjectId; email: string }>>()
+        .exec();
+      resolvedSelected = found
+        .map((u) => ({
+          id: u._id.toString(),
+          email: this.normalizeEmail(u.email),
+        }))
+        .filter((u) => u.email.length > 0);
+      if (!resolvedSelected.length) {
+        throw new BadRequestException('No valid sales managers selected');
+      }
+    }
+
+    let rrStart = 0;
+    if (mode === 'round_robin_selected') {
+      const counter = await this.counterModel.findOneAndUpdate(
+        { id: 'leadAssign:sales_manager:selected' },
+        { $inc: { seq: 1 } },
+        { new: true, upsert: true },
+      );
+      const seq = typeof counter.seq === 'number' ? counter.seq : 1;
+      rrStart = (seq - 1) % resolvedSelected.length;
+    }
+
+    const created: Array<Lead> = [];
+    const skipped: Array<{ index: number; reason: string }> = [];
+    const failed: Array<{ index: number; reason: string }> = [];
+
+    for (let i = 0; i < leads.length; i += 1) {
+      const row = leads[i];
+      try {
+        await this.checkDuplicates(row as unknown as CreateLeadDto);
+
+        const leadScore = this.calculateLeadScore(
+          row as unknown as CreateLeadDto,
+        );
+        const leadId = await this.getNextLeadId();
+
+        const explicitAssignee = await this.resolveSalesManager({
+          id: (row as unknown as { assignedSalesManagerId?: string })
+            .assignedSalesManagerId,
+          email: (row as unknown as { assignedSalesManagerEmail?: string })
+            .assignedSalesManagerEmail,
+        });
+
+        let assigned: { id: string; email: string } | undefined = undefined;
+        if (mode === 'specific') {
+          if (explicitAssignee) {
+            assigned = {
+              id: explicitAssignee.id,
+              email: explicitAssignee.email,
+            };
+          } else if (resolvedSelected.length === 1) {
+            assigned = resolvedSelected[0];
+          } else if (selectedIds.length === 1) {
+            const one = await this.resolveSalesManager({ id: selectedIds[0] });
+            if (one) assigned = { id: one.id, email: one.email };
+          }
+          if (!assigned) {
+            throw new BadRequestException(
+              'Missing assigned sales manager for this row',
+            );
+          }
+        } else if (mode === 'random_selected') {
+          const idx = Math.floor(Math.random() * resolvedSelected.length);
+          assigned = resolvedSelected[idx];
+        } else if (mode === 'round_robin_selected') {
+          assigned = resolvedSelected[(rrStart + i) % resolvedSelected.length];
+        } else {
+          const auto = explicitAssignee ?? (await this.pickNextSalesManager());
+          assigned = auto ? { id: auto.id, email: auto.email } : undefined;
+        }
+
+        const createdLead = await this.leadModel.create({
+          ...row,
+          publicId: generatePublicId('lead', row.email),
+          leadId,
+          source: 'marketing_team',
+          leadStatus: 'new',
+          leadScore,
+          isMobileVerified: true,
+          verificationMethod: 'manual',
+          createdBy: requesterEmail || 'super_admin',
+          createdByUserId: requesterId || undefined,
+          creatorRole: user?.role || 'super_admin',
+          assignedSalesManager: assigned?.email,
+          assignedSalesManagerId: assigned?.id,
+          assignedBy: requesterEmail || 'super_admin',
+          assignedAt: assigned ? new Date() : undefined,
+          metadata: {
+            createdBy: requesterEmail || 'super_admin',
+            creatorRole: user?.role || 'super_admin',
+            createdAt: new Date(),
+            import: true,
+            source: 'marketing_team',
+            ...(row.metadata ?? {}),
+          },
+          lastRegistrationAttempt: new Date(),
+          activityTimeline: [
+            {
+              action: 'lead_imported',
+              description: `Lead imported by ${requesterEmail || 'super_admin'}`,
+              performedBy: requesterEmail || 'super_admin',
+              timestamp: new Date(),
+              metadata: {
+                assignmentMode: mode,
+                assignedSalesManager: assigned?.email,
+              },
+            },
+          ],
+          notes: [
+            {
+              content: `Lead imported by ${requesterEmail || 'super_admin'}.`,
+              addedBy: requesterEmail || 'super_admin',
+              createdAt: new Date(),
+            },
+          ],
+        });
+
+        created.push(createdLead.toObject() as unknown as Lead);
+      } catch (err: unknown) {
+        let message = 'Failed to import';
+        if (err instanceof BadRequestException) {
+          const response = err.getResponse();
+          if (typeof response === 'string') {
+            message = response;
+          } else if (response && typeof response === 'object') {
+            const maybeMessage = (response as { message?: unknown }).message;
+            if (typeof maybeMessage === 'string') {
+              message = maybeMessage;
+            } else if (Array.isArray(maybeMessage)) {
+              const joined = maybeMessage
+                .filter((m) => typeof m === 'string')
+                .join(', ');
+              message = joined || 'Bad Request';
+            } else {
+              message = 'Bad Request';
+            }
+          } else {
+            message = 'Bad Request';
+          }
+        } else if (err instanceof Error) {
+          message = err.message;
+        }
+
+        const isDuplicate =
+          typeof message === 'string' &&
+          message.toLowerCase().includes('already exists');
+
+        if (isDuplicate) {
+          skipped.push({ index: i, reason: message });
+        } else {
+          failed.push({ index: i, reason: message });
+        }
+      }
+    }
+
+    return {
+      success: true,
+      data: {
+        createdCount: created.length,
+        skippedCount: skipped.length,
+        failedCount: failed.length,
+        created,
+        skipped,
+        failed,
+      },
     };
   }
 
