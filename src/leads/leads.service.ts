@@ -482,24 +482,21 @@ export class LeadsService {
     ipAddress?: string,
     userAgent?: string,
   ) {
-    // 1. Validate CAPTCHA
-    this.validateCaptcha(dto.captchaToken);
-
-    // 2. Check for duplicates (Lead & Seller)
+    // 1. Check for duplicates (Lead & Seller)
     await this.checkDuplicates(dto);
 
-    // 3. Check Cooldown (IP based)
+    // 2. Check Cooldown (IP based)
     if (ipAddress) {
       await this.checkIpCooldown(ipAddress);
     }
 
-    // 4. Calculate Lead Score
+    // 3. Calculate Lead Score
     const leadScore = this.calculateLeadScore(dto);
 
-    // 5. Generate Lead ID
+    // 4. Generate Lead ID
     const leadId = await this.getNextLeadId();
 
-    // 6. Create Lead
+    // 5. Create Lead
     const created = await this.leadModel.create({
       ...dto,
       publicId: generatePublicId('lead', dto.email),
@@ -514,7 +511,7 @@ export class LeadsService {
       isMobileVerified: false,
       verificationMethod: 'manual',
       metadata: {
-        captchaToken: dto.captchaToken,
+        termsAccepted: dto.termsAccepted,
         ipAddress,
         userAgent,
       },
@@ -546,12 +543,6 @@ export class LeadsService {
       success: true,
       data: created,
     };
-  }
-
-  private validateCaptcha(token: string) {
-    if (!token || token === 'invalid-token') {
-      throw new BadRequestException('Invalid CAPTCHA');
-    }
   }
 
   private async checkDuplicates(dto: CreateLeadDto) {

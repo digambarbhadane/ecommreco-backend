@@ -118,6 +118,9 @@ export class RolesService implements OnModuleInit {
       { name: 'sales_manager', isSystem: true },
       { name: 'accounts_manager', isSystem: true },
       { name: 'training_and_support_manager', isSystem: true },
+      { name: 'sales_admin', isSystem: true },
+      { name: 'operations_admin', isSystem: true },
+      { name: 'onboarding_manager', isSystem: true },
       { name: 'seller', isSystem: true },
     ];
 

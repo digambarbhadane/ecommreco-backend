@@ -1,6 +1,7 @@
 import { Transform } from 'class-transformer';
 import {
   IsEmail,
+  IsIn,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -46,9 +47,15 @@ export class CreateLeadDto {
   })
   gstNumber: string;
 
-  @IsNotEmpty()
-  @IsString()
-  captchaToken: string;
+  @IsIn([true], {
+    message: 'You must accept the Terms and Conditions and Privacy Policy',
+  })
+  @Transform(({ value }): unknown => {
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    return value;
+  })
+  termsAccepted: boolean;
 
   @IsOptional()
   @IsString()

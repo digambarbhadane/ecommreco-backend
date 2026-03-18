@@ -47,6 +47,7 @@ async function bootstrap() {
       'Authorization',
       'X-Requested-With',
       'Origin',
+      'x-setup-token',
     ],
     optionsSuccessStatus: 204,
   });
@@ -64,7 +65,7 @@ async function bootstrap() {
     const requestedHeaders =
       typeof req.headers['access-control-request-headers'] === 'string'
         ? req.headers['access-control-request-headers']
-        : 'Content-Type, Accept, Authorization, X-Requested-With, Origin';
+        : 'Content-Type, Accept, Authorization, X-Requested-With, Origin, x-setup-token';
     res.header('Access-Control-Allow-Headers', requestedHeaders);
     if (req.method === 'OPTIONS') {
       res.sendStatus(204);

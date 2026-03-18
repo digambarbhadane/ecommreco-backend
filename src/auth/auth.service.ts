@@ -1,7 +1,11 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { InjectConnection, InjectModel } from '@nestjs/mongoose';
+import { Connection, Model } from 'mongoose';
 import * as bcrypt from 'bcrypt';
 import { LoginDto } from './dto/login.dto';
 import type { Request } from 'express';
@@ -43,6 +47,7 @@ export class AuthService {
   constructor(
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    @InjectConnection() private readonly connection: Connection,
     @InjectModel(Seller.name)
     private readonly sellerModel: Model<SellerDocument>,
     @InjectModel(User.name)
@@ -54,32 +59,32 @@ export class AuthService {
   ) {}
 
   async login(dto: LoginDto, req: Request) {
-    const identifier = dto.email.toLowerCase();
-    const email = identifier;
-    const seller = await this.sellerModel.findOne({ email }).lean().exec();
-    const sellerUser = seller
-      ? {
-          id: seller._id.toString(),
-          name: seller.fullName,
-          email: seller.email,
-          role: 'seller' as const,
-          status: (allowedSellerStatuses.has(seller.onboardingStatus)
-            ? 'approved'
-            : 'pending') as AuthUser['status'],
-          profileCompleted: allowedSellerStatuses.has(seller.onboardingStatus),
-          companyName: seller.gstNumber,
-          mobile: seller.contactNumber,
-          password: seller.password ?? '',
-        }
-      : undefined;
-    const adminUser = await this.userModel
-      .findOne({
-        $or: [{ email: identifier }, { username: identifier }],
-      })
-      .lean()
-      .exec();
-    const adminAuthUser = adminUser
-      ? {
+    const rawIdentifier =
+      typeof dto.email === 'string' ? dto.email.trim() : String(dto.email);
+    const matchIdentifier = {
+      $regex: `^${this.escapeRegex(rawIdentifier)}$`,
+      $options: 'i',
+    };
+
+    const [seller, adminUser] = await Promise.all([
+      this.sellerModel
+        .findOne({
+          $or: [{ email: matchIdentifier }, { username: matchIdentifier }],
+        })
+        .lean()
+        .exec(),
+      this.userModel
+        .findOne({
+          $or: [{ email: matchIdentifier }, { username: matchIdentifier }],
+        })
+        .lean()
+        .exec(),
+    ]);
+
+    if (adminUser) {
+      const ok = await this.verifyPassword(adminUser.password, dto.password);
+      if (ok) {
+        const user: AuthUser = {
           id: adminUser._id.toString(),
           name: adminUser.fullName,
           email: adminUser.email,
@@ -89,25 +94,55 @@ export class AuthService {
           companyName: adminUser.companyName,
           mobile: adminUser.mobile,
           password: adminUser.password,
-        }
-      : undefined;
-    const user = sellerUser ?? adminAuthUser;
-    const passwordOk = user
-      ? await this.verifyPassword(user.password, dto.password)
-      : false;
-    if (
-      !user ||
-      !passwordOk ||
-      (user.role === 'seller' &&
-        !allowedSellerStatuses.has(seller?.onboardingStatus ?? ''))
-    ) {
-      throw new UnauthorizedException({
-        success: false,
-        message: 'Invalid credentials',
-        errorCode: 'INVALID_CREDENTIALS',
-      });
+        };
+
+        return this.issueToken(user, req);
+      }
     }
 
+    if (seller) {
+      const passwordOk = await this.verifyPassword(
+        seller.password ?? '',
+        dto.password,
+      );
+      if (
+        passwordOk &&
+        !allowedSellerStatuses.has(seller.onboardingStatus ?? '')
+      ) {
+        throw new UnauthorizedException({
+          success: false,
+          message: 'Account not approved yet',
+          errorCode: 'SELLER_NOT_APPROVED',
+        });
+      }
+      if (
+        passwordOk &&
+        allowedSellerStatuses.has(seller.onboardingStatus ?? '')
+      ) {
+        const user: AuthUser = {
+          id: seller._id.toString(),
+          name: seller.fullName,
+          email: seller.email,
+          role: 'seller',
+          status: 'approved',
+          profileCompleted: true,
+          companyName: seller.gstNumber,
+          mobile: seller.contactNumber,
+          password: seller.password ?? '',
+        };
+
+        return this.issueToken(user, req);
+      }
+    }
+
+    throw new UnauthorizedException({
+      success: false,
+      message: 'Invalid credentials',
+      errorCode: 'INVALID_CREDENTIALS',
+    });
+  }
+
+  private async issueToken(user: AuthUser, req: Request) {
     const now = new Date();
     const sessionId = randomUUID();
     const ipAddress = this.getIp(req);
@@ -178,42 +213,58 @@ export class AuthService {
     params: { setupToken?: string },
     dto: { fullName: string; email: string; password: string; mobile?: string },
   ) {
-    const expected = this.configService.get<string>('SUPER_ADMIN_SETUP_TOKEN');
-    if (!expected || expected.length === 0) {
-      throw new UnauthorizedException({
-        success: false,
-        message: 'Bootstrap is not enabled',
-        errorCode: 'BOOTSTRAP_DISABLED',
-      });
-    }
-    if (!params.setupToken || params.setupToken !== expected) {
-      throw new UnauthorizedException({
-        success: false,
-        message: 'Invalid setup token',
-        errorCode: 'INVALID_SETUP_TOKEN',
-      });
-    }
+    this.assertSetupToken(params);
 
     const existingSuperAdmin = await this.userModel
       .findOne({ role: 'super_admin' })
-      .select('_id')
-      .lean()
       .exec();
-    if (existingSuperAdmin) {
-      throw new UnauthorizedException({
-        success: false,
-        message: 'Super admin already exists',
-        errorCode: 'SUPER_ADMIN_EXISTS',
-      });
-    }
 
     const email = dto.email.toLowerCase();
-    const existingEmail = await this.userModel
+    const hashedPassword = await bcrypt.hash(dto.password, 10);
+    if (existingSuperAdmin) {
+      const existingEmail = String(
+        existingSuperAdmin.email || '',
+      ).toLowerCase();
+      if (existingEmail !== email) {
+        throw new UnauthorizedException({
+          success: false,
+          message: 'Super admin already exists',
+          errorCode: 'SUPER_ADMIN_EXISTS',
+        });
+      }
+
+      await this.userModel.updateOne(
+        { _id: existingSuperAdmin._id },
+        {
+          $set: {
+            fullName: dto.fullName,
+            email,
+            username: email,
+            password: hashedPassword,
+            mobile: dto.mobile,
+            status: 'approved',
+            profileCompleted: true,
+            mustChangePassword: false,
+            credentialsGeneratedAt: new Date(),
+            credentialsGeneratedBy: 'bootstrap',
+          },
+        },
+      );
+
+      const safe = await this.userModel
+        .findById(existingSuperAdmin._id)
+        .select('-password')
+        .lean()
+        .exec();
+      return { success: true, data: safe };
+    }
+
+    const existingEmailUser = await this.userModel
       .findOne({ email })
       .select('_id')
       .lean()
       .exec();
-    if (existingEmail) {
+    if (existingEmailUser) {
       throw new UnauthorizedException({
         success: false,
         message: 'Email already in use',
@@ -221,11 +272,11 @@ export class AuthService {
       });
     }
 
-    const hashedPassword = await bcrypt.hash(dto.password, 10);
     const created = await this.userModel.create({
       publicId: generatePublicId('super_admin', email),
       fullName: dto.fullName,
       email,
+      username: email,
       password: hashedPassword,
       role: 'super_admin',
       mobile: dto.mobile,
@@ -244,6 +295,192 @@ export class AuthService {
     return { success: true, data: safe };
   }
 
+  debugDb(params: { setupToken?: string }) {
+    this.assertSetupToken(params);
+    const db = this.connection.db;
+    return {
+      success: true,
+      data: {
+        readyState: this.connection.readyState,
+        host: this.connection.host,
+        port: this.connection.port,
+        name: this.connection.name,
+        database: db?.databaseName,
+      },
+    };
+  }
+
+  async debugSuperAdmin(params: { setupToken?: string }) {
+    this.assertSetupToken(params);
+    const superAdmin = await this.userModel
+      .findOne({ role: 'super_admin' })
+      .select('_id email username status role')
+      .lean()
+      .exec();
+    return {
+      success: true,
+      data: {
+        exists: Boolean(superAdmin),
+        superAdmin: superAdmin
+          ? {
+              id: superAdmin._id?.toString?.() ?? String(superAdmin._id),
+              email: superAdmin.email,
+              username: superAdmin.username,
+              role: superAdmin.role,
+              status: superAdmin.status,
+            }
+          : null,
+      },
+    };
+  }
+
+  async debugIdentity(
+    params: { setupToken?: string },
+    dto: { identifier?: string },
+  ) {
+    this.assertSetupToken(params);
+    const identifier =
+      typeof dto.identifier === 'string' ? dto.identifier.trim() : '';
+    const normalized = identifier.toLowerCase();
+    if (!normalized) {
+      return { success: true, data: { identifier: '', matches: [] } };
+    }
+
+    const matchIdentifier = {
+      $regex: `^${this.escapeRegex(normalized)}$`,
+      $options: 'i',
+    };
+
+    const [users, sellers] = await Promise.all([
+      this.userModel
+        .find({
+          $or: [{ email: matchIdentifier }, { username: matchIdentifier }],
+        })
+        .select('_id email username role status')
+        .limit(5)
+        .lean()
+        .exec(),
+      this.sellerModel
+        .find({
+          $or: [{ email: matchIdentifier }, { username: matchIdentifier }],
+        })
+        .select('_id email username onboardingStatus')
+        .limit(5)
+        .lean()
+        .exec(),
+    ]);
+
+    const matches: Array<Record<string, unknown>> = [];
+    for (const u of users) {
+      matches.push({
+        kind: 'user',
+        id: u._id?.toString?.() ?? String(u._id),
+        email: u.email,
+        username: u.username,
+        role: u.role,
+        status: u.status,
+      });
+    }
+    for (const s of sellers) {
+      matches.push({
+        kind: 'seller',
+        id: s._id?.toString?.() ?? String(s._id),
+        email: s.email,
+        username: (s as { username?: string }).username,
+        onboardingStatus: (s as { onboardingStatus?: string }).onboardingStatus,
+      });
+    }
+
+    return {
+      success: true,
+      data: {
+        identifier: normalized,
+        matches,
+      },
+    };
+  }
+
+  async devResetPassword(
+    params: { setupToken?: string },
+    dto: { identifier: string; password: string },
+  ) {
+    this.assertSetupToken(params);
+    const identifier =
+      typeof dto.identifier === 'string'
+        ? dto.identifier.trim().toLowerCase()
+        : '';
+    if (!identifier) {
+      throw new NotFoundException({
+        success: false,
+        message: 'User not found',
+        errorCode: 'USER_NOT_FOUND',
+      });
+    }
+
+    const matchIdentifier = {
+      $regex: `^${this.escapeRegex(identifier)}$`,
+      $options: 'i',
+    };
+
+    const hashedPassword = await bcrypt.hash(dto.password, 10);
+
+    const [user, seller] = await Promise.all([
+      this.userModel
+        .findOne({
+          $or: [{ email: matchIdentifier }, { username: matchIdentifier }],
+        })
+        .select('_id role email username')
+        .lean()
+        .exec(),
+      this.sellerModel
+        .findOne({
+          $or: [{ email: matchIdentifier }, { username: matchIdentifier }],
+        })
+        .select('_id email username')
+        .lean()
+        .exec(),
+    ]);
+
+    if (user) {
+      await this.userModel.updateOne(
+        { _id: user._id },
+        {
+          $set: {
+            password: hashedPassword,
+            email: String(user.email || identifier).toLowerCase(),
+            username: String(
+              user.username || user.email || identifier,
+            ).toLowerCase(),
+            mustChangePassword: false,
+          },
+        },
+      );
+      return { success: true, data: { role: user.role, identifier } };
+    }
+
+    if (seller) {
+      await this.sellerModel.updateOne(
+        { _id: seller._id },
+        {
+          $set: {
+            password: hashedPassword,
+            email: String(seller.email || identifier).toLowerCase(),
+            username: String(
+              seller.username || seller.email || identifier,
+            ).toLowerCase(),
+          },
+        },
+      );
+      return { success: true, data: { role: 'seller', identifier } };
+    }
+
+    throw new NotFoundException({
+      success: false,
+      message: 'User not found',
+      errorCode: 'USER_NOT_FOUND',
+    });
+  }
+
   private async verifyPassword(stored: string, provided: string) {
     if (typeof stored !== 'string' || typeof provided !== 'string')
       return false;
@@ -255,6 +492,34 @@ export class AuthService {
       return bcrypt.compare(provided, stored);
     }
     return stored === provided;
+  }
+
+  private escapeRegex(value: string) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  private assertSetupToken(params: { setupToken?: string }) {
+    const expected = this.configService.get<string>('SUPER_ADMIN_SETUP_TOKEN');
+    const nodeEnv = this.configService.get<string>('NODE_ENV') ?? 'development';
+    if (nodeEnv === 'production') {
+      if (!expected || expected.length === 0) {
+        throw new UnauthorizedException({
+          success: false,
+          message: 'Bootstrap is not enabled',
+          errorCode: 'BOOTSTRAP_DISABLED',
+        });
+      }
+      if (!params.setupToken || params.setupToken !== expected) {
+        throw new UnauthorizedException({
+          success: false,
+          message: 'Invalid setup token',
+          errorCode: 'INVALID_SETUP_TOKEN',
+        });
+      }
+      return;
+    }
+    void expected;
+    void params;
   }
 
   private getIp(req: Request) {

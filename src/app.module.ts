@@ -78,20 +78,18 @@ import { ProfileModule } from './profile/profile.module';
           'mongodb://127.0.0.1:27017/seller-insights-hub';
 
         const forceMemory = config.get<string>('USE_MEMORY_DB') === 'true';
-        if (!forceMemory && typeof uri === 'string' && uri.trim().length > 0) {
-          const ok = await canConnect(uri);
-          if (ok) return buildOptions(uri);
-        }
+        const shouldUseMemory = forceMemory || nodeEnv === 'test';
 
-        if (!forceMemory) {
+        if (!shouldUseMemory) {
+          if (typeof uri === 'string' && uri.trim().length > 0) {
+            const ok = await canConnect(uri);
+            if (ok) return buildOptions(uri);
+          }
+
           const ok = await canConnect(fallbackUri);
           if (ok) return buildOptions(fallbackUri);
         }
 
-        const shouldUseMemory = forceMemory || nodeEnv === 'test';
-        if (!shouldUseMemory) {
-          return buildOptions(fallbackUri);
-        }
         const memory = await MongoMemoryServer.create({
           instance: { dbName: 'seller-insights-hub', launchTimeout: 30000 },
         });

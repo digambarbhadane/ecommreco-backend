@@ -82,10 +82,7 @@ export class UsersService {
 
     await this.assertRoleExists(dto.role);
 
-    const username =
-      typeof dto.username === 'string' && dto.username.trim().length > 0
-        ? dto.username.trim()
-        : this.defaultUsernameFromEmail(email);
+    const username = email;
 
     const password =
       typeof dto.password === 'string' && dto.password.length > 0
@@ -129,6 +126,7 @@ export class UsersService {
     }
 
     const updates: Record<string, unknown> = {};
+    let emailUpdated: string | undefined;
     if (typeof dto.email === 'string') {
       const email = dto.email.toLowerCase();
       const existing = await this.userModel
@@ -140,9 +138,14 @@ export class UsersService {
         throw new BadRequestException('User with this email already exists');
       }
       updates.email = email;
+      emailUpdated = email;
     }
     if (typeof dto.fullName === 'string') updates.fullName = dto.fullName;
-    if (typeof dto.username === 'string') updates.username = dto.username;
+    if (emailUpdated) {
+      updates.username = emailUpdated;
+    } else if (typeof dto.username === 'string') {
+      updates.username = dto.username;
+    }
     if (typeof dto.companyName === 'string')
       updates.companyName = dto.companyName;
     if (typeof dto.mobile === 'string') updates.mobile = dto.mobile;
@@ -191,10 +194,7 @@ export class UsersService {
     if (!user) {
       throw new NotFoundException('User not found');
     }
-    const username =
-      typeof dto.username === 'string' && dto.username.trim().length > 0
-        ? dto.username.trim()
-        : (user.username ?? this.defaultUsernameFromEmail(user.email));
+    const username = user.email;
 
     const password =
       typeof dto.password === 'string' && dto.password.length > 0
@@ -238,11 +238,6 @@ export class UsersService {
     const base = Math.random().toString(36).slice(-10);
     const extra = Math.floor(Math.random() * 90 + 10).toString();
     return `${base}A1!${extra}`;
-  }
-
-  private defaultUsernameFromEmail(email: string) {
-    const local = email.split('@')[0] ?? 'user';
-    return `${local}${Math.floor(Math.random() * 1000)}`;
   }
 
   private escapeRegex(value: string) {

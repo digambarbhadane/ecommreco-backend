@@ -1,5 +1,11 @@
 import { Transform } from 'class-transformer';
-import { IsEmail, IsNotEmpty, IsString } from 'class-validator';
+import {
+  IsEmail,
+  IsIn,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+} from 'class-validator';
 
 export class RegisterSellerDto {
   @IsNotEmpty()
@@ -30,7 +36,17 @@ export class RegisterSellerDto {
   )
   gstNumber: string;
 
-  @IsNotEmpty()
+  @IsIn([true], {
+    message: 'You must accept the Terms and Conditions and Privacy Policy',
+  })
+  @Transform(({ value }): unknown => {
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    return value;
+  })
+  termsAccepted: boolean;
+
+  @IsOptional()
   @IsString()
-  captchaToken: string;
+  source?: string;
 }
