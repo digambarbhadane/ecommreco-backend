@@ -728,11 +728,58 @@ export class LeadsService {
     for (let i = 0; i < leads.length; i += 1) {
       const row = leads[i];
       try {
-        await this.checkDuplicates(row as unknown as CreateLeadDto);
+        const rawContact = (row as unknown as { contactNumber?: unknown })
+          .contactNumber;
+        const contactNumber = (
+          typeof rawContact === 'string'
+            ? rawContact
+            : typeof rawContact === 'number'
+              ? String(rawContact)
+              : ''
+        )
+          .trim()
+          .replace(/\D/g, '');
+        if (!/^\d{10}$/.test(contactNumber)) {
+          throw new BadRequestException(
+            'contactNumber must be exactly 10 digits',
+          );
+        }
 
-        const leadScore = this.calculateLeadScore(
-          row as unknown as CreateLeadDto,
-        );
+        const fullName = (() => {
+          const raw = (row as unknown as { fullName?: unknown }).fullName;
+          const next =
+            typeof raw === 'string'
+              ? raw.trim()
+              : typeof raw === 'number'
+                ? String(raw).trim()
+                : '';
+          return next.length ? next : `Lead ${contactNumber}`;
+        })();
+
+        const email = (() => {
+          const next = this.normalizeEmail(
+            (row as unknown as { email?: unknown }).email,
+          );
+          return next.length ? next : `${contactNumber}@marketing-team.local`;
+        })();
+
+        const gstNumber = (() => {
+          const raw = (row as unknown as { gstNumber?: unknown }).gstNumber;
+          const next =
+            typeof raw === 'string'
+              ? raw.trim().toUpperCase()
+              : typeof raw === 'number'
+                ? String(raw).trim().toUpperCase()
+                : '';
+          if (next.length) return next;
+          return `IMP${contactNumber}000`;
+        })();
+
+        const identity = { email, contactNumber, gstNumber };
+
+        await this.checkDuplicates(identity);
+
+        const leadScore = this.calculateLeadScore(identity);
         const leadId = await this.getNextLeadId();
 
         const explicitAssignee = await this.resolveSalesManager({
@@ -771,8 +818,11 @@ export class LeadsService {
         }
 
         const createdLead = await this.leadModel.create({
-          ...row,
-          publicId: generatePublicId('lead', row.email),
+          fullName,
+          email,
+          contactNumber,
+          gstNumber,
+          publicId: generatePublicId('lead', email),
           leadId,
           source: 'marketing_team',
           leadStatus: 'new',
@@ -867,7 +917,9 @@ export class LeadsService {
     };
   }
 
-  private async checkDuplicates(dto: CreateLeadDto) {
+  private async checkDuplicates(
+    dto: Pick<CreateLeadDto, 'email' | 'contactNumber' | 'gstNumber'>,
+  ) {
     const { email, contactNumber, gstNumber } = dto;
     const errors: Record<string, string> = {};
 
@@ -942,7 +994,9 @@ export class LeadsService {
     }
   }
 
-  private calculateLeadScore(dto: CreateLeadDto): number {
+  private calculateLeadScore(
+    dto: Pick<CreateLeadDto, 'email' | 'contactNumber' | 'gstNumber'>,
+  ): number {
     let score = 0;
 
     // Base score for completing form
