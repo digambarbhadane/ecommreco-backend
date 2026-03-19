@@ -11,17 +11,17 @@ export class Lead {
   @Prop({ unique: true, index: true, required: true })
   leadId: string;
 
-  @Prop({ required: true, index: true })
-  fullName: string;
+  @Prop({ index: true })
+  fullName?: string;
 
   @Prop({ required: true })
   contactNumber: string;
 
-  @Prop({ required: true, index: true })
-  email: string;
+  @Prop({ index: true })
+  email?: string;
 
-  @Prop({ required: true })
-  gstNumber: string;
+  @Prop()
+  gstNumber?: string;
 
   @Prop()
   firmName?: string;
@@ -159,8 +159,8 @@ export class Lead {
   @Prop({ default: 'new' })
   leadStatus: 'new' | 'contacted' | 'interested' | 'converted' | 'rejected';
 
-  @Prop({ default: 'website' })
-  source: string;
+  @Prop()
+  source?: string;
 
   @Prop()
   ipAddress?: string;

@@ -21,6 +21,7 @@ import { ConvertLeadDto } from './dto/convert-lead.dto';
 import { CreateLeadDto } from './dto/create-lead.dto';
 import { CreateManualLeadDto } from './dto/create-manual-lead.dto';
 import { ImportLeadsDto } from './dto/import-leads.dto';
+import { UpdateLeadDto } from './dto/update-lead.dto';
 import { UpdateLeadStatusDto } from './dto/update-lead-status.dto';
 import { LeadsService } from './leads.service';
 
@@ -190,6 +191,22 @@ export class LeadsController {
   ) {
     await this.leadsService.assertLeadAccess(id, req.user);
     return this.leadsService.updateLeadStatus(
+      id,
+      dto,
+      req.user?.email || 'admin',
+    );
+  }
+
+  @Patch(':id')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('super_admin', 'sales_manager')
+  async updateLeadDetails(
+    @Param('id') id: string,
+    @Body() dto: UpdateLeadDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    await this.leadsService.assertLeadAccess(id, req.user);
+    return this.leadsService.updateLeadDetails(
       id,
       dto,
       req.user?.email || 'admin',

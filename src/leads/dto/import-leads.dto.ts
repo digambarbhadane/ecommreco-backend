@@ -36,6 +36,22 @@ const toOptionalUpper = (value: unknown) => {
   return typeof next === 'string' ? next.toUpperCase() : undefined;
 };
 
+const normalizeContactNumber = (value: unknown) => {
+  const raw =
+    typeof value === 'string'
+      ? value
+      : typeof value === 'number'
+        ? String(value)
+        : typeof value === 'bigint'
+          ? value.toString()
+          : '';
+
+  const digits = raw.trim().replace(/\D/g, '');
+  if (digits.length === 12 && digits.startsWith('91')) return digits.slice(2);
+  if (digits.length === 11 && digits.startsWith('0')) return digits.slice(1);
+  return digits;
+};
+
 export class ImportLeadRowDto {
   @IsOptional()
   @IsString()
@@ -45,10 +61,7 @@ export class ImportLeadRowDto {
   @IsNotEmpty()
   @IsString()
   @Transform(({ value }) => {
-    const next = String(value ?? '')
-      .trim()
-      .replace(/\D/g, '');
-    return next;
+    return normalizeContactNumber(value);
   })
   @Matches(/^\d{10}$/, {
     message: 'contactNumber must be exactly 10 digits',
@@ -74,6 +87,31 @@ export class ImportLeadRowDto {
   @IsString()
   @Transform(({ value }) => toOptionalTrimmedString(value))
   source?: string;
+
+  @IsOptional()
+  @IsString()
+  @Transform(({ value }) => toOptionalTrimmedString(value))
+  firmName?: string;
+
+  @IsOptional()
+  @IsString()
+  @Transform(({ value }) => toOptionalTrimmedString(value))
+  city?: string;
+
+  @IsOptional()
+  @IsString()
+  @Transform(({ value }) => toOptionalTrimmedString(value))
+  state?: string;
+
+  @IsOptional()
+  @IsString()
+  @Transform(({ value }) => toOptionalTrimmedString(value))
+  businessType?: string;
+
+  @IsOptional()
+  @IsString()
+  @Transform(({ value }) => toOptionalTrimmedString(value))
+  pipelineStage?: string;
 
   @IsOptional()
   @IsString()
