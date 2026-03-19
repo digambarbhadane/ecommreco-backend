@@ -44,6 +44,7 @@ type ScheduleFollowUpBody = {
   scheduledAt: string | number | Date;
   notes: string;
 };
+type BulkAssignLeadsBody = { leadIds: string[]; salesManagerId: string };
 
 @Controller('leads')
 export class LeadsController {
@@ -193,6 +194,20 @@ export class LeadsController {
       dto,
       req.user?.email || 'admin',
     );
+  }
+
+  @Patch('assign')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('super_admin')
+  bulkAssignLeads(
+    @Body() body: BulkAssignLeadsBody,
+    @Req() req: RequestWithUser,
+  ) {
+    return this.leadsService.bulkAssignLeadsToSalesManager({
+      leadIds: body.leadIds,
+      salesManagerId: body.salesManagerId,
+      user: req.user,
+    });
   }
 
   @Post(':id/convert')

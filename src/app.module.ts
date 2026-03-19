@@ -50,8 +50,8 @@ import { ProfileModule } from './profile/profile.module';
           try {
             const connection = await mongoose
               .createConnection(trimmed, {
-                serverSelectionTimeoutMS: 3000,
-                connectTimeoutMS: 3000,
+                serverSelectionTimeoutMS: 10000,
+                connectTimeoutMS: 10000,
                 dbName:
                   typeof dbName === 'string' && dbName.trim().length > 0
                     ? dbName.trim()

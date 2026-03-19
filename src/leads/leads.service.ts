@@ -208,6 +208,90 @@ export class LeadsService {
     }
   }
 
+  async bulkAssignLeadsToSalesManager(params: {
+    leadIds: string[];
+    salesManagerId: string;
+    user?: RequestUser;
+  }) {
+    const leadIds = Array.from(
+      new Set(
+        (Array.isArray(params.leadIds) ? params.leadIds : [])
+          .map((id) => (typeof id === 'string' ? id.trim() : ''))
+          .filter(Boolean),
+      ),
+    );
+
+    if (!leadIds.length) {
+      throw new BadRequestException('leadIds is required');
+    }
+
+    const salesManagerId =
+      typeof params.salesManagerId === 'string'
+        ? params.salesManagerId.trim()
+        : '';
+    if (!salesManagerId) {
+      throw new BadRequestException('salesManagerId is required');
+    }
+
+    const salesManager = await this.resolveSalesManager({ id: salesManagerId });
+    if (!salesManager) {
+      throw new BadRequestException('Sales manager not found');
+    }
+
+    const actorEmail = this.normalizeEmail(params.user?.email);
+    const actorName =
+      typeof params.user?.fullName === 'string' && params.user.fullName.trim()
+        ? params.user.fullName.trim()
+        : typeof params.user?.username === 'string' &&
+            params.user.username.trim()
+          ? params.user.username.trim()
+          : typeof params.user?.name === 'string' && params.user.name.trim()
+            ? params.user.name.trim()
+            : '';
+    const performedBy = actorEmail || actorName || 'super_admin';
+
+    const now = new Date();
+    const orFilters: Array<Record<string, unknown>> = [];
+    for (const id of leadIds) {
+      orFilters.push({ leadId: id });
+      if (id.length === 24 && Types.ObjectId.isValid(id)) {
+        orFilters.push({ _id: new Types.ObjectId(id) });
+      }
+    }
+
+    const result = await this.leadModel.updateMany(
+      { $or: orFilters },
+      {
+        $set: {
+          assignedSalesManager: salesManager.email,
+          assignedSalesManagerId: salesManager.id,
+          assignedBy: performedBy,
+          assignedAt: now,
+        },
+        $push: {
+          activityTimeline: {
+            action: 'lead_assigned',
+            description: `Lead assigned to ${salesManager.email}`,
+            performedBy,
+            timestamp: now,
+            metadata: {
+              assignedSalesManager: salesManager.email,
+              assignedSalesManagerId: salesManager.id,
+            },
+          },
+        },
+      },
+    );
+
+    return {
+      success: true,
+      data: {
+        matchedCount: result.matchedCount ?? 0,
+        modifiedCount: result.modifiedCount ?? 0,
+      },
+    };
+  }
+
   async listFollowUps(params: {
     page: number;
     limit: number;
