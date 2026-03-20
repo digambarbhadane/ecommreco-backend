@@ -1788,7 +1788,7 @@ export class LeadsService {
     const identityFilter = this.buildLeadIdentityFilter(id);
     // Check if notes is an array, if not (e.g. string or null), reset it to empty array
     const existing = await this.leadModel
-      .findById(id)
+      .findOne(identityFilter)
       .select('notes')
       .lean<{ notes?: unknown }>()
       .exec();
@@ -1875,8 +1875,7 @@ export class LeadsService {
 
     const expiryDate = new Date(Date.now() + 24 * 60 * 60 * 1000);
     const paymentLink = this.buildPaymentLink({
-      sellerEmail:
-        typeof lead.email === 'string' ? lead.email : '',
+      sellerEmail: typeof lead.email === 'string' ? lead.email : '',
       gstSlots: lead.subscriptionConfig.gstSlots,
       durationYears: lead.subscriptionConfig.durationYears,
       amount: lead.subscriptionConfig.amount,
