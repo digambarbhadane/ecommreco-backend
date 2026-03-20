@@ -23,6 +23,15 @@ export class Lead {
   @Prop()
   gstNumber?: string;
 
+  @Prop({ type: [String] })
+  gstNumbers?: string[];
+
+  @Prop()
+  gstCount?: number;
+
+  @Prop({ type: [String] })
+  marketplaces?: string[];
+
   @Prop()
   firmName?: string;
 

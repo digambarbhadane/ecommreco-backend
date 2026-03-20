@@ -1,5 +1,8 @@
 import {
+  IsArray,
   IsEmail,
+  IsInt,
+  Min,
   IsOptional,
   IsString,
   Matches,
@@ -26,6 +29,21 @@ export class UpdateLeadDto {
   @IsString()
   @MaxLength(16)
   gstNumber?: string;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  gstNumbers?: string[];
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  gstCount?: number;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  marketplaces?: string[];
 
   @IsOptional()
   @IsString()

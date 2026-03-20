@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   Headers,
   HttpCode,
@@ -256,6 +257,70 @@ export class LeadsController {
     return this.leadsService.addNote(
       id,
       body.content,
+      req.user?.email || 'admin',
+    );
+  }
+
+  @Patch(':id/notes/:noteId')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('super_admin', 'sales_manager')
+  async updateNote(
+    @Param('id') id: string,
+    @Param('noteId') noteId: string,
+    @Body('content') content: string,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    await this.leadsService.assertLeadAccess(id, req.user);
+    return this.leadsService.updateNote(
+      id,
+      noteId,
+      content,
+      req.user?.email || 'admin',
+    );
+  }
+
+  @Patch(':id/follow-ups/:followUpId')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('super_admin', 'sales_manager')
+  async updateFollowUp(
+    @Param('id') id: string,
+    @Param('followUpId') followUpId: string,
+    @Body() body: { scheduledAt?: string | Date; notes?: string },
+    @Req() req: AuthenticatedRequest,
+  ) {
+    await this.leadsService.assertLeadAccess(id, req.user);
+    return this.leadsService.updateFollowUp(
+      id,
+      followUpId,
+      body,
+      req.user?.email || 'admin',
+    );
+  }
+
+  @Delete(':id/notes/:noteId')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('super_admin', 'sales_manager')
+  async deleteNote(
+    @Param('id') id: string,
+    @Param('noteId') noteId: string,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    await this.leadsService.assertLeadAccess(id, req.user);
+    return this.leadsService.deleteNote(id, noteId, req.user?.email || 'admin');
+  }
+
+  @Delete(':id/follow-ups/:followUpId')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('super_admin', 'sales_manager')
+  async deleteFollowUp(
+    @Param('id') id: string,
+    @Param('followUpId') followUpId: string,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    await this.leadsService.assertLeadAccess(id, req.user);
+    return this.leadsService.deleteFollowUp(
+      id,
+      followUpId,
       req.user?.email || 'admin',
     );
   }

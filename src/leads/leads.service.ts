@@ -1716,6 +1716,9 @@ export class LeadsService {
       'email',
       'contactNumber',
       'gstNumber',
+      'gstNumbers',
+      'gstCount',
+      'marketplaces',
       'firmName',
       'city',
       'state',
@@ -1816,6 +1819,110 @@ export class LeadsService {
       { new: true },
     );
     return { success: true, data: lead };
+  }
+
+  async updateNote(
+    id: string,
+    noteId: string,
+    content: string,
+    updatedBy: string,
+  ) {
+    const identityFilter = this.buildLeadIdentityFilter(id);
+    const updated = await this.leadModel.findOneAndUpdate(
+      identityFilter,
+      {
+        $set: { 'notes.$[n].content': content },
+        $push: {
+          activityTimeline: {
+            action: 'note_updated',
+            description: 'Note updated',
+            performedBy: updatedBy,
+            timestamp: new Date(),
+          },
+        },
+      },
+      {
+        arrayFilters: [{ 'n._id': new Types.ObjectId(noteId) }],
+        new: true,
+      },
+    );
+    return { success: true, data: updated };
+  }
+
+  async deleteNote(id: string, noteId: string, deletedBy: string) {
+    const identityFilter = this.buildLeadIdentityFilter(id);
+    const updated = await this.leadModel.findOneAndUpdate(
+      identityFilter,
+      {
+        $pull: { notes: { _id: new Types.ObjectId(noteId) } },
+        $push: {
+          activityTimeline: {
+            action: 'note_deleted',
+            description: 'Note deleted',
+            performedBy: deletedBy,
+            timestamp: new Date(),
+          },
+        },
+      },
+      { new: true },
+    );
+    return { success: true, data: updated };
+  }
+
+  async updateFollowUp(
+    id: string,
+    followUpId: string,
+    body: { scheduledAt?: string | Date; notes?: string },
+    updatedBy: string,
+  ) {
+    const identityFilter = this.buildLeadIdentityFilter(id);
+    const setOps: Record<string, unknown> = {};
+    if (body.scheduledAt) {
+      const d = new Date(body.scheduledAt);
+      setOps['followUps.$[f].scheduledAt'] = d;
+    }
+    if (typeof body.notes === 'string') {
+      setOps['followUps.$[f].notes'] = body.notes;
+    }
+    const updated = await this.leadModel.findOneAndUpdate(
+      identityFilter,
+      {
+        $set: setOps,
+        $push: {
+          activityTimeline: {
+            action: 'follow_up_updated',
+            description: 'Follow-up updated',
+            performedBy: updatedBy,
+            timestamp: new Date(),
+          },
+        },
+      },
+      {
+        arrayFilters: [{ 'f._id': new Types.ObjectId(followUpId) }],
+        new: true,
+      },
+    );
+    return { success: true, data: updated };
+  }
+
+  async deleteFollowUp(id: string, followUpId: string, deletedBy: string) {
+    const identityFilter = this.buildLeadIdentityFilter(id);
+    const updated = await this.leadModel.findOneAndUpdate(
+      identityFilter,
+      {
+        $pull: { followUps: { _id: new Types.ObjectId(followUpId) } },
+        $push: {
+          activityTimeline: {
+            action: 'follow_up_deleted',
+            description: 'Follow-up deleted',
+            performedBy: deletedBy,
+            timestamp: new Date(),
+          },
+        },
+      },
+      { new: true },
+    );
+    return { success: true, data: updated };
   }
 
   async updateSubscription(
