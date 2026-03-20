@@ -1610,11 +1610,20 @@ export class LeadsService {
   }
 
   async listLeads(
-    params: { status?: string; limit?: number; skip?: number },
+    params: {
+      status?: string;
+      limit?: number;
+      skip?: number;
+      page?: number;
+      search?: string;
+    },
     user?: RequestUser,
   ) {
-    const limit = Math.max(0, params.limit ?? 10);
-    const skip = Math.max(0, params.skip ?? 0);
+    const limit = Math.max(1, params.limit ?? 10);
+    const skip =
+      typeof params.page === 'number' && params.page > 0
+        ? (params.page - 1) * limit
+        : Math.max(0, params.skip ?? 0);
     const filter: Record<string, unknown> = {};
     if (params.status) {
       filter.leadStatus = params.status;
@@ -1623,8 +1632,27 @@ export class LeadsService {
     if (salesFilter) {
       Object.assign(filter, salesFilter);
     }
+    const search =
+      typeof params.search === 'string' ? params.search.trim() : '';
+    const hasSearch = search.length > 0;
+    const searchOrFilters: Array<Record<string, unknown>> = [];
+    if (hasSearch) {
+      searchOrFilters.push(
+        { fullName: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { contactNumber: { $regex: search, $options: 'i' } },
+        { gstNumber: { $regex: search, $options: 'i' } },
+        { leadId: { $regex: search, $options: 'i' } },
+        { publicId: { $regex: search, $options: 'i' } },
+      );
+      if (Types.ObjectId.isValid(search)) {
+        searchOrFilters.unshift({ _id: new Types.ObjectId(search) });
+      }
+    }
+    const searchFilter: Record<string, unknown> =
+      hasSearch && searchOrFilters.length ? { $or: searchOrFilters } : {};
     const data = await this.leadModel
-      .find(filter)
+      .find(hasSearch ? { $and: [filter, searchFilter] } : filter)
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
@@ -1668,7 +1696,9 @@ export class LeadsService {
       await this.leadModel.bulkWrite(ops);
     }
 
-    const total = await this.leadModel.countDocuments(filter);
+    const total = await this.leadModel.countDocuments(
+      hasSearch ? { $and: [filter, searchFilter] } : filter,
+    );
     return {
       success: true,
       data,
@@ -1845,7 +1875,8 @@ export class LeadsService {
 
     const expiryDate = new Date(Date.now() + 24 * 60 * 60 * 1000);
     const paymentLink = this.buildPaymentLink({
-      sellerEmail: lead.email,
+      sellerEmail:
+        typeof lead.email === 'string' ? lead.email : '',
       gstSlots: lead.subscriptionConfig.gstSlots,
       durationYears: lead.subscriptionConfig.durationYears,
       amount: lead.subscriptionConfig.amount,

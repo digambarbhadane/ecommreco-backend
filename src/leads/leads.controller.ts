@@ -98,17 +98,22 @@ export class LeadsController {
   @Roles('super_admin', 'sales_manager')
   listLeads(
     @Query('status') status?: string,
+    @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('skip') skip?: string,
+    @Query('search') search?: string,
     @Req() req?: RequestWithUser,
   ) {
+    const parsedPage = typeof page === 'string' ? Number(page) : undefined;
     const parsedLimit = typeof limit === 'string' ? Number(limit) : undefined;
     const parsedSkip = typeof skip === 'string' ? Number(skip) : undefined;
     return this.leadsService.listLeads(
       {
         status,
+        page: Number.isFinite(parsedPage) ? parsedPage : undefined,
         limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
         skip: Number.isFinite(parsedSkip) ? parsedSkip : undefined,
+        search,
       },
       req?.user,
     );

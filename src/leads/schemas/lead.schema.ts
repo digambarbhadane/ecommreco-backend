@@ -14,7 +14,7 @@ export class Lead {
   @Prop({ index: true })
   fullName?: string;
 
-  @Prop({ required: true })
+  @Prop({ required: true, index: true })
   contactNumber: string;
 
   @Prop({ index: true })
@@ -200,3 +200,9 @@ export class Lead {
 }
 
 export const LeadSchema = SchemaFactory.createForClass(Lead);
+// Text index for server-side search across key fields
+LeadSchema.index({
+  fullName: 'text',
+  email: 'text',
+  firmName: 'text',
+});
