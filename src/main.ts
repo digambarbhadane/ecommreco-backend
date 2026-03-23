@@ -7,6 +7,31 @@ import { AppModule } from './app.module';
 const isErrnoException = (err: unknown): err is NodeJS.ErrnoException =>
   !!err && typeof err === 'object' && 'code' in err;
 
+const normalizeOrigin = (value: string) => value.trim().replace(/\/+$/, '');
+
+const parseBooleanEnv = (value: string | undefined) =>
+  typeof value === 'string' && value.trim().toLowerCase() === 'true';
+
+const splitOrigins = (value: string | undefined) => {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return [];
+  }
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+    .map(normalizeOrigin);
+};
+
+const isRenderOrigin = (origin: string) => {
+  try {
+    const url = new URL(origin);
+    return url.hostname.toLowerCase().endsWith('.onrender.com');
+  } catch {
+    return false;
+  }
+};
+
 async function listenWithFallbackPorts(
   app: Awaited<ReturnType<typeof NestFactory.create>>,
   preferredPort: number,
@@ -46,29 +71,57 @@ async function bootstrap() {
   );
   app.setGlobalPrefix('api/v1');
   const config = app.get(ConfigService);
+  const nodeEnv = config.get<string>('NODE_ENV') ?? 'development';
+  const isProduction = nodeEnv === 'production';
+  const allowAllOrigins = parseBooleanEnv(config.get<string>('CORS_ALLOW_ALL'));
+  const allowRenderOrigins = parseBooleanEnv(
+    config.get<string>('CORS_ALLOW_RENDER_ORIGINS') ?? 'true',
+  );
+  const configuredOrigins = [
+    ...splitOrigins(config.get<string>('FRONTEND_URL')),
+    ...splitOrigins(config.get<string>('FRONTEND_URLS')),
+    ...splitOrigins(config.get<string>('RENDER_EXTERNAL_URL')),
+  ];
+  const whitelist = new Set(
+    [
+      'http://localhost:5173',
+      'http://127.0.0.1:5173',
+      'http://[::1]:5173',
+      ...configuredOrigins,
+    ].map(normalizeOrigin),
+  );
 
   app.enableCors({
     origin: (
       origin: string | undefined,
       callback: (err: Error | null, allow?: boolean | string) => void,
     ) => {
-      const whitelist = new Set(
-        [
-          'http://localhost:5173',
-          'http://127.0.0.1:5173',
-          'http://[::1]:5173',
-          process.env.FRONTEND_URL,
-        ].filter((v): v is string => typeof v === 'string' && v.length > 0),
-      );
       if (!origin) {
         callback(null, true);
         return;
       }
-      if (whitelist.has(origin)) {
+      if (isProduction && configuredOrigins.length === 0 && !allowAllOrigins) {
+        Logger.warn(
+          'FRONTEND_URL/FRONTEND_URLS not configured in production. Temporarily allowing all origins.',
+        );
         callback(null, origin);
         return;
       }
-      callback(new Error(`CORS blocked for origin: ${origin}`));
+      if (allowAllOrigins) {
+        callback(null, origin);
+        return;
+      }
+      const normalizedOrigin = normalizeOrigin(origin);
+      if (allowRenderOrigins && isRenderOrigin(normalizedOrigin)) {
+        callback(null, origin);
+        return;
+      }
+      if (whitelist.has(normalizedOrigin)) {
+        callback(null, origin);
+        return;
+      }
+      Logger.warn(`CORS blocked for origin: ${origin}`);
+      callback(null, false);
     },
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
     credentials: true,

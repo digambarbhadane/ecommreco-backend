@@ -96,7 +96,6 @@ const DEFAULT_LOCAL_MONGODB_URI = 'mongodb://127.0.0.1:27017/sellerspl';
 
         const nodeEnv = config.get<string>('NODE_ENV') ?? 'development';
         const uri = config.get<string>('MONGODB_URI');
-        console.log('MONGODB_URI', uri);
         if (nodeEnv === 'production') {
           if (typeof uri === 'string' && uri.trim().length > 0) {
             mongoLogger.log(
