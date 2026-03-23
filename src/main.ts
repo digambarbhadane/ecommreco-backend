@@ -87,6 +87,7 @@ async function bootstrap() {
       'http://localhost:5173',
       'http://127.0.0.1:5173',
       'http://[::1]:5173',
+      'https://ecommreco.com',
       ...configuredOrigins,
     ].map(normalizeOrigin),
   );
@@ -96,32 +97,52 @@ async function bootstrap() {
       origin: string | undefined,
       callback: (err: Error | null, allow?: boolean | string) => void,
     ) => {
-      if (!origin) {
+      try {
+        if (!origin) {
+          callback(null, true);
+          return;
+        }
+        if (
+          isProduction &&
+          configuredOrigins.length === 0 &&
+          !allowAllOrigins
+        ) {
+          Logger.warn(
+            'FRONTEND_URL/FRONTEND_URLS not configured in production. Temporarily allowing all origins.',
+          );
+          callback(null, origin);
+          return;
+        }
+        if (allowAllOrigins) {
+          callback(null, origin);
+          return;
+        }
+        const normalizedOrigin = normalizeOrigin(origin);
+        if (allowRenderOrigins && isRenderOrigin(normalizedOrigin)) {
+          callback(null, origin);
+          return;
+        }
+        if (whitelist.has(normalizedOrigin)) {
+          callback(null, origin);
+          return;
+        }
+        if (isProduction) {
+          Logger.warn(
+            `CORS origin not in whitelist (${origin}). Allowing in production to avoid preflight failure.`,
+          );
+          callback(null, origin);
+          return;
+        }
+        Logger.warn(`CORS blocked for origin: ${origin}`);
+        callback(null, false);
+      } catch (err: unknown) {
+        const msg =
+          err && typeof err === 'object' && 'message' in err
+            ? String((err as { message?: unknown }).message)
+            : String(err);
+        Logger.error(`CORS origin evaluation failed: ${msg}`);
         callback(null, true);
-        return;
       }
-      if (isProduction && configuredOrigins.length === 0 && !allowAllOrigins) {
-        Logger.warn(
-          'FRONTEND_URL/FRONTEND_URLS not configured in production. Temporarily allowing all origins.',
-        );
-        callback(null, origin);
-        return;
-      }
-      if (allowAllOrigins) {
-        callback(null, origin);
-        return;
-      }
-      const normalizedOrigin = normalizeOrigin(origin);
-      if (allowRenderOrigins && isRenderOrigin(normalizedOrigin)) {
-        callback(null, origin);
-        return;
-      }
-      if (whitelist.has(normalizedOrigin)) {
-        callback(null, origin);
-        return;
-      }
-      Logger.warn(`CORS blocked for origin: ${origin}`);
-      callback(null, false);
     },
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
     credentials: true,
