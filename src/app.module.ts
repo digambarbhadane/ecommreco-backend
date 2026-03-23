@@ -17,6 +17,7 @@ import { AccountManagerModule } from './account-manager/account-manager.module';
 import { RolesModule } from './roles/roles.module';
 import { UsersModule } from './users/users.module';
 import { ProfileModule } from './profile/profile.module';
+import { SubscriptionModule } from './subscription/subscription.module';
 
 const mongoLogger = new Logger('MongoDB');
 
@@ -196,6 +197,7 @@ const DEFAULT_LOCAL_MONGODB_URI = 'mongodb://127.0.0.1:27017/sellerspl';
     RolesModule,
     UsersModule,
     ProfileModule,
+    SubscriptionModule,
   ],
 })
 export class AppModule {}

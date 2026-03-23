@@ -180,7 +180,10 @@ export class LeadsService {
   }
 
   private buildLeadIdentityFilter(id: string) {
-    const filters: Array<Record<string, unknown>> = [{ leadId: id }];
+    const filters: Array<Record<string, unknown>> = [
+      { leadId: id },
+      { publicId: id },
+    ];
     if (
       typeof id === 'string' &&
       id.length === 24 &&
@@ -382,11 +385,8 @@ export class LeadsService {
       throw new BadRequestException('Invalid follow-up status');
     }
 
-    if (
-      !Types.ObjectId.isValid(leadId) ||
-      !Types.ObjectId.isValid(followUpId)
-    ) {
-      throw new BadRequestException('Invalid Lead ID or Follow-up ID');
+    if (!Types.ObjectId.isValid(followUpId)) {
+      throw new BadRequestException('Invalid Follow-up ID');
     }
 
     const lead = await this.leadModel.findOne(

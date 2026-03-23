@@ -4,9 +4,6 @@ import { ConfigService } from '@nestjs/config';
 import * as express from 'express';
 import { AppModule } from './app.module';
 
-const isErrnoException = (err: unknown): err is NodeJS.ErrnoException =>
-  !!err && typeof err === 'object' && 'code' in err;
-
 const normalizeOrigin = (value: string) => value.trim().replace(/\/+$/, '');
 
 const parseBooleanEnv = (value: string | undefined) =>
@@ -32,31 +29,36 @@ const isRenderOrigin = (origin: string) => {
   }
 };
 
-async function listenWithFallbackPorts(
-  app: Awaited<ReturnType<typeof NestFactory.create>>,
-  preferredPort: number,
-) {
-  const host = '0.0.0.0';
-  const maxAttempts = 20;
-
-  for (let i = 0; i < maxAttempts; i += 1) {
-    const port = preferredPort + i;
-    try {
-      await app.listen(port, host);
-      return port;
-    } catch (err: unknown) {
-      if (isErrnoException(err) && err.code === 'EADDRINUSE') {
-        Logger.warn(`Port ${port} is in use. Trying ${port + 1}...`);
-        continue;
-      }
-      throw err;
-    }
+const isLocalOrPrivateHostname = (hostname: string) => {
+  const host = hostname.toLowerCase();
+  if (
+    host === 'localhost' ||
+    host === '127.0.0.1' ||
+    host === '::1' ||
+    host === '0.0.0.0' ||
+    host === '::'
+  ) {
+    return true;
   }
+  if (/^10\./.test(host) || /^192\.168\./.test(host)) {
+    return true;
+  }
+  const match = host.match(/^172\.(\d+)\./);
+  if (!match) {
+    return false;
+  }
+  const second = Number(match[1]);
+  return second >= 16 && second <= 31;
+};
 
-  throw new Error(
-    `Could not bind to any port in range ${preferredPort}-${preferredPort + maxAttempts - 1}`,
-  );
-}
+const isPrivateNetworkOrigin = (origin: string) => {
+  try {
+    const url = new URL(origin);
+    return isLocalOrPrivateHostname(url.hostname);
+  } catch {
+    return false;
+  }
+};
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -118,6 +120,10 @@ async function bootstrap() {
           return;
         }
         const normalizedOrigin = normalizeOrigin(origin);
+        if (!isProduction && isPrivateNetworkOrigin(normalizedOrigin)) {
+          callback(null, origin);
+          return;
+        }
         if (allowRenderOrigins && isRenderOrigin(normalizedOrigin)) {
           callback(null, origin);
           return;
@@ -164,8 +170,8 @@ async function bootstrap() {
     typeof parsedPort === 'number' && Number.isFinite(parsedPort)
       ? parsedPort
       : 5000;
-  const boundPort = await listenWithFallbackPorts(app, port);
-  Logger.log(`API running on port ${boundPort}`);
+  await app.listen(port, '0.0.0.0');
+  Logger.log(`API running on port ${port}`);
 }
 
 void bootstrap();
