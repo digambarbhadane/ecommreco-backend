@@ -39,26 +39,26 @@ const DEFAULT_LOCAL_MONGODB_URI = 'mongodb://127.0.0.1:27017/sellerspl';
     ]),
     MongooseModule.forRootAsync({
       inject: [ConfigService],
-      connectionFactory: (connection: mongoose.Connection) => {
-        connection.on('connected', () => {
-          mongoLogger.log(
-            `Connected (${connection.name}) host=${connection.host} db=${connection.db?.databaseName ?? 'unknown'}`,
-          );
-        });
-        connection.on('disconnected', () => {
-          mongoLogger.warn(`Disconnected (${connection.name})`);
-        });
-        connection.on('error', (err: unknown) => {
-          const msg =
-            err && typeof err === 'object' && 'message' in err
-              ? String((err as { message?: unknown }).message)
-              : String(err);
-          mongoLogger.error(`Connection error (${connection.name}): ${msg}`);
-        });
-        return connection;
-      },
       useFactory: async (config: ConfigService) => {
         const dbName = config.get<string>('MONGODB_DB_NAME');
+        const connectionFactory = (connection: mongoose.Connection) => {
+          connection.on('connected', () => {
+            mongoLogger.log(
+              `Connected (${connection.name}) host=${connection.host} db=${connection.db?.databaseName ?? 'unknown'}`,
+            );
+          });
+          connection.on('disconnected', () => {
+            mongoLogger.warn(`Disconnected (${connection.name})`);
+          });
+          connection.on('error', (err: unknown) => {
+            const msg =
+              err && typeof err === 'object' && 'message' in err
+                ? String((err as { message?: unknown }).message)
+                : String(err);
+            mongoLogger.error(`Connection error (${connection.name}): ${msg}`);
+          });
+          return connection;
+        };
         const buildOptions = (uri: string) => {
           const base = {
             uri,
@@ -66,6 +66,7 @@ const DEFAULT_LOCAL_MONGODB_URI = 'mongodb://127.0.0.1:27017/sellerspl';
             connectTimeoutMS: 10000,
             socketTimeoutMS: 20000,
             bufferCommands: false,
+            connectionFactory,
           };
           if (typeof dbName === 'string' && dbName.trim().length > 0) {
             return { ...base, dbName };
