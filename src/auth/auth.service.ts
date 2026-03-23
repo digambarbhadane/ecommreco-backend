@@ -1,6 +1,9 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
+  OnModuleInit,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -43,7 +46,9 @@ const allowedSellerStatuses = new Set([
 ]);
 
 @Injectable()
-export class AuthService {
+export class AuthService implements OnModuleInit {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
@@ -57,6 +62,10 @@ export class AuthService {
     @InjectModel(UserActivityLog.name)
     private readonly userActivityLogModel: Model<UserActivityLogDocument>,
   ) {}
+
+  async onModuleInit() {
+    await this.ensureDevSuperAdmin();
+  }
 
   async login(dto: LoginDto, req: Request) {
     const rawIdentifier =
@@ -295,8 +304,20 @@ export class AuthService {
     return { success: true, data: safe };
   }
 
-  debugDb(params: { setupToken?: string }) {
-    this.assertSetupToken(params);
+  health() {
+    this.assertDatabaseConnected();
+    return {
+      success: true,
+      data: {
+        status: 'ok',
+        database: 'connected',
+        timestamp: new Date().toISOString(),
+      },
+    };
+  }
+
+  databaseConnection() {
+    this.assertDatabaseConnected();
     const db = this.connection.db;
     return {
       success: true,
@@ -308,6 +329,11 @@ export class AuthService {
         database: db?.databaseName,
       },
     };
+  }
+
+  debugDb(params: { setupToken?: string }) {
+    this.assertSetupToken(params);
+    return this.databaseConnection();
   }
 
   async debugSuperAdmin(params: { setupToken?: string }) {
@@ -481,6 +507,55 @@ export class AuthService {
     });
   }
 
+  private async ensureDevSuperAdmin() {
+    const nodeEnv = this.configService.get<string>('NODE_ENV') ?? 'development';
+    const useMemoryDb =
+      this.configService.get<string>('USE_MEMORY_DB') === 'true';
+    if (nodeEnv === 'production' || !useMemoryDb) {
+      return;
+    }
+
+    const existingSuperAdmin = await this.userModel
+      .findOne({ role: 'super_admin' })
+      .select('_id email')
+      .lean()
+      .exec();
+    if (existingSuperAdmin) {
+      return;
+    }
+
+    const email = (
+      this.configService.get<string>('DEV_SUPER_ADMIN_EMAIL') ??
+      'superadmin@example.com'
+    )
+      .trim()
+      .toLowerCase();
+    const password =
+      this.configService.get<string>('DEV_SUPER_ADMIN_PASSWORD') ??
+      'password123';
+    const fullName =
+      this.configService.get<string>('DEV_SUPER_ADMIN_NAME') ?? 'Super Admin';
+    const mobile = this.configService.get<string>('DEV_SUPER_ADMIN_MOBILE');
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    await this.userModel.create({
+      publicId: generatePublicId('super_admin', email),
+      fullName,
+      email,
+      username: email,
+      password: hashedPassword,
+      role: 'super_admin',
+      mobile,
+      status: 'approved',
+      profileCompleted: true,
+      mustChangePassword: false,
+      credentialsGeneratedAt: new Date(),
+      credentialsGeneratedBy: 'system',
+    });
+
+    this.logger.log(`Created development super admin: ${email}`);
+  }
+
   private async verifyPassword(stored: string, provided: string) {
     if (typeof stored !== 'string' || typeof provided !== 'string')
       return false;
@@ -520,6 +595,16 @@ export class AuthService {
     }
     void expected;
     void params;
+  }
+
+  private assertDatabaseConnected() {
+    if (this.connection.readyState !== 1) {
+      throw new ServiceUnavailableException({
+        success: false,
+        message: 'Database connection is not established',
+        errorCode: 'DB_NOT_CONNECTED',
+      });
+    }
   }
 
   private getIp(req: Request) {

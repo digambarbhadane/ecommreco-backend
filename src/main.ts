@@ -4,6 +4,35 @@ import { ConfigService } from '@nestjs/config';
 import * as express from 'express';
 import { AppModule } from './app.module';
 
+const isErrnoException = (err: unknown): err is NodeJS.ErrnoException =>
+  !!err && typeof err === 'object' && 'code' in err;
+
+async function listenWithFallbackPorts(
+  app: Awaited<ReturnType<typeof NestFactory.create>>,
+  preferredPort: number,
+) {
+  const host = '0.0.0.0';
+  const maxAttempts = 20;
+
+  for (let i = 0; i < maxAttempts; i += 1) {
+    const port = preferredPort + i;
+    try {
+      await app.listen(port, host);
+      return port;
+    } catch (err: unknown) {
+      if (isErrnoException(err) && err.code === 'EADDRINUSE') {
+        Logger.warn(`Port ${port} is in use. Trying ${port + 1}...`);
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw new Error(
+    `Could not bind to any port in range ${preferredPort}-${preferredPort + maxAttempts - 1}`,
+  );
+}
+
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.use(express.json({ limit: '50mb' }));
@@ -39,7 +68,7 @@ async function bootstrap() {
         callback(null, origin);
         return;
       }
-      callback(null, origin);
+      callback(new Error(`CORS blocked for origin: ${origin}`));
     },
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
     credentials: true,
@@ -57,9 +86,12 @@ async function bootstrap() {
   const configuredPort = config.get<string>('PORT');
   const parsedPort =
     typeof configuredPort === 'string' ? Number(configuredPort) : undefined;
-  const port = Number.isFinite(parsedPort) ? (parsedPort as number) : 5000;
-  await app.listen(port, '0.0.0.0');
-  Logger.log(`API running on port ${port}`);
+  const port =
+    typeof parsedPort === 'number' && Number.isFinite(parsedPort)
+      ? parsedPort
+      : 5000;
+  const boundPort = await listenWithFallbackPorts(app, port);
+  Logger.log(`API running on port ${boundPort}`);
 }
 
 void bootstrap();
