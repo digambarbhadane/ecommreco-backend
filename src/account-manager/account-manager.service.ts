@@ -7,6 +7,7 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import * as bcrypt from 'bcrypt';
+import * as crypto from 'crypto';
 import * as nodemailer from 'nodemailer';
 import { Seller, SellerDocument } from '../sellers/schemas/seller.schema';
 import { Lead, LeadDocument } from '../leads/schemas/lead.schema';
@@ -43,6 +44,58 @@ export class AccountManagerService {
     @InjectModel(Lead.name) private leadModel: Model<LeadDocument>,
     private readonly notificationsService: NotificationsService,
   ) {}
+
+  private sanitizeSellerForResponse(seller: unknown) {
+    const raw =
+      seller &&
+      typeof seller === 'object' &&
+      'toObject' in seller &&
+      typeof (seller as { toObject?: unknown }).toObject === 'function'
+        ? (seller as { toObject: () => Record<string, unknown> }).toObject()
+        : (seller as Record<string, unknown>);
+
+    if (!raw || typeof raw !== 'object') return raw;
+
+    const {
+      password,
+      pendingPasswordCiphertext,
+      pendingPasswordIv,
+      pendingPasswordTag,
+      ...rest
+    } = raw;
+    void password;
+    void pendingPasswordCiphertext;
+    void pendingPasswordIv;
+    void pendingPasswordTag;
+    return rest;
+  }
+
+  private credentialsKey() {
+    const seed =
+      process.env.CREDENTIALS_ENCRYPTION_KEY ??
+      process.env.JWT_SECRET ??
+      'dev-secret';
+    return crypto.createHash('sha256').update(seed).digest();
+  }
+
+  private encryptCredential(value: string) {
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv(
+      'aes-256-gcm',
+      this.credentialsKey(),
+      iv,
+    );
+    const ciphertext = Buffer.concat([
+      cipher.update(value, 'utf8'),
+      cipher.final(),
+    ]);
+    const tag = cipher.getAuthTag();
+    return {
+      ciphertext: ciphertext.toString('base64'),
+      iv: iv.toString('base64'),
+      tag: tag.toString('base64'),
+    };
+  }
 
   private assertAccountManagerAccess(user?: RequestUser) {
     const role = typeof user?.role === 'string' ? user.role : undefined;
@@ -252,6 +305,7 @@ export class AccountManagerService {
       email: lead.email,
       gstNumber: lead.gstNumber,
       leadId: lead.leadId || lead._id.toString(),
+      accountStatus: 'paused',
       gstSlots,
       gstSlotsPurchased: gstSlots,
       durationYears,
@@ -412,7 +466,7 @@ export class AccountManagerService {
       }
     }
 
-    return sellers;
+    return sellers.map((seller) => this.sanitizeSellerForResponse(seller));
   }
 
   async findOne(id: string, user?: RequestUser) {
@@ -439,7 +493,7 @@ export class AccountManagerService {
       }
     }
 
-    return seller;
+    return this.sanitizeSellerForResponse(seller);
   }
 
   async verifyPayment(dto: VerifyPaymentDto, user?: RequestUser) {
@@ -451,6 +505,7 @@ export class AccountManagerService {
     if (!seller.subscriptionId) {
       seller.subscriptionId = this.generateSubscriptionId();
     }
+    seller.underReview = false;
     seller.onboardingStatus = 'payment_verified';
     seller.paymentStatus = 'payment_verified';
     seller.paymentVerifiedAt = new Date();
@@ -458,7 +513,8 @@ export class AccountManagerService {
     if (dto.verificationNotes) {
       seller.verificationNotes = dto.verificationNotes;
     }
-    return seller.save();
+    const saved = await seller.save();
+    return this.sanitizeSellerForResponse(saved);
   }
 
   async createAccount(dto: CreateAccountDto, user?: RequestUser) {
@@ -478,7 +534,7 @@ export class AccountManagerService {
       message: `Account created for ${seller.fullName} (Seller ID: ${seller._id.toString()}, Email: ${seller.email}, GST: ${seller.gstNumber || '—'}, GST Slots: ${typeof seller.gstSlots === 'number' ? seller.gstSlots : '—'}, Duration: ${typeof seller.durationYears === 'number' ? seller.durationYears : typeof seller.subscriptionDuration === 'number' ? seller.subscriptionDuration : '—'} year(s), Amount: ${typeof seller.amount === 'number' ? seller.amount : typeof seller.paymentAmount === 'number' ? seller.paymentAmount : '—'}).`,
     });
 
-    return saved;
+    return this.sanitizeSellerForResponse(saved);
   }
 
   async generateCredentials(dto: GenerateCredentialsDto, user?: RequestUser) {
@@ -487,9 +543,17 @@ export class AccountManagerService {
       user,
     );
 
-    const username =
-      dto.username ||
-      seller.email.split('@')[0] + Math.floor(Math.random() * 1000);
+    const username = seller.email.toLowerCase();
+    if (
+      typeof dto.username === 'string' &&
+      dto.username.trim().length > 0 &&
+      dto.username.trim().toLowerCase() !== username
+    ) {
+      throw new BadRequestException({
+        success: false,
+        message: 'Username must be the seller email',
+      });
+    }
     const password =
       dto.password || Math.random().toString(36).slice(-8) + 'A1!';
 
@@ -497,18 +561,15 @@ export class AccountManagerService {
 
     seller.username = username;
     seller.password = hashedPassword;
+    const encrypted = this.encryptCredential(password);
+    seller.pendingPasswordCiphertext = encrypted.ciphertext;
+    seller.pendingPasswordIv = encrypted.iv;
+    seller.pendingPasswordTag = encrypted.tag;
+    seller.accountStatus = 'paused';
     seller.onboardingStatus = 'awaiting_super_admin_approval';
     const credentialsGeneratedAt = new Date();
     seller.credentialsGeneratedAt = credentialsGeneratedAt;
     seller.credentialGeneratedBy = user?.email || 'account_manager';
-    if (!seller.subscriptionStartsAt) {
-      const durationYears =
-        seller.durationYears ?? seller.subscriptionDuration ?? 1;
-      const endsAt = new Date(credentialsGeneratedAt);
-      endsAt.setFullYear(endsAt.getFullYear() + durationYears);
-      seller.subscriptionStartsAt = credentialsGeneratedAt;
-      seller.subscriptionEndsAt = endsAt;
-    }
 
     await seller.save();
 
@@ -551,7 +612,7 @@ export class AccountManagerService {
       message: `Seller ${seller.fullName} (ID: ${seller._id.toString()}) has requested account approval from ${user?.email || 'Account Manager'}.`,
     });
 
-    return savedSeller;
+    return this.sanitizeSellerForResponse(savedSeller);
   }
 
   private async ensureAccountManagerSellerAccess(

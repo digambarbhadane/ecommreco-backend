@@ -128,6 +128,18 @@ export class AuthService implements OnModuleInit {
         passwordOk &&
         allowedSellerStatuses.has(seller.onboardingStatus ?? '')
       ) {
+        if (
+          typeof (seller as unknown as { accountStatus?: string })
+            .accountStatus === 'string' &&
+          (seller as unknown as { accountStatus?: string }).accountStatus !==
+            'active'
+        ) {
+          throw new UnauthorizedException({
+            success: false,
+            message: 'Account is not active',
+            errorCode: 'SELLER_ACCOUNT_INACTIVE',
+          });
+        }
         const user: AuthUser = {
           id: seller._id.toString(),
           name: seller.fullName,

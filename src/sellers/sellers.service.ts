@@ -7,13 +7,17 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import * as bcrypt from 'bcrypt';
+import * as crypto from 'crypto';
 import { NotificationsService } from '../notifications/notifications.service';
+import { EmailService } from '../email/email.service';
+import { EmailType } from '../email/email.types';
 import { GenerateCredentialsDto } from './dto/generate-credentials.dto';
 import { RegisterSellerDto } from './dto/register-seller.dto';
 import { SendPaymentLinkDto } from './dto/send-payment-link.dto';
 import { Seller, SellerDocument } from './schemas/seller.schema';
 import { LeadsService } from '../leads/leads.service';
 import { generatePublicId } from '../common/public-id';
+import { User, UserDocument } from '../users/schemas/user.schema';
 
 type RequestUser = {
   id?: string;
@@ -37,9 +41,57 @@ export class SellersService {
   constructor(
     @InjectModel(Seller.name)
     private readonly sellerModel: Model<SellerDocument>,
+    @InjectModel(User.name)
+    private readonly userModel: Model<UserDocument>,
     private readonly leadsService: LeadsService,
     private readonly notificationsService: NotificationsService,
+    private readonly emailService: EmailService,
   ) {}
+
+  private credentialsKey() {
+    const seed =
+      process.env.CREDENTIALS_ENCRYPTION_KEY ??
+      process.env.JWT_SECRET ??
+      'dev-secret';
+    return crypto.createHash('sha256').update(seed).digest();
+  }
+
+  private encryptCredential(value: string) {
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv(
+      'aes-256-gcm',
+      this.credentialsKey(),
+      iv,
+    );
+    const ciphertext = Buffer.concat([
+      cipher.update(value, 'utf8'),
+      cipher.final(),
+    ]);
+    const tag = cipher.getAuthTag();
+    return {
+      ciphertext: ciphertext.toString('base64'),
+      iv: iv.toString('base64'),
+      tag: tag.toString('base64'),
+    };
+  }
+
+  private decryptCredential(params: {
+    ciphertext: string;
+    iv: string;
+    tag: string;
+  }) {
+    const decipher = crypto.createDecipheriv(
+      'aes-256-gcm',
+      this.credentialsKey(),
+      Buffer.from(params.iv, 'base64'),
+    );
+    decipher.setAuthTag(Buffer.from(params.tag, 'base64'));
+    const plaintext = Buffer.concat([
+      decipher.update(Buffer.from(params.ciphertext, 'base64')),
+      decipher.final(),
+    ]);
+    return plaintext.toString('utf8');
+  }
 
   private sanitizeSellerForRole(
     seller: Record<string, unknown>,
@@ -49,6 +101,9 @@ export class SellersService {
     void password;
 
     const sanitized: Record<string, unknown> = { ...rest };
+    delete sanitized.pendingPasswordCiphertext;
+    delete sanitized.pendingPasswordIv;
+    delete sanitized.pendingPasswordTag;
 
     if (role !== 'super_admin' && role !== 'sales_manager') {
       delete sanitized.paymentLink;
@@ -287,39 +342,25 @@ export class SellersService {
     if (role === 'training_and_support_manager') {
       const email =
         typeof user?.email === 'string' ? user.email.toLowerCase() : undefined;
-      const allowed = new Set(['training_pending', 'active']);
+      const allowed = new Set([
+        'credentials_sent',
+        'training_pending',
+        'training_completed',
+        'active',
+      ]);
       if (!allowed.has(seller.onboardingStatus)) {
         throw new ForbiddenException({
           success: false,
           message: 'Access denied',
         });
       }
-      if (seller.onboardingStatus === 'training_pending') {
-        if (
-          typeof seller.assignedTrainingSupportManager === 'string' &&
-          typeof email === 'string' &&
-          seller.assignedTrainingSupportManager.toLowerCase() !== email
-        ) {
-          throw new ForbiddenException({
-            success: false,
-            message: 'Access denied',
-          });
-        }
+      if (
+        seller.onboardingStatus === 'credentials_sent' ||
+        seller.onboardingStatus === 'training_pending'
+      ) {
         if (!seller.assignedTrainingSupportManager && email) {
           seller.assignedTrainingSupportManager = email;
           await seller.save();
-        }
-      } else {
-        const matchesAssignee =
-          !!email &&
-          (seller.assignedTrainingSupportManager ?? '').toLowerCase() === email;
-        const matchesCompleter =
-          !!email && (seller.trainingCompletedBy ?? '').toLowerCase() === email;
-        if (!!email && !matchesAssignee && !matchesCompleter) {
-          throw new ForbiddenException({
-            success: false,
-            message: 'Access denied',
-          });
         }
       }
     }
@@ -439,6 +480,10 @@ export class SellersService {
     const hashedPassword = await bcrypt.hash(password, 10);
     seller.password = hashedPassword;
     seller.username = seller.email;
+    const encrypted = this.encryptCredential(password);
+    seller.pendingPasswordCiphertext = encrypted.ciphertext;
+    seller.pendingPasswordIv = encrypted.iv;
+    seller.pendingPasswordTag = encrypted.tag;
     const actorRole = typeof user?.role === 'string' ? user.role : undefined;
     const credentialsGeneratedAt = new Date();
     seller.credentialsGeneratedAt = credentialsGeneratedAt;
@@ -452,14 +497,6 @@ export class SellersService {
       seller.credentialsApprovedBy = user?.email || 'admin';
       seller.credentialsSentAt = credentialsGeneratedAt;
     }
-    if (!seller.subscriptionStartsAt) {
-      const durationYears =
-        seller.durationYears ?? seller.subscriptionDuration ?? 1;
-      const endsAt = new Date(credentialsGeneratedAt);
-      endsAt.setFullYear(endsAt.getFullYear() + durationYears);
-      seller.subscriptionStartsAt = credentialsGeneratedAt;
-      seller.subscriptionEndsAt = endsAt;
-    }
     await seller.save();
     await this.notificationsService.createNotification({
       event: 'credentials_generated',
@@ -469,7 +506,10 @@ export class SellersService {
     return {
       success: true,
       data: {
-        seller: seller.toObject(),
+        seller: this.sanitizeSellerForRole(
+          seller.toObject() as unknown as Record<string, unknown>,
+          (actorRole ?? 'super_admin') as ViewerRole,
+        ),
         username: seller.email,
         password,
       },
@@ -493,11 +533,130 @@ export class SellersService {
         message: 'Credentials are not awaiting approval',
       });
     }
+    const now = new Date();
+    let password: string | undefined;
+    if (
+      typeof seller.pendingPasswordCiphertext === 'string' &&
+      typeof seller.pendingPasswordIv === 'string' &&
+      typeof seller.pendingPasswordTag === 'string' &&
+      seller.pendingPasswordCiphertext &&
+      seller.pendingPasswordIv &&
+      seller.pendingPasswordTag
+    ) {
+      try {
+        password = this.decryptCredential({
+          ciphertext: seller.pendingPasswordCiphertext,
+          iv: seller.pendingPasswordIv,
+          tag: seller.pendingPasswordTag,
+        });
+      } catch {
+        password = undefined;
+      }
+    }
+    if (!password) {
+      password = Math.random().toString(36).slice(-10) + 'A1!';
+      seller.password = await bcrypt.hash(password, 10);
+      const encrypted = this.encryptCredential(password);
+      seller.pendingPasswordCiphertext = encrypted.ciphertext;
+      seller.pendingPasswordIv = encrypted.iv;
+      seller.pendingPasswordTag = encrypted.tag;
+    }
+
+    seller.username = seller.email;
     seller.onboardingStatus = 'training_pending';
-    seller.credentialsApprovedAt = new Date();
-    seller.credentialsSentAt = new Date();
+    seller.accountStatus = 'active';
+    seller.credentialsApprovedAt = now;
+    seller.credentialsSentAt = now;
     seller.credentialsApprovedBy = user?.email || 'admin';
+
+    const durationYears =
+      seller.durationYears ?? seller.subscriptionDuration ?? 1;
+    const endsAt = new Date(now);
+    endsAt.setFullYear(endsAt.getFullYear() + durationYears);
+    seller.subscriptionStartsAt = now;
+    seller.subscriptionEndsAt = endsAt;
+
     await seller.save();
+
+    try {
+      const normalizedEmail = String(seller.email || '').toLowerCase();
+      if (normalizedEmail) {
+        const existing = await this.userModel
+          .findOne({
+            $or: [{ email: normalizedEmail }, { username: normalizedEmail }],
+          })
+          .select('_id role email username')
+          .lean()
+          .exec();
+
+        const sellerObjectId = seller._id.toString();
+        const existingId =
+          existing?._id?.toString?.() ??
+          (existing?._id ? String(existing._id) : '');
+
+        if (!existing || existingId === sellerObjectId) {
+          await this.userModel.updateOne(
+            { _id: seller._id },
+            {
+              $set: {
+                publicId: generatePublicId('seller', normalizedEmail),
+                fullName: seller.fullName,
+                email: normalizedEmail,
+                username: normalizedEmail,
+                password: seller.password ?? '',
+                role: 'seller',
+                status: 'approved',
+                profileCompleted: true,
+                mustChangePassword: false,
+                credentialsGeneratedAt: now,
+                credentialsGeneratedBy: user?.email || 'super_admin',
+              },
+            },
+            { upsert: true },
+          );
+        } else {
+          await this.notificationsService.createNotification({
+            event: 'seller_user_create_conflict',
+            recipientRole: 'super_admin',
+            message: `Could not create seller user for ${seller.fullName} (Seller ID: ${sellerObjectId}, Email: ${normalizedEmail}) because a user already exists with that identifier (User ID: ${existingId}, Role: ${existing.role || '—'}). Seller login still works via seller credentials.`,
+          });
+        }
+      }
+    } catch {
+      await this.notificationsService.createNotification({
+        event: 'seller_user_create_failed',
+        recipientRole: 'super_admin',
+        message: `Failed to create/update seller user for ${seller.fullName} (Seller ID: ${seller._id.toString()}, Email: ${seller.email}). Seller login still works via seller credentials.`,
+      });
+    }
+
+    let emailSent = false;
+    try {
+      await this.emailService.sendEmail({
+        to: seller.email,
+        type: EmailType.NOTIFICATION,
+        subject: 'Your Seller Account Credentials',
+        fromOverride: 'auth@ecommreco.com',
+        payload: {
+          message: `Your seller account is approved.\n\nUsername: ${seller.email}\nPassword: ${password}\n\nPlease login and change your password immediately.`,
+        },
+      });
+      emailSent = true;
+    } catch {
+      await this.notificationsService.createNotification({
+        event: 'credentials_email_failed',
+        recipientRole: 'super_admin',
+        message: `Failed to send credentials email for ${seller.fullName} (Seller ID: ${seller._id.toString()}, Email: ${seller.email}).`,
+      });
+    }
+
+    if (emailSent) {
+      seller.pendingPasswordCiphertext = undefined;
+      seller.pendingPasswordIv = undefined;
+      seller.pendingPasswordTag = undefined;
+      await seller.save();
+    }
+
     await this.notificationsService.createNotification({
       event: 'credentials_approved',
       recipientRole: 'seller',
@@ -522,17 +681,20 @@ export class SellersService {
     await this.notificationsService.createNotification({
       event: 'credentials_approved',
       recipientRole: 'accounts_manager',
-      message: `Credentials approved for ${seller.fullName} (Seller ID: ${seller._id.toString()}, Email: ${seller.email}, GST: ${seller.gstNumber || '—'}). Moved to training.`,
+      message: `Seller approved and account activated: ${seller.fullName} (Seller ID: ${seller._id.toString()}, Email: ${seller.email}, GST: ${seller.gstNumber || '—'}).`,
     });
 
     await this.notificationsService.createNotification({
       event: 'credentials_approved',
       recipientRole: 'training_and_support_manager',
-      message: `New seller ready for training: ${seller.fullName} (Seller ID: ${seller._id.toString()}, Email: ${seller.email}, Contact: ${seller.contactNumber}, GST: ${seller.gstNumber || '—'}).`,
+      message: `New seller ready for training: ${seller.fullName} (Seller ID: ${seller.publicId || seller._id.toString()}, Email: ${seller.email}, Contact: ${seller.contactNumber}, GST: ${seller.gstNumber || '—'}).`,
     });
     return {
       success: true,
-      data: seller.toObject(),
+      data: this.sanitizeSellerForRole(
+        seller.toObject() as unknown as Record<string, unknown>,
+        'super_admin',
+      ),
     };
   }
 
@@ -551,6 +713,7 @@ export class SellersService {
       });
     }
     seller.onboardingStatus = 'active';
+    seller.accountStatus = 'active';
     seller.trainingCompletedAt = new Date();
     seller.trainingCompletedBy = user?.email || 'admin';
     await seller.save();

@@ -368,7 +368,7 @@ export class LeadsService {
             },
           ]
         : []),
-      { $sort: { 'followUps.scheduledAt': 1 } }, // Ascending: Oldest (overdue) first
+      { $sort: { 'followUps.scheduledAt': -1 } },
       { $skip: skip },
       { $limit: params.limit },
       {
@@ -1913,6 +1913,46 @@ export class LeadsService {
     };
   }
 
+  async deleteLead(id: string, user?: RequestUser) {
+    const role = typeof user?.role === 'string' ? user.role : undefined;
+    if (role !== 'super_admin') {
+      throw new ForbiddenException({
+        success: false,
+        message: 'Access denied',
+      });
+    }
+
+    const identityFilter = this.buildLeadIdentityFilter(id);
+    const lead = await this.leadModel
+      .findOne(identityFilter)
+      .select('_id sellerId leadId publicId')
+      .lean()
+      .exec();
+
+    if (!lead) {
+      throw new NotFoundException({
+        success: false,
+        message: 'Lead not found',
+      });
+    }
+
+    const sellerId =
+      typeof (lead as unknown as { sellerId?: unknown }).sellerId === 'string'
+        ? String((lead as unknown as { sellerId?: string }).sellerId).trim()
+        : '';
+
+    if (sellerId) {
+      throw new BadRequestException({
+        success: false,
+        message: 'Cannot delete a lead that already has a seller',
+      });
+    }
+
+    await this.leadModel.deleteOne({ _id: (lead as unknown as { _id: unknown })._id }).exec();
+
+    return { success: true, data: { deleted: true } };
+  }
+
   async addNote(id: string, content: string, addedBy: string) {
     const identityFilter = this.buildLeadIdentityFilter(id);
     // Check if notes is an array, if not (e.g. string or null), reset it to empty array
@@ -2433,6 +2473,8 @@ export class LeadsService {
       email: leadEmail.toLowerCase(),
       gstNumber: leadGstNumber,
       leadId: lead.leadId || lead._id.toString(),
+      underReview: true,
+      accountStatus: 'paused',
       gstSlots,
       gstSlotsPurchased: gstSlots,
       gstSlotsUsed: 0,
@@ -2482,7 +2524,7 @@ export class LeadsService {
     await this.notificationsService.createNotification({
       event: 'lead_conversion_requested',
       recipientRole: 'accounts_manager',
-      message: `New conversion request: ${lead.fullName} (Lead ID: ${lead.leadId}). Payment marked completed.`,
+      message: `New conversion request: ${lead.fullName} (Seller ID: ${seller.id}). Status: under review. Payment marked completed.`,
     });
 
     return {

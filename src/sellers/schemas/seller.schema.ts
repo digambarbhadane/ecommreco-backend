@@ -36,6 +36,15 @@ export class Seller {
   password?: string;
 
   @Prop()
+  pendingPasswordCiphertext?: string;
+
+  @Prop()
+  pendingPasswordIv?: string;
+
+  @Prop()
+  pendingPasswordTag?: string;
+
+  @Prop()
   username?: string;
 
   @Prop()
@@ -182,6 +191,9 @@ export class Seller {
   @Prop()
   assignedTrainingSupportManager?: string;
 
+  @Prop()
+  underReview?: boolean;
+
   @Prop({ default: 'payment_pending' })
   onboardingStatus:
     | 'lead_generated'
@@ -197,7 +209,7 @@ export class Seller {
     | 'training_completed'
     | 'active';
 
-  @Prop({ default: 'active' })
+  @Prop({ default: 'paused' })
   accountStatus: 'active' | 'paused' | 'suspended' | 'suspected';
 }
 
