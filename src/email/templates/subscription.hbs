@@ -1,0 +1,80 @@
+<div style="font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.5;color:#0f172a">
+  <p>Hello {{name}},</p>
+
+  {{#if paymentLink}}
+    <p>Please complete your payment using the link below.</p>
+    <p style="margin:16px 0">
+      <a
+        href="{{paymentLink}}"
+        target="_blank"
+        rel="noopener noreferrer"
+        style="display:inline-block;background:#0f172a;color:#ffffff;text-decoration:none;padding:10px 14px;border-radius:8px;font-weight:600"
+      >
+        Pay Now
+      </a>
+    </p>
+    <p style="font-size:13px;color:#475569;word-break:break-all">
+      {{paymentLink}}
+    </p>
+  {{/if}}
+
+  <div style="margin-top:18px;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">
+    <div style="background:#f8fafc;padding:12px 14px;font-weight:700">
+      Subscription Details
+    </div>
+    <table style="width:100%;border-collapse:collapse;font-size:14px">
+      <tbody>
+        <tr>
+          <td style="padding:10px 14px;border-top:1px solid #e2e8f0;color:#64748b">Plan</td>
+          <td style="padding:10px 14px;border-top:1px solid #e2e8f0;font-weight:600">{{planName}}</td>
+        </tr>
+        {{#if gstSlots}}
+          <tr>
+            <td style="padding:10px 14px;border-top:1px solid #e2e8f0;color:#64748b">GST Count</td>
+            <td style="padding:10px 14px;border-top:1px solid #e2e8f0;font-weight:600">{{gstSlots}}</td>
+          </tr>
+        {{/if}}
+        {{#if durationDays}}
+          <tr>
+            <td style="padding:10px 14px;border-top:1px solid #e2e8f0;color:#64748b">Duration</td>
+            <td style="padding:10px 14px;border-top:1px solid #e2e8f0;font-weight:600">{{durationDays}} days</td>
+          </tr>
+        {{/if}}
+        {{#if startDate}}
+          <tr>
+            <td style="padding:10px 14px;border-top:1px solid #e2e8f0;color:#64748b">Start Date</td>
+            <td style="padding:10px 14px;border-top:1px solid #e2e8f0;font-weight:600">{{startDate}}</td>
+          </tr>
+        {{/if}}
+        {{#if endDate}}
+          <tr>
+            <td style="padding:10px 14px;border-top:1px solid #e2e8f0;color:#64748b">End Date</td>
+            <td style="padding:10px 14px;border-top:1px solid #e2e8f0;font-weight:600">{{endDate}}</td>
+          </tr>
+        {{/if}}
+        {{#if selectedPrice}}
+          <tr>
+            <td style="padding:10px 14px;border-top:1px solid #e2e8f0;color:#64748b">Subtotal (Excl. GST)</td>
+            <td style="padding:10px 14px;border-top:1px solid #e2e8f0;font-weight:600">₹{{selectedPrice}}</td>
+          </tr>
+        {{/if}}
+        {{#if gstAmount}}
+          <tr>
+            <td style="padding:10px 14px;border-top:1px solid #e2e8f0;color:#64748b">GST{{#if gstPercentage}} ({{gstPercentage}}%){{/if}}</td>
+            <td style="padding:10px 14px;border-top:1px solid #e2e8f0;font-weight:600">₹{{gstAmount}}</td>
+          </tr>
+        {{/if}}
+        <tr>
+          <td style="padding:10px 14px;border-top:1px solid #e2e8f0;color:#64748b">Total Amount</td>
+          <td style="padding:10px 14px;border-top:1px solid #e2e8f0;font-weight:800">₹{{totalAmount}}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  {{#if amount}}
+    <p style="margin-top:14px;color:#475569;font-size:13px">
+      Amount: ₹{{amount}}{{#if period}} | Period: {{period}}{{/if}}
+    </p>
+  {{/if}}
+</div>

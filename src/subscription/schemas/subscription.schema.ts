@@ -14,6 +14,9 @@ export class Subscription {
   @Prop({ required: true, type: Types.ObjectId, ref: 'SubscriptionPackage' })
   packageId: Types.ObjectId;
 
+  @Prop({ required: true, min: 1, default: 1 })
+  gstSlots: number;
+
   @Prop({ required: true, min: 0 })
   selectedPrice: number;
 
