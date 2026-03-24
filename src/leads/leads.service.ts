@@ -301,6 +301,7 @@ export class LeadsService {
     limit: number;
     leadId?: string;
     status?: string;
+    search?: string;
     user?: RequestUser;
   }) {
     const skip = (params.page - 1) * params.limit;
@@ -330,10 +331,43 @@ export class LeadsService {
       followUpMatch['followUps.status'] = 'pending';
     }
 
+    const search =
+      typeof params.search === 'string' ? params.search.trim() : '';
+    const hasSearch = search.length > 0;
+
     const pipeline: PipelineStage[] = [
       { $match: leadMatch as PipelineStage.Match['$match'] },
       { $unwind: '$followUps' },
       { $match: followUpMatch as PipelineStage.Match['$match'] },
+      {
+        $addFields: {
+          scheduledAtText: {
+            $dateToString: {
+              format: '%Y-%m-%d %H:%M',
+              date: '$followUps.scheduledAt',
+              timezone: 'UTC',
+            },
+          },
+        },
+      },
+      ...(hasSearch
+        ? [
+            {
+              $match: {
+                $or: [
+                  { leadId: { $regex: search, $options: 'i' } },
+                  { fullName: { $regex: search, $options: 'i' } },
+                  { 'followUps.notes': { $regex: search, $options: 'i' } },
+                  { 'followUps.status': { $regex: search, $options: 'i' } },
+                  { scheduledAtText: { $regex: search, $options: 'i' } },
+                  ...(Types.ObjectId.isValid(search)
+                    ? [{ _id: new Types.ObjectId(search) }]
+                    : []),
+                ],
+              } as PipelineStage.Match['$match'],
+            },
+          ]
+        : []),
       { $sort: { 'followUps.scheduledAt': 1 } }, // Ascending: Oldest (overdue) first
       { $skip: skip },
       { $limit: params.limit },
@@ -358,6 +392,35 @@ export class LeadsService {
       { $match: leadMatch as PipelineStage.Match['$match'] },
       { $unwind: '$followUps' },
       { $match: followUpMatch as PipelineStage.Match['$match'] },
+      {
+        $addFields: {
+          scheduledAtText: {
+            $dateToString: {
+              format: '%Y-%m-%d %H:%M',
+              date: '$followUps.scheduledAt',
+              timezone: 'UTC',
+            },
+          },
+        },
+      },
+      ...(hasSearch
+        ? [
+            {
+              $match: {
+                $or: [
+                  { leadId: { $regex: search, $options: 'i' } },
+                  { fullName: { $regex: search, $options: 'i' } },
+                  { 'followUps.notes': { $regex: search, $options: 'i' } },
+                  { 'followUps.status': { $regex: search, $options: 'i' } },
+                  { scheduledAtText: { $regex: search, $options: 'i' } },
+                  ...(Types.ObjectId.isValid(search)
+                    ? [{ _id: new Types.ObjectId(search) }]
+                    : []),
+                ],
+              } as PipelineStage.Match['$match'],
+            },
+          ]
+        : []),
       { $count: 'total' },
     ];
     const countResult = await this.leadModel.aggregate<{ total: number }>(
@@ -433,6 +496,7 @@ export class LeadsService {
     page: number;
     limit: number;
     leadId?: string;
+    search?: string;
     user?: RequestUser;
   }) {
     const skip = (params.page - 1) * params.limit;
@@ -454,9 +518,42 @@ export class LeadsService {
       ? ({ $and: [matchStage, salesFilter] } as Record<string, unknown>)
       : matchStage;
 
+    const search =
+      typeof params.search === 'string' ? params.search.trim() : '';
+    const hasSearch = search.length > 0;
+
     const pipeline: PipelineStage[] = [
       { $match: leadMatch as PipelineStage.Match['$match'] },
       { $unwind: '$notes' },
+      {
+        $addFields: {
+          createdAtText: {
+            $dateToString: {
+              format: '%Y-%m-%d %H:%M',
+              date: '$notes.createdAt',
+              timezone: 'UTC',
+            },
+          },
+        },
+      },
+      ...(hasSearch
+        ? [
+            {
+              $match: {
+                $or: [
+                  { leadId: { $regex: search, $options: 'i' } },
+                  { fullName: { $regex: search, $options: 'i' } },
+                  { 'notes.addedBy': { $regex: search, $options: 'i' } },
+                  { 'notes.content': { $regex: search, $options: 'i' } },
+                  { createdAtText: { $regex: search, $options: 'i' } },
+                  ...(Types.ObjectId.isValid(search)
+                    ? [{ _id: new Types.ObjectId(search) }]
+                    : []),
+                ],
+              } as PipelineStage.Match['$match'],
+            },
+          ]
+        : []),
       { $sort: { 'notes.createdAt': -1 } },
       { $skip: skip },
       { $limit: params.limit },
@@ -480,6 +577,35 @@ export class LeadsService {
     const countPipeline: PipelineStage[] = [
       { $match: leadMatch as PipelineStage.Match['$match'] },
       { $unwind: '$notes' },
+      {
+        $addFields: {
+          createdAtText: {
+            $dateToString: {
+              format: '%Y-%m-%d %H:%M',
+              date: '$notes.createdAt',
+              timezone: 'UTC',
+            },
+          },
+        },
+      },
+      ...(hasSearch
+        ? [
+            {
+              $match: {
+                $or: [
+                  { leadId: { $regex: search, $options: 'i' } },
+                  { fullName: { $regex: search, $options: 'i' } },
+                  { 'notes.addedBy': { $regex: search, $options: 'i' } },
+                  { 'notes.content': { $regex: search, $options: 'i' } },
+                  { createdAtText: { $regex: search, $options: 'i' } },
+                  ...(Types.ObjectId.isValid(search)
+                    ? [{ _id: new Types.ObjectId(search) }]
+                    : []),
+                ],
+              } as PipelineStage.Match['$match'],
+            },
+          ]
+        : []),
       { $count: 'total' },
     ];
     const countResult = await this.leadModel.aggregate<{ total: number }>(

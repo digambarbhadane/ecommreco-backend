@@ -128,6 +128,7 @@ export class LeadsController {
     @Query('limit') limit?: string,
     @Query('leadId') leadId?: string,
     @Query('status') status?: string,
+    @Query('search') search?: string,
     @Req() req?: RequestWithUser,
   ) {
     const parsedPage = typeof page === 'string' ? Number(page) : 1;
@@ -137,6 +138,7 @@ export class LeadsController {
       limit: parsedLimit,
       leadId,
       status,
+      search,
       user: req?.user,
     });
   }
@@ -175,6 +177,7 @@ export class LeadsController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('leadId') leadId?: string,
+    @Query('search') search?: string,
     @Req() req?: RequestWithUser,
   ) {
     const parsedPage = typeof page === 'string' ? Number(page) : 1;
@@ -183,7 +186,48 @@ export class LeadsController {
       page: parsedPage,
       limit: parsedLimit,
       leadId,
+      search,
       user: req?.user,
+    });
+  }
+
+  // Dev/testing: public notes listing without auth, uses the same search filters
+  // Do not expose in production environments
+  @Get('notes-public')
+  listNotesPublic(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('leadId') leadId?: string,
+    @Query('search') search?: string,
+  ) {
+    const parsedPage = typeof page === 'string' ? Number(page) : 1;
+    const parsedLimit = typeof limit === 'string' ? Number(limit) : 10;
+    return this.leadsService.listNotes({
+      page: parsedPage,
+      limit: parsedLimit,
+      leadId,
+      search,
+    });
+  }
+
+  // Dev/testing: public follow-ups listing without auth, uses the same search filters
+  // Do not expose in production environments
+  @Get('follow-ups-public')
+  listFollowUpsPublic(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('leadId') leadId?: string,
+    @Query('status') status?: string,
+    @Query('search') search?: string,
+  ) {
+    const parsedPage = typeof page === 'string' ? Number(page) : 1;
+    const parsedLimit = typeof limit === 'string' ? Number(limit) : 10;
+    return this.leadsService.listFollowUps({
+      page: parsedPage,
+      limit: parsedLimit,
+      leadId,
+      status,
+      search,
     });
   }
 

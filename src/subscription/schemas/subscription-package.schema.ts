@@ -1,6 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
-import { DiscountType } from '../dto/create-package.dto';
+import type { DiscountType } from '../dto/create-package.dto';
 
 export type SubscriptionPackageDocument = HydratedDocument<SubscriptionPackage>;
 
