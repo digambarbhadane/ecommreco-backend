@@ -88,4 +88,13 @@ export class SubscriptionController {
   ) {
     return this.subscriptionService.getLeadSubscription(leadId, req.user);
   }
+
+  @Post(':leadId/send-payment-link')
+  @Roles('super_admin', 'sales_manager')
+  sendPaymentLinkEmail(
+    @Param('leadId') leadId: string,
+    @Req() req: RequestWithUser,
+  ) {
+    return this.subscriptionService.sendPaymentLinkEmail(leadId, req.user);
+  }
 }

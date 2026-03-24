@@ -26,4 +26,9 @@ export class AssignSubscriptionDto {
   @IsNumber()
   @Min(1)
   customDuration?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  gstSlots?: number;
 }

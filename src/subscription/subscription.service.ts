@@ -5,8 +5,11 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
+import { EmailService } from '../email/email.service';
+import { EmailType } from '../email/email.types';
 import { Lead, LeadDocument } from '../leads/schemas/lead.schema';
 import { LeadsService } from '../leads/leads.service';
+import { Seller, SellerDocument } from '../sellers/schemas/seller.schema';
 import {
   CreateSubscriptionPackageDto,
   DiscountType,
@@ -42,7 +45,10 @@ export class SubscriptionService {
     private readonly subscriptionModel: Model<SubscriptionDocument>,
     @InjectModel(Lead.name)
     private readonly leadModel: Model<LeadDocument>,
+    @InjectModel(Seller.name)
+    private readonly sellerModel: Model<SellerDocument>,
     private readonly leadsService: LeadsService,
+    private readonly emailService: EmailService,
   ) {}
 
   private toTwoDecimals(value: number) {
@@ -239,8 +245,18 @@ export class SubscriptionService {
       throw new BadRequestException('Duration must be greater than 0');
     }
 
-    const scaledDiscountedPrice = this.toTwoDecimals(
+    const gstSlots =
+      typeof dto.gstSlots === 'number' &&
+      Number.isFinite(dto.gstSlots) &&
+      dto.gstSlots > 0
+        ? Math.floor(dto.gstSlots)
+        : 1;
+
+    const scaledDiscountedPerGst = this.toTwoDecimals(
       (pkg.finalPriceAfterDiscount / pkg.durationInDays) * duration,
+    );
+    const scaledDiscountedPrice = this.toTwoDecimals(
+      scaledDiscountedPerGst * gstSlots,
     );
     const scaledGstAmount = this.toTwoDecimals(
       (scaledDiscountedPrice * pkg.gstPercentage) / 100,
@@ -255,6 +271,7 @@ export class SubscriptionService {
       leadId: lead.leadId || String(lead._id),
       sellerId: lead.sellerId,
       packageId: pkg._id,
+      gstSlots,
       selectedPrice: scaledDiscountedPrice,
       gstAmount: scaledGstAmount,
       totalAmount: scaledTotal,
@@ -269,8 +286,26 @@ export class SubscriptionService {
     created.paymentLink = paymentLink;
     await created.save();
 
+    if (
+      typeof lead.sellerId === 'string' &&
+      lead.sellerId.trim().length > 0 &&
+      Types.ObjectId.isValid(lead.sellerId)
+    ) {
+      await this.sellerModel.findByIdAndUpdate(lead.sellerId, {
+        $set: {
+          gstSlots,
+          gstSlotsPurchased: gstSlots,
+          durationYears: this.toTwoDecimals(duration / 365),
+          subscriptionDuration: this.toTwoDecimals(duration / 365),
+          amount: scaledTotal,
+          paymentLink,
+          paymentStatus: 'pending',
+        },
+      });
+    }
+
     lead.subscriptionConfig = {
-      gstSlots: 1,
+      gstSlots,
       durationYears: this.toTwoDecimals(duration / 365),
       amount: scaledTotal,
       updatedAt: new Date(),
@@ -289,12 +324,13 @@ export class SubscriptionService {
       : [];
     lead.activityTimeline.push({
       action: 'subscription_assigned',
-      description: `Subscription assigned (${pkg.name}) for ${duration} days`,
+      description: `Subscription assigned (${pkg.name}) for ${duration} days (${gstSlots} GST)`,
       performedBy: this.getActor(user),
       timestamp: new Date(),
       metadata: {
         packageId: pkg._id.toString(),
         subscriptionId: created._id.toString(),
+        gstSlots,
       },
     });
     await lead.save();
@@ -339,5 +375,125 @@ export class SubscriptionService {
       success: true,
       data: subscription,
     };
+  }
+
+  async sendPaymentLinkEmail(leadId: string, user?: RequestUser) {
+    await this.leadsService.assertLeadAccess(leadId, user);
+
+    const formatDate = (value: unknown) => {
+      if (!value) return '';
+      const d = new Date(value as any);
+      if (Number.isNaN(d.getTime())) return '';
+      return d.toLocaleDateString('en-IN');
+    };
+
+    const lead = await this.leadModel
+      .findOne(this.buildLeadIdentityFilter(leadId))
+      .exec();
+    if (!lead) {
+      throw new NotFoundException('Lead not found');
+    }
+
+    const recipientEmail =
+      typeof lead.email === 'string' ? lead.email.trim().toLowerCase() : '';
+    if (!recipientEmail) {
+      throw new BadRequestException('Lead email not available');
+    }
+
+    const leadIdentity = lead.leadId ?? String(lead._id);
+    const subscription = await this.subscriptionModel
+      .findOne({ leadId: leadIdentity })
+      .sort({ createdAt: -1 })
+      .populate('packageId')
+      .exec();
+    if (!subscription) {
+      throw new NotFoundException('Subscription not found');
+    }
+
+    const pkg = subscription.packageId as unknown as SubscriptionPackage;
+    const planName = typeof pkg?.name === 'string' ? pkg.name : 'Subscription';
+    const paymentLink =
+      typeof subscription.paymentLink === 'string'
+        ? subscription.paymentLink
+        : typeof lead.paymentDetails?.link === 'string'
+          ? lead.paymentDetails.link
+          : '';
+    if (!paymentLink) {
+      throw new BadRequestException('Payment link not available');
+    }
+
+    const actor = this.getActor(user);
+    const name =
+      typeof lead.fullName === 'string' && lead.fullName.trim().length > 0
+        ? lead.fullName.trim()
+        : 'there';
+
+    const emailOptionsBase = {
+      to: recipientEmail,
+      type: EmailType.SUBSCRIPTION,
+      subject: `Payment Link - ${planName}`,
+      payload: {
+        name,
+        planName,
+        amount: subscription.totalAmount,
+        period: `${subscription.duration} days`,
+        paymentLink,
+        gstSlots: subscription.gstSlots ?? 1,
+        durationDays: subscription.duration,
+        startDate: formatDate(subscription.startDate),
+        endDate: formatDate(subscription.endDate),
+        basePrice: (pkg as any)?.basePrice ?? undefined,
+        discountType: (pkg as any)?.discountType ?? undefined,
+        discountValue: (pkg as any)?.discountValue ?? undefined,
+        finalPriceAfterDiscount:
+          (pkg as any)?.finalPriceAfterDiscount ?? undefined,
+        gstPercentage: (pkg as any)?.gstPercentage ?? undefined,
+        selectedPrice: subscription.selectedPrice,
+        gstAmount: subscription.gstAmount,
+        totalAmount: subscription.totalAmount,
+      },
+    } as const;
+
+    try {
+      await this.emailService.sendEmail({
+        ...emailOptionsBase,
+        fromOverride: 'support@ecommreco.com',
+      });
+    } catch (err: any) {
+      const status = err?.statusCode ?? err?.code;
+      if (status === 422) {
+        await this.emailService.sendEmail({
+          ...emailOptionsBase,
+          replyTo: 'support@ecommreco.com',
+        });
+      } else {
+        throw err;
+      }
+    }
+
+    lead.paymentDetails = {
+      ...(lead.paymentDetails ?? {}),
+      link: paymentLink,
+      status: 'sent',
+      generatedBy: actor,
+      generatedAt: new Date(),
+      expiryDate: subscription.endDate,
+    };
+    lead.activityTimeline = Array.isArray(lead.activityTimeline)
+      ? lead.activityTimeline
+      : [];
+    lead.activityTimeline.push({
+      action: 'payment_link_emailed',
+      description: `Payment link emailed to ${recipientEmail}`,
+      performedBy: actor,
+      timestamp: new Date(),
+      metadata: {
+        subscriptionId: subscription._id.toString(),
+        gstSlots: subscription.gstSlots ?? 1,
+      },
+    });
+    await lead.save();
+
+    return { success: true, message: 'Payment link email sent' };
   }
 }

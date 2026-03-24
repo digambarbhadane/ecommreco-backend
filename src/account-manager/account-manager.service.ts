@@ -620,8 +620,11 @@ export class AccountManagerService {
     });
 
     try {
+      const fromEmail =
+        process.env.EMAIL_NOTIFICATION || 'notifications@ecommreco.com';
+      const fromName = process.env.EMAIL_NOTIFICATION_NAME || 'Ecommreco';
       await transporter.sendMail({
-        from: '"Seller Insights Hub" <no-reply@sellerinsights.com>',
+        from: `"${fromName}" <${fromEmail}>`,
         to: email,
         subject: 'Your Seller Account Credentials',
         html: `
