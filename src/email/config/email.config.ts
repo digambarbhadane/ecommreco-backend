@@ -34,11 +34,11 @@ export class EmailConfigService {
   }
 
   get useQueue() {
-    return this.config.get<string>('EMAIL_USE_QUEUE') === 'true';
+    return false;
   }
 
   get redisUrl() {
-    return this.config.get<string>('REDIS_URL');
+    return undefined;
   }
 
   get smtpHost() {

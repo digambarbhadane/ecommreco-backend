@@ -1,67 +1,26 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { EmailType, SendEmailOptions } from './email.types';
 import { EmailConfigService } from './config/email.config';
 import { ServerClient } from 'postmark';
 import * as fs from 'fs';
 import * as path from 'path';
 import Handlebars from 'handlebars';
-import { Queue, Worker, JobsOptions } from 'bullmq';
 import nodemailer from 'nodemailer';
 
 @Injectable()
-export class EmailService implements OnModuleInit {
+export class EmailService {
   private readonly logger = new Logger(EmailService.name);
   private readonly client: ServerClient;
   private readonly templateCache = new Map<
     EmailType,
     Handlebars.TemplateDelegate
   >();
-  private queue?: Queue;
-  private worker?: Worker;
 
   constructor(private readonly config: EmailConfigService) {
     this.client = new ServerClient(this.config.postmarkApiKey);
   }
 
-  async onModuleInit() {
-    if (this.config.useQueue && this.config.redisUrl) {
-      this.queue = new Queue('email', {
-        connection: { url: this.config.redisUrl },
-      });
-      this.worker = new Worker(
-        'email',
-        async (job) => {
-          const opts = job.data as SendEmailOptions;
-          await this.sendEmailImmediate(opts);
-        },
-        { connection: { url: this.config.redisUrl } },
-      );
-      this.worker.on('completed', (job) =>
-        this.logger.log(
-          `Email job completed id=${job.id} type=${(job.data as SendEmailOptions).type}`,
-        ),
-      );
-      this.worker.on('failed', (job, err) =>
-        this.logger.error(
-          `Email job failed id=${job?.id} error=${err?.message}`,
-        ),
-      );
-      this.logger.log('Email queue and worker initialized');
-    }
-  }
-
   async sendEmail(options: SendEmailOptions) {
-    if (this.queue) {
-      const jobOptions: JobsOptions = {
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 2000 },
-        removeOnComplete: true,
-        removeOnFail: false,
-      };
-      await this.queue.add('send', options, jobOptions);
-      this.logger.log(`Queued email to=${options.to} type=${options.type}`);
-      return { queued: true };
-    }
     await this.sendEmailImmediate(options);
     return { queued: false };
   }
@@ -101,7 +60,11 @@ export class EmailService implements OnModuleInit {
   ) {
     try {
       let transporter;
-      if (this.config.smtpHost && this.config.smtpUser && this.config.smtpPass) {
+      if (
+        this.config.smtpHost &&
+        this.config.smtpUser &&
+        this.config.smtpPass
+      ) {
         transporter = nodemailer.createTransport({
           host: this.config.smtpHost,
           port: this.config.smtpPort ?? 587,

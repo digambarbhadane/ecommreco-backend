@@ -1,10 +1,18 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  OnModuleInit,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import {
   PlatformMarketplace,
   PlatformMarketplaceDocument,
 } from './schemas/platform-marketplace.schema';
+import { CreatePlatformMarketplaceDto } from './dto/create-platform-marketplace.dto';
+import { UpdatePlatformMarketplaceDto } from './dto/update-platform-marketplace.dto';
 
 @Injectable()
 export class PlatformMarketplacesService implements OnModuleInit {
@@ -33,6 +41,201 @@ export class PlatformMarketplacesService implements OnModuleInit {
         isActive: item.status === 'active',
       })),
     };
+  }
+
+  async listAll() {
+    const data = await this.platformMarketplaceModel
+      .find({})
+      .sort({ name: 1 })
+      .lean()
+      .exec();
+    return {
+      success: true,
+      data: data.map((item) => ({
+        ...item,
+        isActive: item.status === 'active',
+      })),
+    };
+  }
+
+  async create(dto: CreatePlatformMarketplaceDto) {
+    const name = typeof dto.name === 'string' ? dto.name.trim() : '';
+    if (!name) {
+      throw new BadRequestException({
+        success: false,
+        message: 'name is required',
+      });
+    }
+
+    const baseSlug =
+      typeof dto.slug === 'string' && dto.slug.trim().length > 0
+        ? dto.slug.trim()
+        : this.slugify(name);
+
+    if (!baseSlug) {
+      throw new BadRequestException({
+        success: false,
+        message: 'slug is invalid',
+      });
+    }
+
+    const existingByName = await this.platformMarketplaceModel
+      .findOne({ name: new RegExp(`^${this.escapeRegex(name)}$`, 'i') })
+      .lean()
+      .exec();
+    if (existingByName) {
+      throw new BadRequestException({
+        success: false,
+        message: 'Marketplace already exists',
+        errorCode: 'DUPLICATE_MARKETPLACE',
+      });
+    }
+
+    const slug = await this.ensureUniqueSlug(baseSlug);
+    const status: 'active' | 'inactive' =
+      dto.status === 'inactive' ? 'inactive' : 'active';
+
+    const created = await this.platformMarketplaceModel.create({
+      name,
+      slug,
+      logoUrl: dto.logoUrl,
+      description: dto.description,
+      status,
+      isActive: status === 'active',
+    });
+
+    return { success: true, data: created.toObject() };
+  }
+
+  async update(id: string, dto: UpdatePlatformMarketplaceDto) {
+    if (!Types.ObjectId.isValid(id)) {
+      throw new BadRequestException({
+        success: false,
+        message: 'Invalid marketplace id',
+      });
+    }
+
+    const update: Record<string, unknown> = {};
+
+    if (typeof dto.name === 'string' && dto.name.trim().length > 0) {
+      update.name = dto.name.trim();
+    }
+
+    if (typeof dto.logoUrl === 'string') {
+      update.logoUrl = dto.logoUrl.trim();
+    }
+    if (typeof dto.description === 'string') {
+      update.description = dto.description.trim();
+    }
+
+    if (dto.status === 'active' || dto.status === 'inactive') {
+      update.status = dto.status;
+      update.isActive = dto.status === 'active';
+    }
+
+    if (typeof dto.slug === 'string' && dto.slug.trim().length > 0) {
+      update.slug = await this.ensureUniqueSlug(dto.slug.trim(), id);
+    } else if (typeof update.name === 'string') {
+      update.slug = await this.ensureUniqueSlug(this.slugify(update.name), id);
+    }
+
+    const updated = await this.platformMarketplaceModel
+      .findByIdAndUpdate(id, { $set: update }, { new: true })
+      .lean()
+      .exec();
+
+    if (!updated) {
+      throw new NotFoundException({
+        success: false,
+        message: 'Marketplace not found',
+      });
+    }
+
+    return { success: true, data: updated };
+  }
+
+  async getById(id: string) {
+    if (!Types.ObjectId.isValid(id)) {
+      throw new BadRequestException({
+        success: false,
+        message: 'Invalid marketplace id',
+      });
+    }
+    const found = await this.platformMarketplaceModel
+      .findById(id)
+      .lean()
+      .exec();
+    if (!found) {
+      throw new NotFoundException({
+        success: false,
+        message: 'Marketplace not found',
+      });
+    }
+    return {
+      success: true,
+      data: { ...found, isActive: found.status === 'active' },
+    };
+  }
+
+  async remove(id: string) {
+    if (!Types.ObjectId.isValid(id)) {
+      throw new BadRequestException({
+        success: false,
+        message: 'Invalid marketplace id',
+      });
+    }
+    const removed = await this.platformMarketplaceModel
+      .findByIdAndDelete(id)
+      .lean()
+      .exec();
+    if (!removed) {
+      throw new NotFoundException({
+        success: false,
+        message: 'Marketplace not found',
+      });
+    }
+    return { success: true, data: { deleted: true } };
+  }
+
+  private slugify(value: string) {
+    return value
+      .toLowerCase()
+      .replace(/&/g, ' and ')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '');
+  }
+
+  private escapeRegex(value: string) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  private async ensureUniqueSlug(base: string, excludeId?: string) {
+    const normalized = this.slugify(base) || base;
+    let candidate = normalized;
+    let suffix = 2;
+
+    while (true) {
+      const exists = await this.platformMarketplaceModel
+        .findOne({
+          slug: new RegExp(`^${this.escapeRegex(candidate)}$`, 'i'),
+          ...(excludeId && Types.ObjectId.isValid(excludeId)
+            ? { _id: { $ne: excludeId } }
+            : {}),
+        })
+        .select('_id')
+        .lean()
+        .exec();
+      if (!exists) return candidate;
+      candidate = `${normalized}-${suffix}`;
+      suffix += 1;
+      if (suffix > 200) {
+        throw new BadRequestException({
+          success: false,
+          message: 'Unable to generate unique slug',
+        });
+      }
+    }
   }
 
   private async ensureStatusDefaults() {

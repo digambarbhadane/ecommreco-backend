@@ -432,6 +432,20 @@ export class LeadsController {
     );
   }
 
+  @Delete(':id')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('super_admin')
+  deleteLead(@Param('id') id: string, @Req() req: RequestWithUser) {
+    return this.leadsService.deleteLead(id, req.user);
+  }
+
+  @Post(':id/delete')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('super_admin')
+  deleteLeadCompat(@Param('id') id: string, @Req() req: RequestWithUser) {
+    return this.leadsService.deleteLead(id, req.user);
+  }
+
   @Get(':id')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')

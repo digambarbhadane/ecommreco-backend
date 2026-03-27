@@ -100,9 +100,13 @@ export class SellersController {
 
   @Get('super-admin/:id')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('super_admin')
+  @Roles('super_admin', 'training_and_support_manager')
   getSellerSuperAdmin(@Param('id') id: string, @Req() req: RequestWithUser) {
-    return this.sellersService.getSeller(id, 'super_admin', req.user);
+    return this.sellersService.getSeller(
+      id,
+      req.user?.role ?? 'seller',
+      req.user,
+    );
   }
 
   @Post(':id/payment-link')

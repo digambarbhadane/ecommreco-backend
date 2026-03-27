@@ -64,6 +64,12 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+  app.use((req, res, next) => {
+    if (req.headers['access-control-request-private-network'] === 'true') {
+      res.header('Access-Control-Allow-Private-Network', 'true');
+    }
+    next();
+  });
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -89,10 +95,50 @@ async function bootstrap() {
       'http://localhost:5173',
       'http://127.0.0.1:5173',
       'http://[::1]:5173',
+      'http://localhost:3000',
+      'http://127.0.0.1:3000',
+      'http://[::1]:3000',
+      'http://localhost:4200',
+      'http://127.0.0.1:4200',
+      'http://[::1]:4200',
       'https://ecommreco.com',
       ...configuredOrigins,
     ].map(normalizeOrigin),
   );
+
+  app.use((req, res, next) => {
+    if (req.method !== 'OPTIONS') {
+      next();
+      return;
+    }
+
+    const originHeader =
+      typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
+    if (originHeader) {
+      res.header('Access-Control-Allow-Origin', originHeader);
+      res.header('Vary', 'Origin');
+      res.header('Access-Control-Allow-Credentials', 'true');
+    }
+
+    res.header(
+      'Access-Control-Allow-Methods',
+      'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
+    );
+    const requestedHeaders =
+      typeof req.headers['access-control-request-headers'] === 'string'
+        ? req.headers['access-control-request-headers']
+        : undefined;
+    res.header(
+      'Access-Control-Allow-Headers',
+      requestedHeaders ??
+        'Content-Type,Accept,Authorization,X-Requested-With,Origin,x-setup-token',
+    );
+    res.header('Access-Control-Max-Age', '86400');
+    if (req.headers['access-control-request-private-network'] === 'true') {
+      res.header('Access-Control-Allow-Private-Network', 'true');
+    }
+    res.sendStatus(204);
+  });
 
   app.enableCors({
     origin: (
@@ -120,7 +166,7 @@ async function bootstrap() {
           return;
         }
         const normalizedOrigin = normalizeOrigin(origin);
-        if (!isProduction && isPrivateNetworkOrigin(normalizedOrigin)) {
+        if (isPrivateNetworkOrigin(normalizedOrigin)) {
           callback(null, origin);
           return;
         }
