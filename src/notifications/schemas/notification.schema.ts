@@ -16,6 +16,34 @@ export class Notification {
 
   @Prop({ default: false })
   isRead: boolean;
+
+  @Prop({ index: true })
+  userId?: string;
+
+  @Prop()
+  userName?: string;
+
+  @Prop({ index: true })
+  userEmail?: string;
+
+  @Prop({ index: true })
+  userRole?: string;
+
+  @Prop({ index: true })
+  sellerId?: string;
+
+  @Prop()
+  sellerName?: string;
+
+  @Prop()
+  module?: string;
+
+  @Prop()
+  ipAddress?: string;
 }
 
 export const NotificationSchema = SchemaFactory.createForClass(Notification);
+
+NotificationSchema.index({ createdAt: -1 });
+NotificationSchema.index({ recipientRole: 1, createdAt: -1 });
+NotificationSchema.index({ event: 1, createdAt: -1 });

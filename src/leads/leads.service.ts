@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -1926,7 +1927,7 @@ export class LeadsService {
     const lead = await this.leadModel
       .findOne(identityFilter)
       .select('_id sellerId leadId publicId')
-      .lean()
+      .lean<{ _id: Types.ObjectId; sellerId?: string }>()
       .exec();
 
     if (!lead) {
@@ -1948,7 +1949,7 @@ export class LeadsService {
       });
     }
 
-    await this.leadModel.deleteOne({ _id: (lead as unknown as { _id: unknown })._id }).exec();
+    await this.leadModel.deleteOne({ _id: lead._id }).exec();
 
     return { success: true, data: { deleted: true } };
   }
