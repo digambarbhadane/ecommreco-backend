@@ -131,6 +131,18 @@ export class Lead {
   @Prop()
   assignedSalesManagerId?: string;
 
+  @Prop({ index: true })
+  assignedTo?: string;
+
+  @Prop({ index: true })
+  lastContactedAt?: Date;
+
+  @Prop({ index: true })
+  lastConnectedAt?: Date;
+
+  @Prop({ index: true })
+  convertedAt?: Date;
+
   @Prop()
   assignedBy?: string;
 
@@ -167,6 +179,27 @@ export class Lead {
 
   @Prop({ default: 'new' })
   leadStatus: 'new' | 'contacted' | 'interested' | 'converted' | 'rejected';
+
+  @Prop({
+    type: String,
+    enum: [
+      'GENERATED',
+      'CONTACTED',
+      'CONNECTED',
+      'FOLLOW_UP',
+      'CONVERTED',
+      'LOST',
+    ],
+    default: 'GENERATED',
+    index: true,
+  })
+  status:
+    | 'GENERATED'
+    | 'CONTACTED'
+    | 'CONNECTED'
+    | 'FOLLOW_UP'
+    | 'CONVERTED'
+    | 'LOST';
 
   @Prop()
   source?: string;
@@ -215,3 +248,9 @@ LeadSchema.index({
   email: 'text',
   firmName: 'text',
 });
+LeadSchema.index({ assignedSalesManagerId: 1, createdAt: -1 });
+LeadSchema.index({ assignedTo: 1, createdAt: -1 });
+LeadSchema.index({ leadStatus: 1, updatedAt: -1 });
+LeadSchema.index({ lastContactedAt: -1 });
+LeadSchema.index({ lastConnectedAt: -1 });
+LeadSchema.index({ convertedAt: -1 });

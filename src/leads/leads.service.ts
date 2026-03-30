@@ -302,6 +302,8 @@ export class LeadsService {
     leadId?: string;
     status?: string;
     search?: string;
+    from?: string;
+    to?: string;
     user?: RequestUser;
   }) {
     const skip = (params.page - 1) * params.limit;
@@ -329,6 +331,30 @@ export class LeadsService {
     } else if (!params.status) {
       // Default to showing only pending (which includes overdue)
       followUpMatch['followUps.status'] = 'pending';
+    }
+
+    const parseBound = (value: string, mode: 'start' | 'end') => {
+      const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+      if (dateOnly) {
+        const [y, m, d] = value.split('-').map((x) => Number(x));
+        const istMidnightUtcMs =
+          Date.UTC(y, (m || 1) - 1, d || 1) - 5.5 * 60 * 60000;
+        return mode === 'start'
+          ? new Date(istMidnightUtcMs)
+          : new Date(istMidnightUtcMs + 24 * 60 * 60 * 1000 - 1);
+      }
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+    };
+    const from = typeof params.from === 'string' ? params.from.trim() : '';
+    const to = typeof params.to === 'string' ? params.to.trim() : '';
+    const fromDate = from ? parseBound(from, 'start') : undefined;
+    const toDate = to ? parseBound(to, 'end') : undefined;
+    if (fromDate || toDate) {
+      followUpMatch['followUps.scheduledAt'] = {
+        ...(fromDate ? { $gte: fromDate } : {}),
+        ...(toDate ? { $lte: toDate } : {}),
+      };
     }
 
     const search =
@@ -497,6 +523,8 @@ export class LeadsService {
     limit: number;
     leadId?: string;
     search?: string;
+    from?: string;
+    to?: string;
     user?: RequestUser;
   }) {
     const skip = (params.page - 1) * params.limit;
@@ -522,9 +550,39 @@ export class LeadsService {
       typeof params.search === 'string' ? params.search.trim() : '';
     const hasSearch = search.length > 0;
 
+    const parseBound = (value: string, mode: 'start' | 'end') => {
+      const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+      if (dateOnly) {
+        const [y, m, d] = value.split('-').map((x) => Number(x));
+        const istMidnightUtcMs =
+          Date.UTC(y, (m || 1) - 1, d || 1) - 5.5 * 60 * 60000;
+        return mode === 'start'
+          ? new Date(istMidnightUtcMs)
+          : new Date(istMidnightUtcMs + 24 * 60 * 60 * 1000 - 1);
+      }
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+    };
+    const from = typeof params.from === 'string' ? params.from.trim() : '';
+    const to = typeof params.to === 'string' ? params.to.trim() : '';
+    const fromDate = from ? parseBound(from, 'start') : undefined;
+    const toDate = to ? parseBound(to, 'end') : undefined;
+    const dateMatch: Record<string, unknown> =
+      fromDate || toDate
+        ? {
+            'notes.createdAt': {
+              ...(fromDate ? { $gte: fromDate } : {}),
+              ...(toDate ? { $lte: toDate } : {}),
+            },
+          }
+        : {};
+
     const pipeline: PipelineStage[] = [
       { $match: leadMatch as PipelineStage.Match['$match'] },
       { $unwind: '$notes' },
+      ...(Object.keys(dateMatch).length
+        ? [{ $match: dateMatch as PipelineStage.Match['$match'] }]
+        : []),
       {
         $addFields: {
           createdAtText: {
@@ -577,6 +635,9 @@ export class LeadsService {
     const countPipeline: PipelineStage[] = [
       { $match: leadMatch as PipelineStage.Match['$match'] },
       { $unwind: '$notes' },
+      ...(Object.keys(dateMatch).length
+        ? [{ $match: dateMatch as PipelineStage.Match['$match'] }]
+        : []),
       {
         $addFields: {
           createdAtText: {
@@ -622,17 +683,55 @@ export class LeadsService {
     };
   }
 
-  async getDashboardStats(user?: RequestUser) {
+  async getDashboardStats(
+    user?: RequestUser,
+    params?: { from?: string; to?: string },
+  ) {
     const salesFilter = this.buildSalesManagerLeadAccessFilter(user);
     const baseFilter: Record<string, unknown> = salesFilter ? salesFilter : {};
 
-    const totalLeads = await this.leadModel.countDocuments(baseFilter);
+    const parseBound = (value: string, mode: 'start' | 'end') => {
+      const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+      if (dateOnly) {
+        const [y, m, d] = value.split('-').map((x) => Number(x));
+        const istMidnightUtcMs =
+          Date.UTC(y, (m || 1) - 1, d || 1) - 5.5 * 60 * 60000;
+        return mode === 'start'
+          ? new Date(istMidnightUtcMs)
+          : new Date(istMidnightUtcMs + 24 * 60 * 60 * 1000 - 1);
+      }
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+    };
+    const from = typeof params?.from === 'string' ? params.from.trim() : '';
+    const to = typeof params?.to === 'string' ? params.to.trim() : '';
+    const fromDate = from ? parseBound(from, 'start') : undefined;
+    const toDate = to ? parseBound(to, 'end') : undefined;
+    const hasRange = Boolean(fromDate || toDate);
+    const createdAtRange: Record<string, unknown> = hasRange
+      ? {
+          createdAt: {
+            ...(fromDate ? { $gte: fromDate } : {}),
+            ...(toDate ? { $lte: toDate } : {}),
+          },
+        }
+      : {};
+
+    const totalLeads = await this.leadModel.countDocuments(
+      hasRange
+        ? ({ $and: [baseFilter, createdAtRange] } as Record<string, unknown>)
+        : baseFilter,
+    );
 
     const leadsByStatus = await this.leadModel.aggregate<{
       _id: string;
       count: number;
     }>([
-      { $match: baseFilter as PipelineStage.Match['$match'] },
+      {
+        $match: (hasRange
+          ? ({ $and: [baseFilter, createdAtRange] } as Record<string, unknown>)
+          : baseFilter) as PipelineStage.Match['$match'],
+      },
       {
         $group: {
           _id: '$leadStatus',
@@ -649,40 +748,99 @@ export class LeadsService {
       {},
     );
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const newLeadsToday = await this.leadModel.countDocuments({
-      ...(salesFilter ? baseFilter : {}),
-      createdAt: { $gte: today },
-    });
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const newLeadsToday = await this.leadModel.countDocuments(
+      hasRange
+        ? ({ $and: [baseFilter, createdAtRange] } as Record<string, unknown>)
+        : {
+            ...(salesFilter ? baseFilter : {}),
+            createdAt: { $gte: startOfToday },
+          },
+    );
 
     const pendingFollowUpsResult = await this.leadModel.aggregate<{
       count: number;
     }>([
       { $match: baseFilter as PipelineStage.Match['$match'] },
       { $unwind: '$followUps' },
-      { $match: { 'followUps.status': 'pending' } },
+      {
+        $match: {
+          'followUps.status': 'pending',
+          ...(hasRange
+            ? {
+                'followUps.scheduledAt': {
+                  ...(fromDate ? { $gte: fromDate } : {}),
+                  ...(toDate ? { $lte: toDate } : {}),
+                },
+              }
+            : {}),
+        } as Record<string, unknown>,
+      },
       { $count: 'count' },
     ]);
     const pendingFollowUps = pendingFollowUpsResult[0]?.count ?? 0;
 
-    const convertedLeads = statusMap['converted'] || 0;
+    const convertedLeads = hasRange
+      ? await this.leadModel.countDocuments({
+          $and: [
+            baseFilter,
+            {
+              $or: [
+                {
+                  convertedAt: {
+                    ...(fromDate ? { $gte: fromDate } : {}),
+                    ...(toDate ? { $lte: toDate } : {}),
+                  },
+                },
+                {
+                  activityTimeline: {
+                    $elemMatch: {
+                      timestamp: {
+                        ...(fromDate ? { $gte: fromDate } : {}),
+                        ...(toDate ? { $lte: toDate } : {}),
+                      },
+                      'metadata.newStatus': 'CONVERTED',
+                    },
+                  },
+                },
+                {
+                  activityTimeline: {
+                    $elemMatch: {
+                      timestamp: {
+                        ...(fromDate ? { $gte: fromDate } : {}),
+                        ...(toDate ? { $lte: toDate } : {}),
+                      },
+                      'metadata.newLeadStatus': 'converted',
+                    },
+                  },
+                },
+              ],
+            },
+          ],
+        })
+      : statusMap['converted'] || 0;
     const conversionRate =
       totalLeads > 0 ? (convertedLeads / totalLeads) * 100 : 0;
 
     // Get recent leads (last 5)
     const recentLeads = await this.leadModel
-      .find(baseFilter)
+      .find(
+        hasRange
+          ? ({ $and: [baseFilter, createdAtRange] } as Record<string, unknown>)
+          : baseFilter,
+      )
       .sort({ createdAt: -1 })
       .limit(5)
       .select('fullName email contactNumber leadStatus createdAt leadId')
       .lean();
 
-    // Get today's follow-ups
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
     const endOfDay = new Date();
     endOfDay.setHours(23, 59, 59, 999);
+    const followUpFrom = hasRange ? fromDate : startOfDay;
+    const followUpTo = hasRange ? toDate : endOfDay;
 
     const todaysFollowUps = await this.leadModel.aggregate<{
       leadId: string;
@@ -690,10 +848,14 @@ export class LeadsService {
       contactNumber: string;
       followUp: unknown;
     }>([
+      { $match: baseFilter as PipelineStage.Match['$match'] },
       { $unwind: '$followUps' },
       {
         $match: {
-          'followUps.scheduledAt': { $gte: startOfDay, $lte: endOfDay },
+          'followUps.scheduledAt': {
+            ...(followUpFrom ? { $gte: followUpFrom } : {}),
+            ...(followUpTo ? { $lte: followUpTo } : {}),
+          },
           'followUps.status': 'pending',
         },
       },
@@ -770,6 +932,7 @@ export class LeadsService {
       createdByUserId: requesterId || undefined,
       assignedSalesManager: assigned?.email,
       assignedSalesManagerId: assigned?.id,
+      assignedTo: assigned?.id,
       assignedBy: requesterEmail || createdBy,
       assignedAt: assigned ? new Date() : undefined,
       metadata: {
@@ -841,6 +1004,7 @@ export class LeadsService {
       creatorRole: 'seller',
       assignedSalesManager: assigned?.email,
       assignedSalesManagerId: assigned?.id,
+      assignedTo: assigned?.id,
       assignedBy: assigned ? 'system' : undefined,
       assignedAt: assigned ? new Date() : undefined,
       ipAddress,
@@ -1455,6 +1619,7 @@ export class LeadsService {
         creatorRole: user?.role || 'super_admin',
         assignedSalesManager: assigned?.email,
         assignedSalesManagerId: assigned?.id,
+        assignedTo: assigned?.id,
         assignedBy: requesterEmail || 'super_admin',
         assignedAt: assigned ? now : undefined,
         metadata: {
@@ -1507,6 +1672,7 @@ export class LeadsService {
         for (const docIdx of needsAutoAssignmentIndexes) {
           docs[docIdx].assignedSalesManager = undefined;
           docs[docIdx].assignedSalesManagerId = undefined;
+          docs[docIdx].assignedTo = undefined;
         }
       } else {
         const counter = await this.counterModel.findOneAndUpdate(
@@ -1530,6 +1696,7 @@ export class LeadsService {
           const candidate = normalizedAutoCandidates[candidateIndex];
           docs[docIdx].assignedSalesManager = candidate.email;
           docs[docIdx].assignedSalesManagerId = candidate.id;
+          docs[docIdx].assignedTo = candidate.id;
           docs[docIdx].assignedAt = now;
         }
       }
@@ -1742,6 +1909,10 @@ export class LeadsService {
       skip?: number;
       page?: number;
       search?: string;
+      today?: boolean;
+      activity?: 'generated' | 'contacted' | 'connected' | 'converted' | 'lost';
+      from?: string;
+      to?: string;
     },
     user?: RequestUser,
   ) {
@@ -1757,6 +1928,140 @@ export class LeadsService {
     const salesFilter = this.buildSalesManagerLeadAccessFilter(user);
     if (salesFilter) {
       Object.assign(filter, salesFilter);
+    }
+    const parseBound = (value: string, mode: 'start' | 'end') => {
+      const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+      if (dateOnly) {
+        const [y, m, d] = value.split('-').map((x) => Number(x));
+        const istMidnightUtcMs =
+          Date.UTC(y, (m || 1) - 1, d || 1) - 5.5 * 60 * 60000;
+        return mode === 'start'
+          ? new Date(istMidnightUtcMs)
+          : new Date(istMidnightUtcMs + 24 * 60 * 60 * 1000 - 1);
+      }
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+    };
+
+    const from = typeof params.from === 'string' ? params.from.trim() : '';
+    const to = typeof params.to === 'string' ? params.to.trim() : '';
+    const fromDate = from ? parseBound(from, 'start') : undefined;
+    const toDate = to ? parseBound(to, 'end') : undefined;
+    const hasExplicitRange = Boolean(fromDate || toDate);
+
+    const andFilters: Array<Record<string, unknown>> = [filter];
+
+    if (hasExplicitRange || params.today) {
+      let start = fromDate;
+      let end = toDate;
+      if (!hasExplicitRange && params.today) {
+        const now = new Date();
+        const utcMs = now.getTime() + now.getTimezoneOffset() * 60000;
+        const istNow = new Date(utcMs + 5.5 * 60 * 60000);
+        const istY = istNow.getFullYear();
+        const istM = istNow.getMonth();
+        const istD = istNow.getDate();
+        const istMidnightUtcMs = Date.UTC(istY, istM, istD) - 5.5 * 60 * 60000;
+        start = new Date(istMidnightUtcMs);
+        end = new Date(istMidnightUtcMs + 24 * 60 * 60 * 1000 - 1);
+      }
+
+      const timeRange: Record<string, unknown> = {
+        ...(start ? { $gte: start } : {}),
+        ...(end ? { $lte: end } : {}),
+      };
+
+      const activity = params.activity || 'generated';
+      if (activity === 'generated') {
+        andFilters.push({ createdAt: timeRange });
+      } else if (activity === 'contacted') {
+        andFilters.push({
+          $or: [
+            { lastContactedAt: timeRange },
+            {
+              activityTimeline: {
+                $elemMatch: {
+                  timestamp: timeRange,
+                  'metadata.newStatus': 'CONTACTED',
+                },
+              },
+            },
+            {
+              activityTimeline: {
+                $elemMatch: {
+                  timestamp: timeRange,
+                  'metadata.newLeadStatus': 'contacted',
+                },
+              },
+            },
+          ],
+        });
+      } else if (activity === 'connected') {
+        andFilters.push({
+          $or: [
+            { lastConnectedAt: timeRange },
+            {
+              activityTimeline: {
+                $elemMatch: {
+                  timestamp: timeRange,
+                  'metadata.newStatus': 'CONNECTED',
+                },
+              },
+            },
+            {
+              activityTimeline: {
+                $elemMatch: {
+                  timestamp: timeRange,
+                  'metadata.newLeadStatus': 'interested',
+                },
+              },
+            },
+          ],
+        });
+      } else if (activity === 'converted') {
+        andFilters.push({
+          $or: [
+            { convertedAt: timeRange },
+            {
+              activityTimeline: {
+                $elemMatch: {
+                  timestamp: timeRange,
+                  'metadata.newStatus': 'CONVERTED',
+                },
+              },
+            },
+            {
+              activityTimeline: {
+                $elemMatch: {
+                  timestamp: timeRange,
+                  'metadata.newLeadStatus': 'converted',
+                },
+              },
+            },
+          ],
+        });
+      } else if (activity === 'lost') {
+        andFilters.push({
+          $or: [
+            {
+              activityTimeline: {
+                $elemMatch: {
+                  timestamp: timeRange,
+                  'metadata.newStatus': 'LOST',
+                },
+              },
+            },
+            {
+              activityTimeline: {
+                $elemMatch: {
+                  timestamp: timeRange,
+                  'metadata.newLeadStatus': 'rejected',
+                },
+              },
+            },
+          ],
+        });
+      }
     }
     const search =
       typeof params.search === 'string' ? params.search.trim() : '';
@@ -1777,8 +2082,19 @@ export class LeadsService {
     }
     const searchFilter: Record<string, unknown> =
       hasSearch && searchOrFilters.length ? { $or: searchOrFilters } : {};
+    const effectiveFilter =
+      andFilters.length > 1
+        ? ({ $and: andFilters } as Record<string, unknown>)
+        : filter;
     const data = await this.leadModel
-      .find(hasSearch ? { $and: [filter, searchFilter] } : filter)
+      .find(
+        hasSearch
+          ? ({ $and: [effectiveFilter, searchFilter] } as Record<
+              string,
+              unknown
+            >)
+          : effectiveFilter,
+      )
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
@@ -1823,7 +2139,9 @@ export class LeadsService {
     }
 
     const total = await this.leadModel.countDocuments(
-      hasSearch ? { $and: [filter, searchFilter] } : filter,
+      hasSearch
+        ? ({ $and: [effectiveFilter, searchFilter] } as Record<string, unknown>)
+        : effectiveFilter,
     );
     return {
       success: true,
@@ -2237,9 +2555,56 @@ export class LeadsService {
       }
     }
 
+    const legacyFromEnum = (status: Lead['status']): Lead['leadStatus'] => {
+      switch (status) {
+        case 'GENERATED':
+          return 'new';
+        case 'CONTACTED':
+          return 'contacted';
+        case 'CONNECTED':
+          return 'interested';
+        case 'FOLLOW_UP':
+          return 'contacted';
+        case 'CONVERTED':
+          return 'converted';
+        case 'LOST':
+          return 'rejected';
+      }
+    };
+    const enumFromLegacy = (leadStatus: Lead['leadStatus']): Lead['status'] => {
+      switch (leadStatus) {
+        case 'new':
+          return 'GENERATED';
+        case 'contacted':
+          return 'CONTACTED';
+        case 'interested':
+          return 'CONNECTED';
+        case 'converted':
+          return 'CONVERTED';
+        case 'rejected':
+          return 'LOST';
+      }
+    };
+
+    const requestedLegacy = dto.leadStatus;
+    const requestedEnum = dto.status;
+    if (!requestedLegacy && !requestedEnum) {
+      throw new BadRequestException({
+        success: false,
+        message: 'leadStatus or status is required',
+      });
+    }
+
+    const effectiveLeadStatus: Lead['leadStatus'] = requestedLegacy
+      ? requestedLegacy
+      : legacyFromEnum(requestedEnum as Lead['status']);
+    const effectiveStatus: Lead['status'] = requestedEnum
+      ? requestedEnum
+      : enumFromLegacy(requestedLegacy as Lead['leadStatus']);
+
     // Map leadStatus to pipelineStage
     let pipelineStage: Lead['pipelineStage'] = 'New Lead';
-    switch (dto.leadStatus) {
+    switch (effectiveLeadStatus) {
       case 'new':
         pipelineStage = 'New Lead';
         break;
@@ -2253,25 +2618,45 @@ export class LeadsService {
         pipelineStage = 'Converted to Seller';
         break;
       case 'rejected':
-        // Keep current stage or move to a specific rejected stage if exists
-        // For now, we'll keep it as is, or maybe 'Rejected' if the frontend supports it.
-        // The frontend SalesPipeline doesn't have 'Rejected', so we might leave it or set to last known.
-        // Let's not update pipelineStage for rejected to avoid breaking the UI flow visualization.
         break;
     }
 
     const activityTimelineEntry = {
       action: 'status_updated',
-      description: `Status updated to ${dto.leadStatus}`,
+      description: `Status updated to ${effectiveStatus}`,
       performedBy: updatedBy,
       timestamp: new Date(),
+      metadata: {
+        newLeadStatus: effectiveLeadStatus,
+        newStatus: effectiveStatus,
+      },
     };
 
-    const setUpdate: Partial<Pick<Lead, 'leadStatus' | 'pipelineStage'>> = {
-      leadStatus: dto.leadStatus,
+    const setUpdate: Partial<
+      Pick<
+        Lead,
+        | 'leadStatus'
+        | 'pipelineStage'
+        | 'status'
+        | 'lastContactedAt'
+        | 'lastConnectedAt'
+        | 'convertedAt'
+      >
+    > = {
+      leadStatus: effectiveLeadStatus,
+      status: effectiveStatus,
     };
-    if (dto.leadStatus !== 'rejected') {
+    if (effectiveLeadStatus !== 'rejected') {
       setUpdate.pipelineStage = pipelineStage;
+    }
+    if (effectiveLeadStatus === 'contacted') {
+      setUpdate.lastContactedAt = new Date();
+    }
+    if (effectiveLeadStatus === 'interested') {
+      setUpdate.lastConnectedAt = new Date();
+    }
+    if (effectiveLeadStatus === 'converted') {
+      setUpdate.convertedAt = new Date();
     }
 
     const pushUpdate: NonNullable<UpdateQuery<LeadDocument>['$push']> = {

@@ -90,8 +90,12 @@ export class LeadsController {
   @Get('dashboard-stats')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
-  getDashboardStats(@Req() req: RequestWithUser) {
-    return this.leadsService.getDashboardStats(req.user);
+  getDashboardStats(
+    @Req() req: RequestWithUser,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.leadsService.getDashboardStats(req.user, { from, to });
   }
 
   @Get()
@@ -99,6 +103,11 @@ export class LeadsController {
   @Roles('super_admin', 'sales_manager')
   listLeads(
     @Query('status') status?: string,
+    @Query('today') today?: string,
+    @Query('activity')
+    activity?: 'generated' | 'contacted' | 'connected' | 'converted' | 'lost',
+    @Query('from') from?: string,
+    @Query('to') to?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('skip') skip?: string,
@@ -111,6 +120,14 @@ export class LeadsController {
     return this.leadsService.listLeads(
       {
         status,
+        today:
+          typeof today === 'string' &&
+          (today.toLowerCase() === 'true' ||
+            today === '1' ||
+            today.toLowerCase() === 'yes'),
+        activity,
+        from,
+        to,
         page: Number.isFinite(parsedPage) ? parsedPage : undefined,
         limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
         skip: Number.isFinite(parsedSkip) ? parsedSkip : undefined,
@@ -129,6 +146,8 @@ export class LeadsController {
     @Query('leadId') leadId?: string,
     @Query('status') status?: string,
     @Query('search') search?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
     @Req() req?: RequestWithUser,
   ) {
     const parsedPage = typeof page === 'string' ? Number(page) : 1;
@@ -139,6 +158,8 @@ export class LeadsController {
       leadId,
       status,
       search,
+      from,
+      to,
       user: req?.user,
     });
   }
@@ -178,6 +199,8 @@ export class LeadsController {
     @Query('limit') limit?: string,
     @Query('leadId') leadId?: string,
     @Query('search') search?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
     @Req() req?: RequestWithUser,
   ) {
     const parsedPage = typeof page === 'string' ? Number(page) : 1;
@@ -187,6 +210,8 @@ export class LeadsController {
       limit: parsedLimit,
       leadId,
       search,
+      from,
+      to,
       user: req?.user,
     });
   }
@@ -199,6 +224,8 @@ export class LeadsController {
     @Query('limit') limit?: string,
     @Query('leadId') leadId?: string,
     @Query('search') search?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
     const parsedPage = typeof page === 'string' ? Number(page) : 1;
     const parsedLimit = typeof limit === 'string' ? Number(limit) : 10;
@@ -207,6 +234,8 @@ export class LeadsController {
       limit: parsedLimit,
       leadId,
       search,
+      from,
+      to,
     });
   }
 
@@ -219,6 +248,8 @@ export class LeadsController {
     @Query('leadId') leadId?: string,
     @Query('status') status?: string,
     @Query('search') search?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
     const parsedPage = typeof page === 'string' ? Number(page) : 1;
     const parsedLimit = typeof limit === 'string' ? Number(limit) : 10;
@@ -228,6 +259,8 @@ export class LeadsController {
       leadId,
       status,
       search,
+      from,
+      to,
     });
   }
 

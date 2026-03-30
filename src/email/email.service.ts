@@ -101,7 +101,11 @@ export class EmailService implements OnModuleInit {
   ) {
     try {
       let transporter;
-      if (this.config.smtpHost && this.config.smtpUser && this.config.smtpPass) {
+      if (
+        this.config.smtpHost &&
+        this.config.smtpUser &&
+        this.config.smtpPass
+      ) {
         transporter = nodemailer.createTransport({
           host: this.config.smtpHost,
           port: this.config.smtpPort ?? 587,

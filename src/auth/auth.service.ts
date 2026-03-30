@@ -598,7 +598,7 @@ export class AuthService implements OnModuleInit {
   }
 
   private assertDatabaseConnected() {
-    if (this.connection.readyState !== 1) {
+    if (Number(this.connection.readyState) !== 1) {
       throw new ServiceUnavailableException({
         success: false,
         message: 'Database connection is not established',
