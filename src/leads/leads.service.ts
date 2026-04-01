@@ -6,6 +6,8 @@ import {
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, PipelineStage, Types, UpdateQuery } from 'mongoose';
 import { NotificationsService } from '../notifications/notifications.service';
+import { EmailService } from '../email/email.service';
+import { EmailType } from '../email/email.types';
 import { Seller, SellerDocument } from '../sellers/schemas/seller.schema';
 import { User, UserDocument } from '../users/schemas/user.schema';
 import { generatePublicId } from '../common/public-id';
@@ -41,6 +43,7 @@ export class LeadsService {
     @InjectModel(Counter.name)
     private readonly counterModel: Model<CounterDocument>,
     private readonly notificationsService: NotificationsService,
+    private readonly emailService: EmailService,
   ) {}
 
   private async getNextLeadId(date = new Date()): Promise<string> {
@@ -75,6 +78,16 @@ export class LeadsService {
 
   private normalizeEmail(value: unknown) {
     return typeof value === 'string' ? value.trim().toLowerCase() : '';
+  }
+
+  private generateMeetLink() {
+    const chars = 'abcdefghijklmnopqrstuvwxyz';
+    const segment = (length: number) =>
+      Array.from(
+        { length },
+        () => chars[Math.floor(Math.random() * chars.length)],
+      ).join('');
+    return `https://meet.google.com/${segment(3)}-${segment(4)}-${segment(3)}`;
   }
 
   private async resolveSalesManager(params: {
@@ -962,7 +975,7 @@ export class LeadsService {
     await this.notificationsService.createNotification({
       event: 'lead_created',
       recipientRole: 'sales_admin',
-      message: `New manual lead created for ${created.fullName} by ${createdBy}. Score: ${leadScore}`,
+      message: `New manual lead created for ${created.fullName || created.contactNumber} by ${createdBy}. Score: ${leadScore}`,
     });
 
     return {
@@ -1799,11 +1812,19 @@ export class LeadsService {
     const errors: Record<string, string> = {};
 
     // Check for duplicates in Sellers collection
-    const existingSeller = await this.sellerModel
-      .findOne({
-        $or: [{ email }, { contactNumber }, { gstNumber }],
-      })
-      .exec();
+    const sellerOrFilters = [
+      ...(email ? [{ email }] : []),
+      ...(contactNumber ? [{ contactNumber }] : []),
+      ...(gstNumber ? [{ gstNumber }] : []),
+    ];
+    const existingSeller =
+      sellerOrFilters.length > 0
+        ? await this.sellerModel
+            .findOne({
+              $or: sellerOrFilters,
+            })
+            .exec()
+        : null;
 
     if (existingSeller) {
       if (existingSeller.email === email) {
@@ -1821,11 +1842,19 @@ export class LeadsService {
     // Check for duplicates in Leads collection
     // We only need to check if we haven't already found an error for a field,
     // but to be thorough and catch all conflicts, we check anyway.
-    const existingLead = await this.leadModel
-      .findOne({
-        $or: [{ email }, { contactNumber }, { gstNumber }],
-      })
-      .exec();
+    const leadOrFilters = [
+      ...(email ? [{ email }] : []),
+      ...(contactNumber ? [{ contactNumber }] : []),
+      ...(gstNumber ? [{ gstNumber }] : []),
+    ];
+    const existingLead =
+      leadOrFilters.length > 0
+        ? await this.leadModel
+            .findOne({
+              $or: leadOrFilters,
+            })
+            .exec()
+        : null;
 
     if (existingLead) {
       if (existingLead.email === email && !errors.email) {
@@ -2526,6 +2555,144 @@ export class LeadsService {
       { new: true },
     );
     return { success: true, data: lead };
+  }
+
+  async scheduleDemo(
+    id: string,
+    payload: {
+      scheduledAt: Date;
+      notes?: string;
+      recipientEmail?: string;
+      sendEmail?: boolean;
+      meetLink?: string;
+    },
+    createdBy: string,
+  ) {
+    if (
+      !(payload.scheduledAt instanceof Date) ||
+      Number.isNaN(payload.scheduledAt.getTime())
+    ) {
+      throw new BadRequestException('Invalid demo date/time');
+    }
+    if (payload.scheduledAt.getTime() < Date.now()) {
+      throw new BadRequestException('Demo date/time must be in the future');
+    }
+
+    const lead = await this.leadModel
+      .findOne(this.buildLeadIdentityFilter(id))
+      .exec();
+    if (!lead) {
+      throw new NotFoundException('Lead not found');
+    }
+
+    const recipientEmail = this.normalizeEmail(
+      payload.recipientEmail || lead.email,
+    );
+    const sendEmail = Boolean(payload.sendEmail);
+    if (sendEmail && !recipientEmail) {
+      throw new BadRequestException(
+        'Recipient email is required to send demo invite',
+      );
+    }
+
+    const meetLink =
+      typeof payload.meetLink === 'string' && payload.meetLink.trim().length > 0
+        ? payload.meetLink.trim()
+        : this.generateMeetLink();
+
+    let emailSent = false;
+    if (sendEmail && recipientEmail) {
+      const fullName = (lead.fullName || '').trim() || 'Seller';
+      await this.emailService.sendEmail({
+        to: recipientEmail,
+        type: EmailType.NOTIFICATION,
+        subject: 'Demo Scheduled - EcommReco',
+        payload: {
+          message: `Hi ${fullName}, your demo is scheduled for ${payload.scheduledAt.toLocaleString()}. Join using this Google Meet link: ${meetLink}`,
+          actionUrl: meetLink,
+          actionText: 'Join Demo',
+        },
+      });
+      emailSent = true;
+    }
+
+    lead.demos = Array.isArray(lead.demos) ? lead.demos : [];
+    lead.demos.push({
+      scheduledAt: payload.scheduledAt,
+      status: 'scheduled',
+      meetLink,
+      recipientEmail: recipientEmail || undefined,
+      emailSent,
+      notes: payload.notes,
+      createdBy,
+      updatedAt: new Date(),
+    });
+    lead.demoStatus = 'scheduled';
+    lead.activityTimeline.push({
+      action: 'demo_scheduled',
+      description: `Demo scheduled for ${payload.scheduledAt.toLocaleString()}`,
+      performedBy: createdBy,
+      timestamp: new Date(),
+      metadata: {
+        meetLink,
+        recipientEmail: recipientEmail || undefined,
+        emailSent,
+      },
+    });
+
+    const saved = await lead.save();
+    return { success: true, data: saved };
+  }
+
+  async updateDemoStatus(
+    id: string,
+    demoId: string,
+    status: 'scheduled' | 'done',
+    updatedBy: string,
+  ) {
+    if (!Types.ObjectId.isValid(demoId)) {
+      throw new BadRequestException('Invalid demo ID');
+    }
+
+    const lead = await this.leadModel
+      .findOne(this.buildLeadIdentityFilter(id))
+      .exec();
+    if (!lead) {
+      throw new NotFoundException('Lead not found');
+    }
+
+    type DemoSubdoc = Lead['demos'][number] & { _id: Types.ObjectId };
+    const demos = lead.demos as unknown as DemoSubdoc[];
+    const demo = demos.find((d) => d._id.toString() === demoId);
+    if (!demo) {
+      throw new NotFoundException('Demo not found in this lead');
+    }
+
+    demo.status = status;
+    demo.updatedAt = new Date();
+
+    const hasScheduled = demos.some((d) => d.status === 'scheduled');
+    if (status === 'done' && !hasScheduled) {
+      lead.demoStatus = 'done';
+    } else if (hasScheduled || status === 'scheduled') {
+      lead.demoStatus = 'scheduled';
+    } else {
+      lead.demoStatus = 'none';
+    }
+
+    lead.activityTimeline.push({
+      action: 'demo_status_updated',
+      description: `Demo status updated to ${status}`,
+      performedBy: updatedBy,
+      timestamp: new Date(),
+      metadata: {
+        demoId,
+        status,
+      },
+    });
+
+    const saved = await lead.save();
+    return { success: true, data: saved };
   }
 
   async updateLeadStatus(

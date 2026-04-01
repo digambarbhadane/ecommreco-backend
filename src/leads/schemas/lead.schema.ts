@@ -102,6 +102,39 @@ export class Lead {
     createdBy?: string;
   }[];
 
+  @Prop({
+    type: [
+      {
+        scheduledAt: { type: Date, required: true },
+        status: {
+          type: String,
+          enum: ['scheduled', 'done'],
+          default: 'scheduled',
+        },
+        meetLink: { type: String, required: true },
+        recipientEmail: String,
+        emailSent: { type: Boolean, default: false },
+        notes: String,
+        createdBy: String,
+        updatedAt: Date,
+      },
+    ],
+    default: [],
+  })
+  demos: {
+    scheduledAt: Date;
+    status: 'scheduled' | 'done';
+    meetLink: string;
+    recipientEmail?: string;
+    emailSent?: boolean;
+    notes?: string;
+    createdBy?: string;
+    updatedAt?: Date;
+  }[];
+
+  @Prop({ type: String, enum: ['none', 'scheduled', 'done'], default: 'none' })
+  demoStatus?: 'none' | 'scheduled' | 'done';
+
   @Prop({ type: Object })
   subscriptionConfig?: {
     gstSlots: number;

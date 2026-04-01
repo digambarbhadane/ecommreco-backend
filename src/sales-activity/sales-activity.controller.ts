@@ -18,6 +18,9 @@ type RequestUser = {
   id?: string;
   role?: string;
   email?: string;
+  username?: string;
+  fullName?: string;
+  name?: string;
 };
 type RequestWithUser = Request & { user?: RequestUser };
 
@@ -36,7 +39,21 @@ export class SalesActivityController {
     const id = req.user?.id;
     const effectiveId =
       role === 'super_admin' && salesManagerId ? salesManagerId : id || '';
-    const stats = await this.svc.getTodayStats({ salesManagerId: effectiveId });
+    const actorIdentifiers =
+      role === 'sales_manager'
+        ? [
+            req.user?.email,
+            req.user?.username,
+            req.user?.fullName,
+            req.user?.name,
+          ]
+            .map((v) => (typeof v === 'string' ? v.trim() : ''))
+            .filter((v) => Boolean(v))
+        : undefined;
+    const stats = await this.svc.getTodayStats({
+      salesManagerId: effectiveId,
+      actorIdentifiers,
+    });
     return { success: true, data: stats };
   }
 

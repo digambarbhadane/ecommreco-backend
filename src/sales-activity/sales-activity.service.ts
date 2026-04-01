@@ -37,7 +37,10 @@ export class SalesActivityService {
     private readonly targetModel: Model<SalesTargetDocument>,
   ) {}
 
-  async getTodayStats(params: { salesManagerId: string }): Promise<{
+  async getTodayStats(params: {
+    salesManagerId: string;
+    actorIdentifiers?: string[];
+  }): Promise<{
     leadsGenerated: number;
     leadsContacted: number;
     leadsConnected: number;
@@ -61,14 +64,44 @@ export class SalesActivityService {
     if (!salesManagerId) {
       throw new BadRequestException('salesManagerId is required');
     }
+    const actorIdentifiers = Array.from(
+      new Set(
+        (params.actorIdentifiers ?? [])
+          .map((v) => (typeof v === 'string' ? v.trim() : ''))
+          .filter((v) => Boolean(v)),
+      ),
+    );
+    const hasActorFilter = actorIdentifiers.length > 0;
     const { start, end, key } = getTodayBoundsIST();
+    const timeRange = { $gte: start, $lte: end };
     const filterAssigned = {
       $or: [
         { assignedTo: salesManagerId },
         { assignedSalesManagerId: salesManagerId },
+        { createdByUserId: salesManagerId },
       ],
     };
-    const timeRange = { $gte: start, $lte: end };
+
+    const statusUpdatedByActor = (target: {
+      status?: Lead['status'];
+      leadStatus?: Lead['leadStatus'];
+    }) => ({
+      activityTimeline: {
+        $elemMatch: {
+          timestamp: timeRange,
+          action: 'status_updated',
+          performedBy: { $in: actorIdentifiers },
+          $or: [
+            ...(target.status
+              ? [{ 'metadata.newStatus': target.status } as const]
+              : []),
+            ...(target.leadStatus
+              ? [{ 'metadata.newLeadStatus': target.leadStatus } as const]
+              : []),
+          ],
+        },
+      },
+    });
     const [
       leadsGenerated,
       leadsContacted,
@@ -81,99 +114,150 @@ export class SalesActivityService {
         ...filterAssigned,
         createdAt: timeRange,
       }),
-      this.leadModel.countDocuments({
-        ...filterAssigned,
-        $or: [
-          { lastContactedAt: timeRange },
-          {
+      hasActorFilter
+        ? this.leadModel.countDocuments(
+            statusUpdatedByActor({
+              status: 'CONTACTED',
+              leadStatus: 'contacted',
+            }),
+          )
+        : this.leadModel.countDocuments({
+            ...filterAssigned,
+            $or: [
+              { lastContactedAt: timeRange },
+              {
+                activityTimeline: {
+                  $elemMatch: {
+                    timestamp: timeRange,
+                    'metadata.newStatus': 'CONTACTED',
+                  },
+                },
+              },
+              {
+                activityTimeline: {
+                  $elemMatch: {
+                    timestamp: timeRange,
+                    'metadata.newLeadStatus': 'contacted',
+                  },
+                },
+              },
+            ],
+          }),
+      hasActorFilter
+        ? this.leadModel.countDocuments(
+            statusUpdatedByActor({
+              status: 'CONNECTED',
+              leadStatus: 'interested',
+            }),
+          )
+        : this.leadModel.countDocuments({
+            ...filterAssigned,
+            $or: [
+              { lastConnectedAt: timeRange },
+              {
+                activityTimeline: {
+                  $elemMatch: {
+                    timestamp: timeRange,
+                    'metadata.newStatus': 'CONNECTED',
+                  },
+                },
+              },
+              {
+                activityTimeline: {
+                  $elemMatch: {
+                    timestamp: timeRange,
+                    'metadata.newLeadStatus': 'interested',
+                  },
+                },
+              },
+            ],
+          }),
+      hasActorFilter
+        ? this.leadModel.countDocuments({
+            $or: [
+              statusUpdatedByActor({
+                status: 'CONVERTED',
+                leadStatus: 'converted',
+              }),
+              {
+                conversionRequestedAt: timeRange,
+                conversionRequestedBy: { $in: actorIdentifiers },
+              },
+              {
+                conversionRequestedAt: timeRange,
+                'subscriptionConfig.updatedBy': { $in: actorIdentifiers },
+              },
+            ],
+          })
+        : this.leadModel.countDocuments({
+            ...filterAssigned,
+            $or: [
+              { convertedAt: timeRange },
+              {
+                conversionRequestedAt: timeRange,
+              },
+              {
+                activityTimeline: {
+                  $elemMatch: {
+                    timestamp: timeRange,
+                    'metadata.newStatus': 'CONVERTED',
+                  },
+                },
+              },
+              {
+                activityTimeline: {
+                  $elemMatch: {
+                    timestamp: timeRange,
+                    'metadata.newLeadStatus': 'converted',
+                  },
+                },
+              },
+            ],
+          }),
+      hasActorFilter
+        ? this.leadModel.countDocuments(
+            statusUpdatedByActor({ status: 'LOST', leadStatus: 'rejected' }),
+          )
+        : this.leadModel.countDocuments({
+            ...filterAssigned,
+            $or: [
+              {
+                activityTimeline: {
+                  $elemMatch: {
+                    timestamp: timeRange,
+                    'metadata.newStatus': 'LOST',
+                  },
+                },
+              },
+              {
+                activityTimeline: {
+                  $elemMatch: {
+                    timestamp: timeRange,
+                    'metadata.newLeadStatus': 'rejected',
+                  },
+                },
+              },
+            ],
+          }),
+      hasActorFilter
+        ? this.leadModel.countDocuments({
             activityTimeline: {
               $elemMatch: {
                 timestamp: timeRange,
-                'metadata.newStatus': 'CONTACTED',
+                action: 'follow_up_scheduled',
+                performedBy: { $in: actorIdentifiers },
               },
             },
-          },
-          {
+          })
+        : this.leadModel.countDocuments({
+            ...filterAssigned,
             activityTimeline: {
               $elemMatch: {
                 timestamp: timeRange,
-                'metadata.newLeadStatus': 'contacted',
+                action: 'follow_up_scheduled',
               },
             },
-          },
-        ],
-      }),
-      this.leadModel.countDocuments({
-        ...filterAssigned,
-        $or: [
-          { lastConnectedAt: timeRange },
-          {
-            activityTimeline: {
-              $elemMatch: {
-                timestamp: timeRange,
-                'metadata.newStatus': 'CONNECTED',
-              },
-            },
-          },
-          {
-            activityTimeline: {
-              $elemMatch: {
-                timestamp: timeRange,
-                'metadata.newLeadStatus': 'interested',
-              },
-            },
-          },
-        ],
-      }),
-      this.leadModel.countDocuments({
-        ...filterAssigned,
-        $or: [
-          { convertedAt: timeRange },
-          {
-            activityTimeline: {
-              $elemMatch: {
-                timestamp: timeRange,
-                'metadata.newStatus': 'CONVERTED',
-              },
-            },
-          },
-          {
-            activityTimeline: {
-              $elemMatch: {
-                timestamp: timeRange,
-                'metadata.newLeadStatus': 'converted',
-              },
-            },
-          },
-        ],
-      }),
-      this.leadModel.countDocuments({
-        ...filterAssigned,
-        $or: [
-          {
-            activityTimeline: {
-              $elemMatch: {
-                timestamp: timeRange,
-                'metadata.newStatus': 'LOST',
-              },
-            },
-          },
-          {
-            activityTimeline: {
-              $elemMatch: {
-                timestamp: timeRange,
-                'metadata.newLeadStatus': 'rejected',
-              },
-            },
-          },
-        ],
-      }),
-      this.leadModel.countDocuments({
-        ...filterAssigned,
-        activityTimeline: {
-          $elemMatch: { timestamp: timeRange, action: 'follow_up_scheduled' },
-        },
-      }),
+          }),
     ]);
 
     const target =
@@ -203,11 +287,14 @@ export class SalesActivityService {
         status?: Lead['status'];
         leadStatus?: Lead['leadStatus'];
       }>([
-        { $match: filterAssigned },
+        ...(hasActorFilter ? [] : [{ $match: filterAssigned }]),
         { $unwind: '$activityTimeline' },
         {
           $match: {
             'activityTimeline.timestamp': { $gte: start, $lte: end },
+            ...(hasActorFilter
+              ? { 'activityTimeline.performedBy': { $in: actorIdentifiers } }
+              : {}),
           },
         },
         { $sort: { 'activityTimeline.timestamp': -1 } },
@@ -217,7 +304,54 @@ export class SalesActivityService {
             _id: 0,
             leadId: { $ifNull: ['$publicId', '$leadId'] },
             fullName: 1,
-            status: 1,
+            status: {
+              $switch: {
+                branches: [
+                  {
+                    case: {
+                      $eq: ['$activityTimeline.action', 'follow_up_scheduled'],
+                    },
+                    then: 'FOLLOW_UP',
+                  },
+                  {
+                    case: {
+                      $eq: [
+                        '$activityTimeline.action',
+                        'lead_created_manually',
+                      ],
+                    },
+                    then: 'GENERATED',
+                  },
+                  {
+                    case: {
+                      $eq: [
+                        '$activityTimeline.action',
+                        'lead_created_by_seller',
+                      ],
+                    },
+                    then: 'GENERATED',
+                  },
+                  {
+                    case: {
+                      $eq: ['$activityTimeline.action', 'lead_imported'],
+                    },
+                    then: 'GENERATED',
+                  },
+                  {
+                    case: {
+                      $eq: ['$activityTimeline.action', 'status_updated'],
+                    },
+                    then: {
+                      $ifNull: [
+                        '$activityTimeline.metadata.newStatus',
+                        '$status',
+                      ],
+                    },
+                  },
+                ],
+                default: '$status',
+              },
+            },
             leadStatus: 1,
             action: '$activityTimeline.action',
             description: '$activityTimeline.description',

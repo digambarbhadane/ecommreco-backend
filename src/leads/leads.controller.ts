@@ -46,9 +46,17 @@ type ScheduleFollowUpBody = {
   scheduledAt: string | number | Date;
   notes: string;
 };
+type ScheduleDemoBody = {
+  scheduledAt: string | number | Date;
+  notes?: string;
+  recipientEmail?: string;
+  sendEmail?: boolean;
+  meetLink?: string;
+};
+type UpdateDemoStatusBody = { status: 'scheduled' | 'done' };
 type BulkAssignLeadsBody = { leadIds: string[]; salesManagerId: string };
 
-@Controller('leads')
+@Controller(['leads', 'lead'])
 export class LeadsController {
   constructor(private readonly leadsService: LeadsService) {}
 
@@ -57,9 +65,56 @@ export class LeadsController {
   @Roles('super_admin', 'sales_manager')
   @HttpCode(HttpStatus.CREATED)
   createManualLead(
-    @Body() dto: CreateManualLeadDto,
+    @Body() body: Record<string, unknown>,
     @Req() req: RequestWithUser,
   ) {
+    const contactNumber =
+      typeof body.contactNumber === 'string' ? body.contactNumber.trim() : '';
+    if (!/^\d{10}$/.test(contactNumber)) {
+      throw new BadRequestException('contactNumber must be exactly 10 digits');
+    }
+
+    const fullName =
+      typeof body.fullName === 'string' && body.fullName.trim()
+        ? body.fullName.trim()
+        : undefined;
+    const email =
+      typeof body.email === 'string' && body.email.trim()
+        ? body.email.trim().toLowerCase()
+        : undefined;
+    const gstNumber =
+      typeof body.gstNumber === 'string' && body.gstNumber.trim()
+        ? body.gstNumber.trim().toUpperCase()
+        : undefined;
+    const source =
+      typeof body.source === 'string' && body.source.trim()
+        ? body.source.trim()
+        : undefined;
+    const assignedSalesManagerId =
+      typeof body.assignedSalesManagerId === 'string' &&
+      body.assignedSalesManagerId.trim()
+        ? body.assignedSalesManagerId.trim()
+        : undefined;
+    const assignedSalesManagerEmail =
+      typeof body.assignedSalesManagerEmail === 'string' &&
+      body.assignedSalesManagerEmail.trim()
+        ? body.assignedSalesManagerEmail.trim().toLowerCase()
+        : undefined;
+    const metadata =
+      body.metadata && typeof body.metadata === 'object'
+        ? (body.metadata as Record<string, any>)
+        : undefined;
+
+    const dto: CreateManualLeadDto = {
+      contactNumber,
+      ...(fullName ? { fullName } : {}),
+      ...(email ? { email } : {}),
+      ...(gstNumber ? { gstNumber } : {}),
+      ...(source ? { source } : {}),
+      ...(assignedSalesManagerId ? { assignedSalesManagerId } : {}),
+      ...(assignedSalesManagerEmail ? { assignedSalesManagerEmail } : {}),
+      ...(metadata ? { metadata } : {}),
+    };
     return this.leadsService.createManualLead(dto, req.user);
   }
 
@@ -461,6 +516,49 @@ export class LeadsController {
       id,
       new Date(body.scheduledAt),
       body.notes,
+      req.user?.email || 'admin',
+    );
+  }
+
+  @Post([':id/demo', ':id/demos', ':id/schedule-demo'])
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('super_admin', 'sales_manager')
+  async scheduleDemo(
+    @Param('id') id: string,
+    @Body() body: ScheduleDemoBody,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    await this.leadsService.assertLeadAccess(id, req.user);
+    return this.leadsService.scheduleDemo(
+      id,
+      {
+        scheduledAt: new Date(body.scheduledAt),
+        notes: body.notes,
+        recipientEmail: body.recipientEmail,
+        sendEmail: Boolean(body.sendEmail),
+        meetLink: body.meetLink,
+      },
+      req.user?.email || 'admin',
+    );
+  }
+
+  @Patch(':id/demos/:demoId/status')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('super_admin', 'sales_manager')
+  async updateDemoStatus(
+    @Param('id') id: string,
+    @Param('demoId') demoId: string,
+    @Body() body: UpdateDemoStatusBody,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    await this.leadsService.assertLeadAccess(id, req.user);
+    if (body.status !== 'scheduled' && body.status !== 'done') {
+      throw new BadRequestException('Invalid demo status');
+    }
+    return this.leadsService.updateDemoStatus(
+      id,
+      demoId,
+      body.status,
       req.user?.email || 'admin',
     );
   }
