@@ -20,6 +20,7 @@ import { ProfileModule } from './profile/profile.module';
 import { SubscriptionModule } from './subscription/subscription.module';
 import { EmailModule } from './email/email.module';
 import { SalesActivityModule } from './sales-activity/sales-activity.module';
+import { ReportImportModule } from './report-import/report-import.module';
 
 const mongoLogger = new Logger('MongoDB');
 
@@ -202,6 +203,7 @@ const DEFAULT_LOCAL_MONGODB_URI = 'mongodb://127.0.0.1:27017/sellerspl';
     SubscriptionModule,
     EmailModule,
     SalesActivityModule,
+    ReportImportModule,
   ],
 })
 export class AppModule {}

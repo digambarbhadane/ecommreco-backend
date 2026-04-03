@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, PipelineStage, Types, UpdateQuery } from 'mongoose';
+import * as bcrypt from 'bcrypt';
 import { NotificationsService } from '../notifications/notifications.service';
 import { EmailService } from '../email/email.service';
 import { EmailType } from '../email/email.types';
@@ -305,6 +306,29 @@ export class LeadsService {
       data: {
         matchedCount: result.matchedCount ?? 0,
         modifiedCount: result.modifiedCount ?? 0,
+      },
+    };
+  }
+
+  async deleteLead(id: string, deletedBy: string) {
+    const identityFilter = this.buildLeadIdentityFilter(id);
+    const deletedLead = await this.leadModel
+      .findOneAndDelete(identityFilter)
+      .lean()
+      .exec();
+
+    if (!deletedLead) {
+      throw new NotFoundException('Lead not found');
+    }
+
+    return {
+      success: true,
+      message: 'Lead deleted successfully',
+      data: {
+        id: deletedLead._id?.toString?.() ?? '',
+        leadId: deletedLead.leadId,
+        publicId: deletedLead.publicId,
+        deletedBy,
       },
     };
   }
@@ -2873,10 +2897,32 @@ export class LeadsService {
       });
     }
     if (typeof lead.sellerId === 'string' && lead.sellerId.trim().length > 0) {
-      throw new BadRequestException({
-        success: false,
-        message: 'Seller already created for this lead',
-      });
+      const existingSeller = await this.sellerModel
+        .findById(lead.sellerId)
+        .exec();
+      if (!existingSeller) {
+        throw new NotFoundException({
+          success: false,
+          message: 'Linked seller record not found for this lead',
+        });
+      }
+      const userSync = await this.ensureSellerUserAccount(
+        existingSeller.email,
+        existingSeller.fullName,
+        existingSeller.contactNumber,
+        user?.email || 'system',
+      );
+      return {
+        success: true,
+        message: userSync.created
+          ? 'Seller already existed. Missing user account has been created.'
+          : 'Seller already existed and user account is already present.',
+        data: {
+          leadId: lead.leadId,
+          sellerId: existingSeller._id.toString(),
+          userId: userSync.userId,
+        },
+      };
     }
     if (!lead.leadId) {
       lead.leadId = await this.getNextLeadId(
@@ -2930,6 +2976,12 @@ export class LeadsService {
     const subscriptionId = this.generateSubscriptionId();
     const leadCreatedAt = (lead as unknown as { createdAt?: Date }).createdAt;
     const leadEmail = typeof lead.email === 'string' ? lead.email.trim() : '';
+    if (!leadEmail) {
+      throw new BadRequestException({
+        success: false,
+        message: 'Lead email is required before conversion',
+      });
+    }
     const leadContactNumber =
       typeof lead.contactNumber === 'string' ? lead.contactNumber.trim() : '';
     const leadGstNumber =
@@ -3022,6 +3074,13 @@ export class LeadsService {
       adminApprovalRequestedBy: '',
     });
 
+    const userSync = await this.ensureSellerUserAccount(
+      leadEmail.toLowerCase(),
+      lead.fullName || leadEmail,
+      leadContactNumber,
+      user?.email || 'sales_manager',
+    );
+
     lead.sellerId = String((seller as unknown as { _id: unknown })._id);
     await lead.save();
 
@@ -3042,10 +3101,61 @@ export class LeadsService {
       data: {
         leadId: lead.leadId,
         sellerId: seller._id.toString(),
+        userId: userSync.userId,
         amount,
         paymentCompletedAt,
       },
     };
+  }
+
+  private generateTempPassword() {
+    return (
+      Math.random().toString(36).slice(-8) +
+      Math.random().toString(36).slice(-4)
+    );
+  }
+
+  private async ensureSellerUserAccount(
+    email: string,
+    fullName: string,
+    mobile: string,
+    actorEmail: string,
+  ) {
+    const normalizedEmail = email.trim().toLowerCase();
+    const existingUser = await this.userModel
+      .findOne({ email: normalizedEmail })
+      .select('_id role')
+      .lean<{ _id: Types.ObjectId; role: string }>()
+      .exec();
+
+    if (existingUser) {
+      if (existingUser.role !== 'seller') {
+        throw new BadRequestException({
+          success: false,
+          message:
+            'User with this email already exists with a different role. Cannot create seller user.',
+        });
+      }
+      return { created: false, userId: existingUser._id.toString() };
+    }
+
+    const hashedPassword = await bcrypt.hash(this.generateTempPassword(), 10);
+    const createdUser = await this.userModel.create({
+      publicId: generatePublicId('user', normalizedEmail),
+      username: normalizedEmail,
+      fullName: fullName || normalizedEmail,
+      email: normalizedEmail,
+      password: hashedPassword,
+      role: 'seller',
+      mobile,
+      status: 'approved',
+      profileCompleted: true,
+      mustChangePassword: true,
+      credentialsGeneratedAt: new Date(),
+      credentialsGeneratedBy: actorEmail,
+    });
+
+    return { created: true, userId: createdUser._id.toString() };
   }
 
   private generateSubscriptionId() {

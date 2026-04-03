@@ -563,6 +563,14 @@ export class LeadsController {
     );
   }
 
+  @Delete(':id')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('super_admin', 'sales_manager')
+  async deleteLead(@Param('id') id: string, @Req() req: AuthenticatedRequest) {
+    await this.leadsService.assertLeadAccess(id, req.user);
+    return this.leadsService.deleteLead(id, req.user?.email || 'admin');
+  }
+
   @Get(':id')
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
