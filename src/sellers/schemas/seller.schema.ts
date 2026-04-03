@@ -50,6 +50,22 @@ export class Seller {
   @Prop({ default: 0 })
   gstSlotsUsed?: number;
 
+  @Prop({
+    type: [
+      {
+        panNumber: { type: String, required: true },
+        businessName: { type: String },
+        createdAt: { type: Date, default: Date.now },
+      },
+    ],
+    default: [],
+  })
+  panProfiles?: {
+    panNumber: string;
+    businessName?: string;
+    createdAt: Date;
+  }[];
+
   @Prop()
   durationYears?: number;
 

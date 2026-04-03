@@ -11,6 +11,9 @@ export class Gst {
   @Prop({ required: true, index: true })
   gstNumber: string;
 
+  @Prop({ required: true, index: true })
+  panNumber: string;
+
   @Prop()
   businessName?: string;
 
