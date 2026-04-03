@@ -1,4 +1,14 @@
-import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
@@ -16,6 +26,23 @@ export class GstsController {
     return this.gstsService.create(dto);
   }
 
+  @Post('import')
+  @Roles('seller', 'super_admin')
+  importRows(
+    @Body()
+    body: {
+      sellerId: string;
+      rows: {
+        gstNumber: string;
+        state?: string;
+        status?: 'active' | 'inactive';
+        businessName?: string;
+      }[];
+    },
+  ) {
+    return this.gstsService.importRows(body);
+  }
+
   @Get()
   @Roles('seller', 'super_admin')
   list(
@@ -30,5 +57,25 @@ export class GstsController {
       limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
       skip: Number.isFinite(parsedSkip) ? parsedSkip : undefined,
     });
+  }
+
+  @Patch(':id')
+  @Roles('seller', 'super_admin')
+  update(
+    @Param('id') id: string,
+    @Body()
+    body: {
+      businessName?: string;
+      state?: string;
+      status?: 'active' | 'inactive';
+    },
+  ) {
+    return this.gstsService.update(id, body);
+  }
+
+  @Delete(':id')
+  @Roles('seller', 'super_admin')
+  remove(@Param('id') id: string) {
+    return this.gstsService.remove(id);
   }
 }
