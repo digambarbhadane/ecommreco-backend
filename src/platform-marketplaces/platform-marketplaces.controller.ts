@@ -22,4 +22,16 @@ export class PlatformMarketplacesController {
   list() {
     return this.platformMarketplacesService.list();
   }
+
+  @Get('all')
+  @Roles(
+    'super_admin',
+    'sales_manager',
+    'accounts_manager',
+    'training_and_support_manager',
+    'seller',
+  )
+  listAll() {
+    return this.platformMarketplacesService.list();
+  }
 }
