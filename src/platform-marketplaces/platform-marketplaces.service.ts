@@ -1,4 +1,10 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  OnModuleInit,
+} from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import {
@@ -20,6 +26,22 @@ export class PlatformMarketplacesService implements OnModuleInit {
     await this.seedDefaults();
   }
 
+  private toView(item: PlatformMarketplaceDocument | (PlatformMarketplace & { _id?: unknown })) {
+    const source = item as PlatformMarketplace & { _id?: unknown };
+    return {
+      ...source,
+      isActive: source.status === 'active',
+    };
+  }
+
+  private slugify(name: string) {
+    return name
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+  }
+
   async list() {
     const data = await this.platformMarketplaceModel
       .find({ status: 'active' })
@@ -28,10 +50,129 @@ export class PlatformMarketplacesService implements OnModuleInit {
       .exec();
     return {
       success: true,
-      data: data.map((item) => ({
-        ...item,
-        isActive: item.status === 'active',
-      })),
+      data: data.map((item) => this.toView(item)),
+    };
+  }
+
+  async listAll() {
+    const data = await this.platformMarketplaceModel
+      .find({})
+      .sort({ name: 1 })
+      .lean()
+      .exec();
+    return {
+      success: true,
+      data: data.map((item) => this.toView(item)),
+    };
+  }
+
+  async getById(id: string) {
+    const marketplace = await this.platformMarketplaceModel.findById(id).lean().exec();
+    if (!marketplace) {
+      throw new NotFoundException('Marketplace not found');
+    }
+    return {
+      success: true,
+      data: this.toView(marketplace),
+    };
+  }
+
+  async create(payload: {
+    name: string;
+    slug?: string;
+    logoUrl?: string;
+    description?: string;
+    status?: 'active' | 'inactive';
+  }) {
+    const name = payload.name?.trim();
+    if (!name) {
+      throw new BadRequestException('Marketplace name is required');
+    }
+    const slug = (payload.slug?.trim() || this.slugify(name)).toLowerCase();
+    if (!slug) {
+      throw new BadRequestException('Unable to generate marketplace slug');
+    }
+
+    const existing = await this.platformMarketplaceModel.findOne({ slug }).lean().exec();
+    if (existing) {
+      throw new BadRequestException('Marketplace already exists');
+    }
+
+    const created = await this.platformMarketplaceModel.create({
+      name,
+      slug,
+      logoUrl: payload.logoUrl?.trim() || undefined,
+      description: payload.description?.trim() || undefined,
+      status: payload.status === 'inactive' ? 'inactive' : 'active',
+      isActive: payload.status !== 'inactive',
+    });
+
+    const saved = await this.platformMarketplaceModel.findById(created._id).lean().exec();
+    return {
+      success: true,
+      data: this.toView(saved as PlatformMarketplace & { _id?: unknown }),
+    };
+  }
+
+  async update(
+    id: string,
+    payload: Partial<{
+      name: string;
+      slug: string;
+      logoUrl: string;
+      description: string;
+      status: 'active' | 'inactive';
+    }>,
+  ) {
+    const current = await this.platformMarketplaceModel.findById(id).lean().exec();
+    if (!current) {
+      throw new NotFoundException('Marketplace not found');
+    }
+
+    const updatePayload: Record<string, unknown> = {};
+    if (typeof payload.name === 'string' && payload.name.trim()) {
+      updatePayload.name = payload.name.trim();
+      if (!payload.slug) {
+        updatePayload.slug = this.slugify(payload.name);
+      }
+    }
+    if (typeof payload.slug === 'string' && payload.slug.trim()) {
+      updatePayload.slug = this.slugify(payload.slug);
+    }
+    if (typeof payload.logoUrl === 'string') {
+      updatePayload.logoUrl = payload.logoUrl.trim() || undefined;
+    }
+    if (typeof payload.description === 'string') {
+      updatePayload.description = payload.description.trim() || undefined;
+    }
+    if (payload.status === 'active' || payload.status === 'inactive') {
+      updatePayload.status = payload.status;
+      updatePayload.isActive = payload.status === 'active';
+    }
+
+    const updated = await this.platformMarketplaceModel
+      .findByIdAndUpdate(id, { $set: updatePayload }, { new: true })
+      .lean()
+      .exec();
+
+    if (!updated) {
+      throw new NotFoundException('Marketplace not found');
+    }
+
+    return {
+      success: true,
+      data: this.toView(updated),
+    };
+  }
+
+  async remove(id: string) {
+    const removed = await this.platformMarketplaceModel.findByIdAndDelete(id).lean().exec();
+    if (!removed) {
+      throw new NotFoundException('Marketplace not found');
+    }
+    return {
+      success: true,
+      data: { deleted: true },
     };
   }
 

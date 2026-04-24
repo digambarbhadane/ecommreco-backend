@@ -83,26 +83,52 @@ export class ProfileService {
         .select('-password')
         .lean()
         .exec();
-      if (!seller) {
+      if (seller) {
+        return {
+          success: true,
+          data: {
+            _id: seller._id.toString(),
+            fullName: seller.fullName,
+            email: seller.email,
+            role: 'seller',
+            companyName: seller.firmName || seller.gstNumber,
+            mobile: seller.contactNumber,
+            address: seller.address || '',
+            bio: seller.bio || '',
+            profileCompleted: true,
+            gstNumber: seller.gstNumber,
+            businessType: seller.businessType || '',
+          },
+        };
+      }
+
+      const sellerUser = await this.userModel
+        .findOne({ _id: id, role: 'seller' })
+        .select('-password')
+        .lean()
+        .exec();
+
+      if (!sellerUser) {
         throw new NotFoundException({
           success: false,
           message: 'Profile not found',
         });
       }
+
       return {
         success: true,
         data: {
-          _id: seller._id.toString(),
-          fullName: seller.fullName,
-          email: seller.email,
+          _id: sellerUser._id.toString(),
+          fullName: sellerUser.fullName,
+          email: sellerUser.email,
           role: 'seller',
-          companyName: seller.firmName || seller.gstNumber,
-          mobile: seller.contactNumber,
-          address: seller.address || '',
-          bio: seller.bio || '',
-          profileCompleted: true,
-          gstNumber: seller.gstNumber,
-          businessType: seller.businessType || '',
+          companyName: sellerUser.companyName || '',
+          mobile: sellerUser.mobile || '',
+          address: sellerUser.address || '',
+          bio: sellerUser.bio || '',
+          profileCompleted: sellerUser.profileCompleted ?? true,
+          gstNumber: '',
+          businessType: '',
         },
       };
     }
@@ -146,7 +172,52 @@ export class ProfileService {
 
     if (role === 'seller') {
       const seller = await this.sellerModel.findById(id).exec();
-      if (!seller) {
+      if (seller) {
+        if (typeof dto.fullName === 'string' && dto.fullName.length > 0) {
+          seller.fullName = dto.fullName;
+        }
+        if (typeof dto.mobile === 'string' && dto.mobile.length > 0) {
+          seller.contactNumber = dto.mobile;
+        }
+        if (typeof dto.companyName === 'string') {
+          seller.firmName = dto.companyName;
+        }
+        if (typeof dto.address === 'string') {
+          seller.address = dto.address;
+        }
+        if (typeof dto.bio === 'string') {
+          seller.bio = dto.bio;
+        }
+        if (typeof dto.gstNumber === 'string' && dto.gstNumber.length > 0) {
+          seller.gstNumber = dto.gstNumber;
+        }
+        if (typeof dto.businessType === 'string') {
+          seller.businessType = dto.businessType;
+        }
+
+        const updated = await seller.save();
+        return {
+          success: true,
+          data: {
+            _id: updated._id.toString(),
+            fullName: updated.fullName,
+            email: updated.email,
+            role: 'seller',
+            companyName: updated.firmName || updated.gstNumber,
+            mobile: updated.contactNumber,
+            address: updated.address || '',
+            bio: updated.bio || '',
+            profileCompleted: true,
+            gstNumber: updated.gstNumber,
+            businessType: updated.businessType || '',
+          },
+        };
+      }
+
+      const sellerUser = await this.userModel
+        .findOne({ _id: id, role: 'seller' })
+        .exec();
+      if (!sellerUser) {
         throw new NotFoundException({
           success: false,
           message: 'Profile not found',
@@ -154,28 +225,22 @@ export class ProfileService {
       }
 
       if (typeof dto.fullName === 'string' && dto.fullName.length > 0) {
-        seller.fullName = dto.fullName;
+        sellerUser.fullName = dto.fullName;
       }
       if (typeof dto.mobile === 'string' && dto.mobile.length > 0) {
-        seller.contactNumber = dto.mobile;
+        sellerUser.mobile = dto.mobile;
       }
       if (typeof dto.companyName === 'string') {
-        seller.firmName = dto.companyName;
+        sellerUser.companyName = dto.companyName;
       }
       if (typeof dto.address === 'string') {
-        seller.address = dto.address;
+        sellerUser.address = dto.address;
       }
       if (typeof dto.bio === 'string') {
-        seller.bio = dto.bio;
-      }
-      if (typeof dto.gstNumber === 'string' && dto.gstNumber.length > 0) {
-        seller.gstNumber = dto.gstNumber;
-      }
-      if (typeof dto.businessType === 'string') {
-        seller.businessType = dto.businessType;
+        sellerUser.bio = dto.bio;
       }
 
-      const updated = await seller.save();
+      const updated = await sellerUser.save();
       return {
         success: true,
         data: {
@@ -183,13 +248,13 @@ export class ProfileService {
           fullName: updated.fullName,
           email: updated.email,
           role: 'seller',
-          companyName: updated.firmName || updated.gstNumber,
-          mobile: updated.contactNumber,
+          companyName: updated.companyName || '',
+          mobile: updated.mobile || '',
           address: updated.address || '',
           bio: updated.bio || '',
-          profileCompleted: true,
-          gstNumber: updated.gstNumber,
-          businessType: updated.businessType || '',
+          profileCompleted: updated.profileCompleted ?? true,
+          gstNumber: '',
+          businessType: '',
         },
       };
     }

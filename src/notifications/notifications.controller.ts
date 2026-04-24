@@ -1,4 +1,12 @@
-import { Controller, Get, Query, Req, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Query,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
@@ -50,5 +58,34 @@ export class NotificationsController {
       skip: Number.isFinite(parsedSkip) ? parsedSkip : undefined,
       search,
     });
+  }
+
+  @Patch('notifications/:id/read')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles(
+    'super_admin',
+    'sales_manager',
+    'accounts_manager',
+    'training_and_support_manager',
+    'seller',
+  )
+  markAsRead(
+    @Param('id') id: string,
+    @Req() req: { user?: { role?: string } },
+  ) {
+    return this.notificationsService.markAsRead(id, req.user?.role);
+  }
+
+  @Patch('notifications/read-all')
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles(
+    'super_admin',
+    'sales_manager',
+    'accounts_manager',
+    'training_and_support_manager',
+    'seller',
+  )
+  markAllAsRead(@Req() req: { user?: { role?: string } }) {
+    return this.notificationsService.markAllAsRead(req.user?.role);
   }
 }

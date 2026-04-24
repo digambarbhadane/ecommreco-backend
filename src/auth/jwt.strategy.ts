@@ -39,11 +39,38 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
     if (role === 'seller') {
       const seller = await this.sellerModel.findById(id).lean().exec();
-      if (!seller) {
+      if (seller) {
+        return { ...seller, id: seller._id.toString(), role: 'seller' };
+      }
+
+      const sellerUser = await this.userModel
+        .findOne({ _id: id, role: 'seller' })
+        .lean()
+        .exec();
+      if (sellerUser) {
+        return {
+          ...sellerUser,
+          id: sellerUser._id.toString(),
+          role: 'seller',
+        };
+      }
+
+      throw new UnauthorizedException();
+    } else {
+      if (!role) {
+        const user = await this.userModel.findById(id).lean().exec();
+        if (user) {
+          return { ...user, id: user._id.toString(), role: user.role };
+        }
+
+        const seller = await this.sellerModel.findById(id).lean().exec();
+        if (seller) {
+          return { ...seller, id: seller._id.toString(), role: 'seller' };
+        }
+
         throw new UnauthorizedException();
       }
-      return { ...seller, id: seller._id.toString(), role: 'seller' };
-    } else {
+
       const user = await this.userModel.findById(id).lean().exec();
       if (!user) {
         throw new UnauthorizedException();
