@@ -1,6 +1,5 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
-import type { DiscountType } from '../dto/create-package.dto';
 
 export type SubscriptionPackageDocument = HydratedDocument<SubscriptionPackage>;
 
@@ -13,11 +12,12 @@ export class SubscriptionPackage {
   basePrice: number;
 
   @Prop({
+    type: String,
     required: true,
     enum: ['percentage', 'flat', 'none'],
     default: 'none',
   })
-  discountType: DiscountType;
+  discountType: 'percentage' | 'flat' | 'none';
 
   @Prop({ required: true, default: 0, min: 0 })
   discountValue: number;
