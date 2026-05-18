@@ -1,4 +1,12 @@
 import {
+  ApiTags,
+  ApiOperation,
+  ApiBearerAuth,
+  ApiConsumes,
+  ApiBody,
+  ApiProduces,
+} from '@nestjs/swagger';
+import {
   BadRequestException,
   Body,
   Controller,
@@ -6,11 +14,11 @@ import {
   Header,
   Post,
   Query,
-  UploadedFile,
+  UploadedFiles,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import { AuthGuard } from '@nestjs/passport';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
@@ -19,6 +27,8 @@ import { UploadReportDto } from './dto/upload-report.dto';
 import { ReportImportService } from './report-import.service';
 import { UploadService } from './services/upload.service';
 
+@ApiTags('Report-Import')
+@ApiBearerAuth()
 @Controller('report-imports')
 @UseGuards(AuthGuard('jwt'), RolesGuard)
 export class ReportImportController {
@@ -28,9 +38,87 @@ export class ReportImportController {
   ) {}
 
   @Get('config')
+  @ApiOperation({ summary: 'Get import config', description: 'Returns required sheets and columns for a marketplace import.' })
   @Roles('seller', 'super_admin', 'accounts_manager')
   getConfig(@Query('marketplace') marketplace?: string) {
     const name = (marketplace ?? '').trim().toLowerCase();
+    if (name && name.includes('amazon')) {
+      return {
+        success: true,
+        data: {
+          marketplace: 'amazon',
+          requiredSheets: ['MTR B2B Report (single sheet)', 'MTR B2C Report (single sheet)'],
+          requiredColumns: {
+            'MTR B2C Report': [
+              'Seller Gstin',
+              'Order Id',
+              'Sku',
+              'Hsn/sac',
+              'Transaction Type',
+              'Payment Method / Payment Method Code',
+              'Fullfilment Channel',
+              'Quantity',
+              'Invoice Amount',
+              'Tax Exclusive Gross',
+              'Igst Rate',
+              'Igst Tax',
+              'Cgst Rate',
+              'Cgst Tax',
+              'Sgst Rate',
+              'Sgst Tax',
+              'Invoice Number',
+              'Invoice Date',
+              'Ship To Postal Code',
+              'Ship To State',
+            ],
+            'MTR B2B Report (if uploaded)': [
+              'Seller Gstin',
+              'Order Id',
+              'Sku',
+              'Hsn/sac',
+              'Transaction Type',
+              'Payment Method / Payment Method Code',
+              'Fullfilment Channel',
+              'Quantity',
+              'Invoice Amount',
+              'Tax Exclusive Gross',
+              'Igst Rate',
+              'Igst Tax',
+              'Cgst Rate',
+              'Cgst Tax',
+              'Sgst Rate',
+              'Sgst Tax',
+              'Invoice Number',
+              'Invoice Date',
+              'Ship To Postal Code',
+              'Ship To State',
+              'Customer Bill To Gstid (mandatory in B2B)',
+              'Buyer Name (mandatory in B2B)',
+            ],
+          },
+        },
+      };
+    }
+    if (name && name.includes('meesho')) {
+      return {
+        success: true,
+        data: {
+          marketplace: 'meesho',
+          requiredSheets: [
+            'TCS Sales Report (single sheet)',
+            'TCS Sales Return Report (single sheet)',
+            'Order Report (single sheet)',
+            'Return Report (single sheet)',
+          ],
+          requiredColumns: {
+            'TCS Sales Report': ['Seller GSTIN / GST NO', 'Order ID'],
+            'TCS Sales Return Report': ['Seller GSTIN / GST NO', 'Order ID'],
+            'Order Report': ['Seller GSTIN / GST NO', 'Order ID'],
+            'Return Report': ['Seller GSTIN / GST NO', 'Order ID'],
+          },
+        },
+      };
+    }
     if (name && !name.includes('flipkart')) {
       return {
         success: true,
@@ -71,37 +159,91 @@ export class ReportImportController {
   }
 
   @Post('flipkart/upload')
+  @ApiOperation({
+    summary: 'Upload marketplace report',
+    description: 'Upload Excel/CSV reports for Flipkart, Amazon, or Meesho. Supports multiple file fields (file, mtrB2bFile, mtrB2cFile, tcsSalesFile, tcsSalesReturnFile, orderReportFile, returnReportFile). At least one file is required.',
+  })
   @Roles('seller', 'super_admin', 'accounts_manager')
-  @UseInterceptors(FileInterceptor('file'))
+  @ApiConsumes('multipart/form-data')
+  @UseInterceptors(
+    FileFieldsInterceptor([
+      { name: 'file', maxCount: 1 },
+      { name: 'mtrB2bFile', maxCount: 1 },
+      { name: 'mtrB2cFile', maxCount: 1 },
+      { name: 'tcsSalesFile', maxCount: 1 },
+      { name: 'tcsSalesReturnFile', maxCount: 1 },
+      { name: 'orderReportFile', maxCount: 1 },
+      { name: 'returnReportFile', maxCount: 1 },
+    ]),
+  )
   uploadFlipkart(
-    @UploadedFile() file: { buffer: Buffer; originalname: string },
+    @UploadedFiles()
+    files: {
+      file?: Array<{ buffer: Buffer; originalname: string }>;
+      mtrB2bFile?: Array<{ buffer: Buffer; originalname: string }>;
+      mtrB2cFile?: Array<{ buffer: Buffer; originalname: string }>;
+      tcsSalesFile?: Array<{ buffer: Buffer; originalname: string }>;
+      tcsSalesReturnFile?: Array<{ buffer: Buffer; originalname: string }>;
+      orderReportFile?: Array<{ buffer: Buffer; originalname: string }>;
+      returnReportFile?: Array<{ buffer: Buffer; originalname: string }>;
+    },
     @Body() dto: UploadReportDto,
   ) {
-    if (!file) {
-      throw new BadRequestException('File is required');
+    const singleFile = files?.file?.[0];
+    const mtrB2bFile = files?.mtrB2bFile?.[0];
+    const mtrB2cFile = files?.mtrB2cFile?.[0];
+    const tcsSalesFile = files?.tcsSalesFile?.[0];
+    const tcsSalesReturnFile = files?.tcsSalesReturnFile?.[0];
+    const orderReportFile = files?.orderReportFile?.[0];
+    const returnReportFile = files?.returnReportFile?.[0];
+    if (
+      !singleFile &&
+      !mtrB2bFile &&
+      !mtrB2cFile &&
+      !tcsSalesFile &&
+      !tcsSalesReturnFile &&
+      !orderReportFile &&
+      !returnReportFile
+    ) {
+      throw new BadRequestException('At least one file is required');
     }
-    return this.uploadService.uploadFlipkart(file, dto);
+    return this.uploadService.uploadFlipkart(
+      {
+        file: singleFile,
+        mtrB2bFile,
+        mtrB2cFile,
+        tcsSalesFile,
+        tcsSalesReturnFile,
+        orderReportFile,
+        returnReportFile,
+      },
+      dto,
+    );
   }
 
   @Get('rows')
+  @ApiOperation({ summary: 'List imported rows', description: 'Returns paginated list of imported report rows.' })
   @Roles('seller', 'super_admin', 'accounts_manager')
   listRows(@Query() query: ListImportedRowsDto) {
     return this.reportImportService.listImportedRows(query);
   }
 
   @Get('summary')
+  @ApiOperation({ summary: 'Get import summary', description: 'Returns document type summary for imported reports.' })
   @Roles('seller', 'super_admin', 'accounts_manager')
   summary(@Query() query: ListImportedRowsDto) {
     return this.reportImportService.getDocumentTypeSummary(query);
   }
 
   @Get('uploads')
+  @ApiOperation({ summary: 'List all report uploads' })
   @Roles('seller', 'super_admin', 'accounts_manager')
   uploads(@Query('sellerId') sellerId?: string) {
     return this.reportImportService.listUploads(sellerId);
   }
 
   @Get('errors-csv')
+  @ApiOperation({ summary: 'Download errors CSV', description: 'Returns CSV file of import errors for a given uploadId.' })
   @Roles('seller', 'super_admin', 'accounts_manager')
   @Header('Content-Type', 'text/csv')
   async errorsCsv(@Query('uploadId') uploadId: string) {

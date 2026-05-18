@@ -5,6 +5,17 @@
   "compilerOptions": {
     "deleteOutDir": true,
     "assets": ["email/templates/**/*"],
-    "watchAssets": true
+    "watchAssets": true,
+    "plugins": [
+      {
+        "name": "@nestjs/swagger",
+        "options": {
+          "classValidatorShim": true,
+          "introspectComments": true,
+          "dtoFileNameSuffix": [".dto.ts"],
+          "controllerFileNameSuffix": ".controller.ts"
+        }
+      }
+    ]
   }
 }

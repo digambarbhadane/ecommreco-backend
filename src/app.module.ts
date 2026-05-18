@@ -4,7 +4,6 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { ThrottlerModule } from '@nestjs/throttler';
 import * as mongoose from 'mongoose';
-import * as path from 'path';
 import { AuthModule } from './auth/auth.module';
 import { GstsModule } from './gsts/gsts.module';
 import { GstinVerificationModule } from './gstin-verification/gstin-verification.module';
@@ -21,6 +20,11 @@ import { SubscriptionModule } from './subscription/subscription.module';
 import { EmailModule } from './email/email.module';
 import { SalesActivityModule } from './sales-activity/sales-activity.module';
 import { ReportImportModule } from './report-import/report-import.module';
+import { setMongoStorageMode } from './config/mongo-connection';
+import {
+  getMongoUriCandidates,
+  mongoConnectionHint,
+} from './config/mongo-uri';
 
 const mongoLogger = new Logger('MongoDB');
 
@@ -33,7 +37,7 @@ const DEFAULT_LOCAL_MONGODB_URI = 'mongodb://127.0.0.1:27017/sellerspl';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: path.resolve(__dirname, '..', '.env'),
+      ignoreEnvFile: true,
     }),
     ThrottlerModule.forRoot([
       {
@@ -48,7 +52,7 @@ const DEFAULT_LOCAL_MONGODB_URI = 'mongodb://127.0.0.1:27017/sellerspl';
         const connectionFactory = (connection: mongoose.Connection) => {
           connection.on('connected', () => {
             mongoLogger.log(
-              `Connected (${connection.name}) host=${connection.host} db=${connection.db?.databaseName ?? 'unknown'}`,
+              `✅ CONNECTED (${connection.name}) host=${connection.host} db=${connection.db?.databaseName ?? 'unknown'}`,
             );
           });
           connection.on('disconnected', () => {
@@ -78,14 +82,16 @@ const DEFAULT_LOCAL_MONGODB_URI = 'mongodb://127.0.0.1:27017/sellerspl';
           return base;
         };
 
-        const canConnect = async (uri: string) => {
+        const canConnect = async (
+          uri: string,
+        ): Promise<{ ok: true } | { ok: false; message: string }> => {
           const trimmed = uri.trim();
-          if (!trimmed) return false;
+          if (!trimmed) return { ok: false, message: 'empty URI' };
           try {
             const connection = await mongoose
               .createConnection(trimmed, {
-                serverSelectionTimeoutMS: 10000,
-                connectTimeoutMS: 10000,
+                serverSelectionTimeoutMS: 15000,
+                connectTimeoutMS: 15000,
                 dbName:
                   typeof dbName === 'string' && dbName.trim().length > 0
                     ? dbName.trim()
@@ -93,9 +99,13 @@ const DEFAULT_LOCAL_MONGODB_URI = 'mongodb://127.0.0.1:27017/sellerspl';
               })
               .asPromise();
             await connection.close();
-            return true;
-          } catch {
-            return false;
+            return { ok: true };
+          } catch (err: unknown) {
+            const message =
+              err && typeof err === 'object' && 'message' in err
+                ? String((err as { message?: unknown }).message)
+                : String(err);
+            return { ok: false, message };
           }
         };
 
@@ -122,36 +132,48 @@ const DEFAULT_LOCAL_MONGODB_URI = 'mongodb://127.0.0.1:27017/sellerspl';
           config.get<string>('ALLOW_MEMORY_DB_FALLBACK') === 'true';
 
         if (!shouldUseMemory) {
-          let checkedAnyMongoUri = false;
-          if (typeof uri === 'string' && uri.trim().length > 0) {
-            const primary = uri.trim();
-            checkedAnyMongoUri = true;
-            mongoLogger.log(
-              `Testing MongoDB uri=${maskMongoUri(primary)} dbName=${String(dbName ?? '')}`,
-            );
-            const ok = await canConnect(primary);
-            if (ok) {
-              mongoLogger.log(`Using MongoDB uri=${maskMongoUri(primary)}`);
-              return buildOptions(primary);
-            }
-            if (primary.startsWith('mongodb+srv://')) {
-              mongoLogger.log(
-                `Could not connect to MongoDB Atlas (MONGODB_URI) uri=${maskMongoUri(primary)}. Check IP allowlist (Network Access), DB user/password, and cluster hostname. Falling back to local/in-memory.`,
-              );
-            }
+          const uriCandidates = getMongoUriCandidates(config);
+          if (
+            fallbackUri.length > 0 &&
+            !uriCandidates.includes(fallbackUri)
+          ) {
+            uriCandidates.push(fallbackUri);
           }
+          if (uriCandidates.length === 0 && typeof uri === 'string' && uri.trim()) {
+            uriCandidates.push(uri.trim());
+          }
+          const errors: string[] = [];
 
-          if (fallbackUri.length > 0) {
-            checkedAnyMongoUri = true;
-            mongoLogger.log(
-              `Testing MongoDB fallback uri=${maskMongoUri(fallbackUri)}`,
+          for (let i = 0; i < uriCandidates.length; i++) {
+            const candidate = uriCandidates[i];
+            const isLocalMongo = /mongodb:\/\/(127\.0\.0\.1|localhost)/.test(
+              candidate,
             );
-            const ok = await canConnect(fallbackUri);
-            if (ok) {
+            mongoLogger.log(
+              `Testing MongoDB uri=${maskMongoUri(candidate)} dbName=${String(dbName ?? '')}`,
+            );
+            const result = await canConnect(candidate);
+            if (result.ok) {
+              setMongoStorageMode(isLocalMongo ? 'fallback' : 'atlas');
+              if (isLocalMongo) {
+                mongoLogger.warn(
+                  `⚠️ Using local MongoDB uri=${maskMongoUri(candidate)}`,
+                );
+              } else {
+                mongoLogger.log(
+                  `✅ Using MongoDB Atlas uri=${maskMongoUri(candidate)} dbName=${String(dbName ?? '')}`,
+                );
+              }
+              return buildOptions(candidate);
+            }
+            errors.push(`${maskMongoUri(candidate)}: ${result.message}`);
+            const hint = mongoConnectionHint(result.message);
+            if (hint) {
+              mongoLogger.warn(hint);
+            } else if (candidate.startsWith('mongodb+srv://')) {
               mongoLogger.warn(
-                `Using fallback MongoDB uri=${maskMongoUri(fallbackUri)}`,
+                `Could not connect to MongoDB Atlas uri=${maskMongoUri(candidate)}. Check IP allowlist, credentials, and hostname.`,
               );
-              return buildOptions(fallbackUri);
             }
           }
 
@@ -160,21 +182,31 @@ const DEFAULT_LOCAL_MONGODB_URI = 'mongodb://127.0.0.1:27017/sellerspl';
               typeof dbName === 'string' && dbName.trim().length > 0
                 ? dbName.trim()
                 : '(default from URI)';
-            if (!checkedAnyMongoUri) {
+            if (uriCandidates.length === 0) {
               throw new Error(
                 'No MongoDB URI configured. Set MONGODB_URI or enable USE_MEMORY_DB=true for local in-memory database.',
               );
             }
+            const detail = errors.length > 0 ? ` Last errors: ${errors.join('; ')}` : '';
             throw new Error(
-              `Could not connect to configured MongoDB URIs for dbName=${databaseName}. Disable strict mode by setting ALLOW_MEMORY_DB_FALLBACK=true.`,
+              `Could not connect to configured MongoDB URIs for dbName=${databaseName}.${detail} Set ALLOW_MEMORY_DB_FALLBACK=true only for offline dev.`,
             );
           }
         }
 
-        mongoLogger.warn('Using in-memory MongoDB (mongodb-memory-server).');
+        setMongoStorageMode('memory');
+        const memoryDbName =
+          typeof dbName === 'string' && dbName.trim().length > 0
+            ? dbName.trim()
+            : 'ecommreco_dev';
+        mongoLogger.error(
+          `❌ Atlas unreachable — using IN-MEMORY MongoDB (db=${memoryDbName}). ` +
+            `Your Atlas users/sellers are NOT available; login will return 401. ` +
+            `Fix MONGODB_URI / network / IP allowlist, or set ALLOW_MEMORY_DB_FALLBACK=false to fail fast.`,
+        );
         try {
           const memory = await MongoMemoryServer.create({
-            instance: { dbName: 'seller-insights-hub', launchTimeout: 30000 },
+            instance: { dbName: memoryDbName, launchTimeout: 30000 },
           });
           return buildOptions(memory.getUri());
         } catch (err: unknown) {

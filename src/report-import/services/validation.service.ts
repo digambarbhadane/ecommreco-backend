@@ -12,6 +12,10 @@ import {
   MarketplaceDocument,
 } from '../../marketplaces/schemas/marketplace.schema';
 import {
+  PlatformMarketplace,
+  PlatformMarketplaceDocument,
+} from '../../platform-marketplaces/schemas/platform-marketplace.schema';
+import {
   ImportUpload,
   ImportUploadDocument,
 } from '../schemas/import-upload.schema';
@@ -23,6 +27,8 @@ export class ValidationService {
     @InjectModel(Gst.name) private readonly gstModel: Model<GstDocument>,
     @InjectModel(Marketplace.name)
     private readonly marketplaceModel: Model<MarketplaceDocument>,
+    @InjectModel(PlatformMarketplace.name)
+    private readonly platformMarketplaceModel: Model<PlatformMarketplaceDocument>,
     @InjectModel(ImportUpload.name)
     private readonly uploadModel: Model<ImportUploadDocument>,
   ) {}
@@ -48,7 +54,23 @@ export class ValidationService {
         'Selected marketplace is not linked to selected GST',
       );
     }
-    return { gst, marketplace };
+    let platformName = '';
+    let platformSlug = '';
+    if (marketplace.platformMarketplaceId) {
+      const platform = await this.platformMarketplaceModel
+        .findById(marketplace.platformMarketplaceId)
+        .lean()
+        .exec();
+      platformName = String(platform?.name ?? '').trim().toLowerCase();
+      platformSlug = String(platform?.slug ?? '').trim().toLowerCase();
+    }
+
+    const storeName = String(marketplace.storeName ?? '').trim().toLowerCase();
+    const marketplaceIdentifier = `${platformName} ${platformSlug} ${storeName}`
+      .trim()
+      .toLowerCase();
+
+    return { gst, marketplace, marketplaceIdentifier };
   }
 
   validateRequiredHeaderGroups(
@@ -145,6 +167,34 @@ export class ValidationService {
       if (byFingerprint) {
         throw new BadRequestException('File already uploaded');
       }
+    }
+  }
+
+  async ensureNoDuplicateFileHashes(payload: {
+    sellerId: string;
+    gstin: string;
+    marketplace: string;
+    fileHashes: string[];
+  }) {
+    const uniqueHashes = Array.from(
+      new Set(payload.fileHashes.filter((hash) => typeof hash === 'string' && hash.length > 0)),
+    );
+    if (!uniqueHashes.length) return;
+
+    const existing = await this.uploadModel
+      .findOne({
+        sellerId: payload.sellerId,
+        gstin: payload.gstin,
+        marketplace: payload.marketplace,
+        $or: uniqueHashes.map((hash) => ({
+          fileHash: { $regex: hash },
+        })),
+      })
+      .lean()
+      .exec();
+
+    if (existing) {
+      throw new BadRequestException('File already uploaded');
     }
   }
 }

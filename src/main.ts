@@ -1,8 +1,20 @@
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+/// <reference types="node" />
+import * as path from 'path';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+require(path.resolve(__dirname, '..', 'load-env'));
+
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
+import { SwaggerModule } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import * as express from 'express';
 import { AppModule } from './app.module';
+import {
+  buildSwaggerConfig,
+  createDocumentOptions,
+  normalizeSwaggerDocument,
+} from '../config/swagger';
 
 const normalizeOrigin = (value: string) => value.trim().replace(/\/+$/, '');
 
@@ -72,6 +84,7 @@ async function bootstrap() {
     }),
   );
   app.setGlobalPrefix('api/v1');
+
   const config = app.get(ConfigService);
   const nodeEnv = config.get<string>('NODE_ENV') ?? 'development';
   const isProduction = nodeEnv === 'production';
@@ -170,6 +183,42 @@ async function bootstrap() {
     typeof parsedPort === 'number' && Number.isFinite(parsedPort)
       ? parsedPort
       : 5000;
+
+  const swaggerEnabled =
+    nodeEnv !== 'production' ||
+    config.get<string>('ENABLE_SWAGGER') === 'true';
+  if (swaggerEnabled) {
+    const swaggerConfig = buildSwaggerConfig();
+    const document = normalizeSwaggerDocument(
+      SwaggerModule.createDocument(
+        app,
+        swaggerConfig,
+        createDocumentOptions(),
+      ),
+    );
+
+    SwaggerModule.setup('api/v1/docs', app, document, {
+      jsonDocumentUrl: 'api/v1/docs-json',
+      yamlDocumentUrl: 'api/v1/docs-yaml',
+      swaggerOptions: {
+        persistAuthorization: true,
+        docExpansion: 'list',
+        filter: true,
+        showRequestDuration: true,
+        tagsSorter: 'alpha',
+        operationsSorter: 'alpha',
+      },
+      customSiteTitle: 'EcommReco API Docs',
+    });
+
+    Logger.log(`Swagger UI: http://localhost:${port}/api/v1/docs`);
+    Logger.log(`OpenAPI JSON: http://localhost:${port}/api/v1/docs-json`);
+  } else {
+    Logger.warn(
+      'Swagger documentation is disabled in production (set ENABLE_SWAGGER=true to enable)',
+    );
+  }
+
   await app.listen(port, '0.0.0.0');
   Logger.log(`API running on port ${port}`);
 }

@@ -1,5 +1,7 @@
 import { Transform } from 'class-transformer';
 import {
+  ArrayNotEmpty,
+  IsArray,
   IsEmail,
   IsIn,
   IsNotEmpty,
@@ -35,17 +37,38 @@ export class CreateLeadDto {
   )
   email: string;
 
-  @IsNotEmpty()
+  @IsOptional()
   @IsString()
   @Transform(({ value }) =>
-    typeof value === 'string' ? value.trim().toUpperCase() : undefined,
+    typeof value === 'string' && value.trim().length > 0
+      ? value.trim().toUpperCase()
+      : undefined,
   )
   @MaxLength(16)
   @MinLength(16)
   @Matches(/^[A-Za-z0-9]{16}$/, {
     message: 'gstNumber must be 16 alphanumeric characters',
   })
-  gstNumber: string;
+  gstNumber?: string;
+
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsString({ each: true })
+  @Transform(({ value }) => {
+    if (!Array.isArray(value)) return undefined;
+    return value
+      .map((item) => (typeof item === 'string' ? item.trim().toLowerCase() : ''))
+      .filter((item) => item.length > 0);
+  })
+  marketplaces: string[];
+
+  @IsNotEmpty()
+  @IsString()
+  @IsIn(['0-1000', '1000-2000', '2000-3000', '3000+'])
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim() : undefined,
+  )
+  ordersPerMonth: '0-1000' | '1000-2000' | '2000-3000' | '3000+';
 
   @IsIn([true], {
     message: 'You must accept the Terms and Conditions and Privacy Policy',

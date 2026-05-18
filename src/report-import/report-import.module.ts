@@ -5,6 +5,10 @@ import {
   Marketplace,
   MarketplaceSchema,
 } from '../marketplaces/schemas/marketplace.schema';
+import {
+  PlatformMarketplace,
+  PlatformMarketplaceSchema,
+} from '../platform-marketplaces/schemas/platform-marketplace.schema';
 import { ReportImportController } from './report-import.controller';
 import { ReportImportService } from './report-import.service';
 import {
@@ -26,6 +30,7 @@ import { ValidationService } from './services/validation.service';
     MongooseModule.forFeature([
       { name: Gst.name, schema: GstSchema },
       { name: Marketplace.name, schema: MarketplaceSchema },
+      { name: PlatformMarketplace.name, schema: PlatformMarketplaceSchema },
       { name: ImportUpload.name, schema: ImportUploadSchema },
       { name: ImportRow.name, schema: ImportRowSchema },
       { name: ImportRowError.name, schema: ImportRowErrorSchema },

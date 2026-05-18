@@ -30,6 +30,8 @@ export type NormalizedImportRow = {
   invoiceDate?: string;
   pincode?: string;
   stateName?: string;
+  customerGstNo?: string;
+  buyerName?: string;
 };
 
 type MappingConfig = {
@@ -272,6 +274,80 @@ const CASHBACK_MAPPINGS: MappingConfig[] = [
   },
 ];
 
+const AMAZON_MAPPINGS: MappingConfig[] = [
+  {
+    source: ['Seller Gstin', 'Seller GSTIN', 'GST NO'],
+    target: 'sellerGSTIN',
+    transform: normalizeGstin,
+  },
+  { source: ['Order Id', 'Order ID'], target: 'orderID', transform: asString },
+  { source: ['Sku', 'SKU'], target: 'skuID', transform: asString },
+  { source: ['Hsn/sac', 'HSN Code'], target: 'hsnCode', transform: asString },
+  {
+    source: ['Transaction Type'],
+    target: 'voucherType',
+    transform: asString,
+  },
+  {
+    source: ['Transaction Type'],
+    target: 'documentType',
+    transform: asString,
+  },
+  {
+    source: ['Payment Method', 'Payment Mode', 'Payment Method Code'],
+    target: 'paymentMode',
+    transform: asString,
+  },
+  {
+    source: ['Fulfillment Channel', 'Fullfilment Channel', 'Fulfilment Type'],
+    target: 'fulfilmentType',
+    transform: asString,
+  },
+  { source: ['Quantity'], target: 'quantity', transform: asNumber },
+  {
+    source: ['Invoice Amount'],
+    target: 'invoiceAmount',
+    transform: asNumber,
+  },
+  {
+    source: ['Tax Exclusive Gross', 'Taxable Amount', 'Taxable Value'],
+    target: 'taxableAmount',
+    transform: asNumber,
+  },
+  { source: ['Igst Rate', 'IGST Rate'], target: 'igstRate', transform: asNumber },
+  { source: ['Igst Tax', 'IGST Amount'], target: 'igstAmount', transform: asNumber },
+  { source: ['Cgst Rate', 'CGST Rate'], target: 'cgstRate', transform: asNumber },
+  { source: ['Cgst Tax', 'CGST Amount'], target: 'cgstAmount', transform: asNumber },
+  { source: ['Sgst Rate', 'SGST Rate'], target: 'sgstRate', transform: asNumber },
+  { source: ['Sgst Tax', 'SGST Amount'], target: 'sgstAmount', transform: asNumber },
+  {
+    source: ['Invoice Number', 'Invoice No'],
+    target: 'invoiceNo',
+    transform: asString,
+  },
+  { source: ['Invoice Date'], target: 'invoiceDate', transform: asDate },
+  {
+    source: ['Ship To Postal Code', 'Pincode'],
+    target: 'pincode',
+    transform: asString,
+  },
+  {
+    source: ['Ship To State', 'State Name'],
+    target: 'stateName',
+    transform: asString,
+  },
+  {
+    source: ['Customer Bill To Gstid', 'Customer GST No'],
+    target: 'customerGstNo',
+    transform: asString,
+  },
+  {
+    source: ['Buyer Name'],
+    target: 'buyerName',
+    transform: asString,
+  },
+];
+
 @Injectable()
 export class MappingService {
   mapSalesRow(row: ParsedSheetRow): NormalizedImportRow {
@@ -280,6 +356,10 @@ export class MappingService {
 
   mapCashbackRow(row: ParsedSheetRow): NormalizedImportRow {
     return this.mapRow(row, 'cashback', CASHBACK_MAPPINGS);
+  }
+
+  mapAmazonRow(row: ParsedSheetRow): NormalizedImportRow {
+    return this.mapRow(row, 'sales', AMAZON_MAPPINGS);
   }
 
   private mapRow(

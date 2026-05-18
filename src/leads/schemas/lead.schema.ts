@@ -33,6 +33,12 @@ export class Lead {
   marketplaces?: string[];
 
   @Prop()
+  marketplace?: string;
+
+  @Prop()
+  ordersPerMonth?: '0-1000' | '1000-2000' | '2000-3000' | '3000+';
+
+  @Prop()
   firmName?: string;
 
   @Prop()
