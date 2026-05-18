@@ -8,6 +8,11 @@ type ParsedWorkbook = {
   headers: Record<'Sales Report' | 'Cash Back Report', string[]>;
 };
 
+type ParsedSingleSheetWorkbook = {
+  rows: ParsedSheetRow[];
+  headers: string[];
+};
+
 @Injectable()
 export class FileParserService {
   parseFlipkartWorkbook(buffer: Buffer): ParsedWorkbook {
@@ -54,6 +59,21 @@ export class FileParserService {
           cashbackHeaderRowIndex,
         ),
       },
+    };
+  }
+
+  parseAmazonWorkbook(buffer: Buffer): ParsedSingleSheetWorkbook {
+    const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: true });
+    if (!workbook.SheetNames.length) {
+      throw new BadRequestException('Workbook does not contain any sheet');
+    }
+    const firstSheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[firstSheetName];
+    const headerRowIndex = this.detectAmazonHeaderRowIndex(sheet);
+    const rows = this.parseSheetRows(sheet, firstSheetName, headerRowIndex);
+    return {
+      rows,
+      headers: this.extractHeaders(sheet, headerRowIndex),
     };
   }
 
@@ -121,6 +141,59 @@ export class FileParserService {
             'document sub type',
             'taxable value',
           ];
+
+    let bestIndex = 0;
+    let bestScore = -1;
+    const scanLimit = Math.min(rows.length, 40);
+    for (let i = 0; i < scanLimit; i += 1) {
+      const row = Array.isArray(rows[i]) ? rows[i] : [];
+      const normalizedCells = row
+        .map((item) => {
+          if (
+            typeof item === 'string' ||
+            typeof item === 'number' ||
+            typeof item === 'boolean'
+          ) {
+            return normalizeHeader(String(item));
+          }
+          return '';
+        })
+        .filter((item) => item.length > 0);
+      if (!normalizedCells.length) continue;
+      const score = aliases.reduce(
+        (acc, alias) =>
+          acc +
+          (normalizedCells.some(
+            (cell) => cell.includes(alias) || alias.includes(cell),
+          )
+            ? 1
+            : 0),
+        0,
+      );
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = i;
+      }
+    }
+    return bestIndex;
+  }
+
+  private detectAmazonHeaderRowIndex(sheet: XLSX.WorkSheet) {
+    const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+      header: 1,
+      raw: false,
+      blankrows: false,
+    });
+    const aliases = [
+      'seller gstin',
+      'order id',
+      'sku',
+      'transaction type',
+      'payment method',
+      'invoice amount',
+      'invoice number',
+      'invoice date',
+    ];
 
     let bestIndex = 0;
     let bestScore = -1;

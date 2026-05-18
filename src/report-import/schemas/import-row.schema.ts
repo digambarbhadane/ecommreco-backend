@@ -85,6 +85,12 @@ export class ImportRow {
 
   @Prop()
   stateName?: string; // canonical: State Name
+
+  @Prop()
+  customerGstNo?: string; // Amazon optional: Customer Bill To Gstid
+
+  @Prop()
+  buyerName?: string; // Amazon optional: Buyer Name
 }
 
 export const ImportRowSchema = SchemaFactory.createForClass(ImportRow);

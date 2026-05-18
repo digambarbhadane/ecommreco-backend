@@ -25,6 +25,7 @@ import {
   UserActivityLog,
   UserActivityLogDocument,
 } from '../profile/schemas/user-activity-log.schema';
+import { getMongoStorageMode, isInMemoryMongo } from '../config/mongo-connection';
 
 type AuthUser = {
   id: string;
@@ -38,12 +39,14 @@ type AuthUser = {
   password: string;
 };
 
-const allowedSellerStatuses = new Set([
-  'credentials_sent',
-  'training_pending',
-  'training_completed',
-  'active',
+/** Sellers in these stages cannot log in yet (no credentials / payment not done). */
+const blockedSellerLoginStatuses = new Set([
+  'lead_generated',
+  'sales_contacted',
+  'payment_pending',
 ]);
+
+const disabledAdminStatuses = new Set(['blocked', 'rejected']);
 
 @Injectable()
 export class AuthService implements OnModuleInit {
@@ -65,34 +68,54 @@ export class AuthService implements OnModuleInit {
 
   async onModuleInit() {
     await this.ensureDevSuperAdmin();
+    const mode = getMongoStorageMode();
+    this.logger.log(
+      `Mongo storage mode: ${mode} database=${this.connection.db?.databaseName ?? 'unknown'}`,
+    );
+    if (isInMemoryMongo()) {
+      this.logger.warn(
+        'Running on in-memory MongoDB — only users in this empty DB exist. Connect Atlas to use ecommreco_dev data.',
+      );
+    }
   }
 
   async login(dto: LoginDto, req: Request) {
+    this.logger.log(`Login attempt for identifier: ${dto.email}`);
     const rawIdentifier =
       typeof dto.email === 'string' ? dto.email.trim() : String(dto.email);
-    const matchIdentifier = {
-      $regex: `^${this.escapeRegex(rawIdentifier)}$`,
-      $options: 'i',
-    };
+    const identifierQuery = this.buildIdentifierQuery(rawIdentifier);
 
     const [seller, adminUser] = await Promise.all([
-      this.sellerModel
-        .findOne({
-          $or: [{ email: matchIdentifier }, { username: matchIdentifier }],
-        })
-        .lean()
-        .exec(),
-      this.userModel
-        .findOne({
-          $or: [{ email: matchIdentifier }, { username: matchIdentifier }],
-        })
-        .lean()
-        .exec(),
+      this.sellerModel.findOne(identifierQuery).lean().exec(),
+      this.userModel.findOne(identifierQuery).lean().exec(),
     ]);
 
+    this.logger.log(
+      `User lookup → adminUser found: ${!!adminUser} seller found: ${!!seller} (identifier=${rawIdentifier})`,
+    );
+
     if (adminUser) {
+      this.logger.log(
+        `Admin found: id=${adminUser._id} email=${adminUser.email} role=${adminUser.role} status=${adminUser.status}`,
+      );
       const ok = await this.verifyPassword(adminUser.password, dto.password);
+      this.logger.log(`Password verify result for admin: ${ok}`);
       if (ok) {
+        const adminStatus = adminUser.status ?? 'approved';
+        if (disabledAdminStatuses.has(adminStatus)) {
+          throw new UnauthorizedException({
+            success: false,
+            message: 'Account is disabled',
+            errorCode: 'ACCOUNT_DISABLED',
+          });
+        }
+        if (adminStatus === 'pending') {
+          throw new UnauthorizedException({
+            success: false,
+            message: 'Account is pending approval',
+            errorCode: 'ACCOUNT_PENDING',
+          });
+        }
         const user: AuthUser = {
           id: adminUser._id.toString(),
           name: adminUser.fullName,
@@ -110,24 +133,24 @@ export class AuthService implements OnModuleInit {
     }
 
     if (seller) {
+      this.logger.log(
+        `Seller found: id=${seller._id} email=${seller.email} onboardingStatus=${seller.onboardingStatus}`,
+      );
       const passwordOk = await this.verifyPassword(
         seller.password ?? '',
         dto.password,
       );
-      if (
-        passwordOk &&
-        !allowedSellerStatuses.has(seller.onboardingStatus ?? '')
-      ) {
-        throw new UnauthorizedException({
-          success: false,
-          message: 'Account not approved yet',
-          errorCode: 'SELLER_NOT_APPROVED',
-        });
-      }
-      if (
-        passwordOk &&
-        allowedSellerStatuses.has(seller.onboardingStatus ?? '')
-      ) {
+      this.logger.log(`Password verify result for seller: ${passwordOk}`);
+      if (passwordOk) {
+        const loginCheck = this.evaluateSellerLogin(seller);
+        if (!loginCheck.allowed) {
+          throw new UnauthorizedException({
+            success: false,
+            message: loginCheck.message,
+            errorCode: loginCheck.errorCode,
+          });
+        }
+
         const user: AuthUser = {
           id: seller._id.toString(),
           name: seller.fullName,
@@ -144,6 +167,9 @@ export class AuthService implements OnModuleInit {
       }
     }
 
+    this.logger.warn(
+      `Login failed for ${rawIdentifier}: no matching user/seller found or password mismatch`,
+    );
     throw new UnauthorizedException({
       success: false,
       message: 'Invalid credentials',
@@ -304,21 +330,38 @@ export class AuthService implements OnModuleInit {
     return { success: true, data: safe };
   }
 
-  health() {
+  async health() {
     this.assertDatabaseConnected();
+    const db = this.connection.db;
+    const storageMode = getMongoStorageMode();
+    let userCount = 0;
+    let sellerCount = 0;
+    try {
+      userCount = await this.userModel.countDocuments().exec();
+      sellerCount = await this.sellerModel.countDocuments().exec();
+    } catch {
+      // ignore count errors on health
+    }
     return {
       success: true,
       data: {
         status: 'ok',
         database: 'connected',
+        databaseName: db?.databaseName,
+        storageMode,
+        inMemoryFallback: isInMemoryMongo(),
+        userCount,
+        sellerCount,
         timestamp: new Date().toISOString(),
       },
     };
   }
 
-  databaseConnection() {
+  async databaseConnection() {
     this.assertDatabaseConnected();
     const db = this.connection.db;
+    const userCount = await this.userModel.countDocuments().exec();
+    const sellerCount = await this.sellerModel.countDocuments().exec();
     return {
       success: true,
       data: {
@@ -327,6 +370,10 @@ export class AuthService implements OnModuleInit {
         port: this.connection.port,
         name: this.connection.name,
         database: db?.databaseName,
+        storageMode: getMongoStorageMode(),
+        inMemoryFallback: isInMemoryMongo(),
+        userCount,
+        sellerCount,
       },
     };
   }
@@ -509,9 +556,11 @@ export class AuthService implements OnModuleInit {
 
   private async ensureDevSuperAdmin() {
     const nodeEnv = this.configService.get<string>('NODE_ENV') ?? 'development';
-    const useMemoryDb =
-      this.configService.get<string>('USE_MEMORY_DB') === 'true';
-    if (nodeEnv === 'production' || !useMemoryDb) {
+    if (nodeEnv === 'production') {
+      return;
+    }
+    // Only auto-seed when using in-memory DB (empty). Never seed over Atlas ecommreco_dev data.
+    if (!isInMemoryMongo()) {
       return;
     }
 
@@ -567,6 +616,43 @@ export class AuthService implements OnModuleInit {
       return bcrypt.compare(provided, stored);
     }
     return stored === provided;
+  }
+
+  private buildIdentifierQuery(identifier: string) {
+    const trimmed = identifier.trim();
+    const pattern = new RegExp(`^${this.escapeRegex(trimmed)}$`, 'i');
+    return {
+      $or: [{ email: pattern }, { username: pattern }],
+    };
+  }
+
+  private evaluateSellerLogin(seller: {
+    onboardingStatus?: string;
+    password?: string;
+  }): { allowed: boolean; message?: string; errorCode?: string } {
+    const status = seller.onboardingStatus ?? 'payment_pending';
+    const hasPassword =
+      typeof seller.password === 'string' && seller.password.trim().length > 0;
+
+    if (!hasPassword) {
+      return {
+        allowed: false,
+        message:
+          'Login credentials are not set yet. Contact support to complete onboarding.',
+        errorCode: 'SELLER_NO_CREDENTIALS',
+      };
+    }
+
+    if (blockedSellerLoginStatuses.has(status)) {
+      return {
+        allowed: false,
+        message:
+          'Account is not ready for login yet. Complete payment and credential setup first.',
+        errorCode: 'SELLER_NOT_APPROVED',
+      };
+    }
+
+    return { allowed: true };
   }
 
   private escapeRegex(value: string) {

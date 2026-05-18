@@ -1,4 +1,10 @@
 import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+} from '@nestjs/swagger';
+import {
   BadRequestException,
   Body,
   Controller,
@@ -56,11 +62,14 @@ type ScheduleDemoBody = {
 type UpdateDemoStatusBody = { status: 'scheduled' | 'done' };
 type BulkAssignLeadsBody = { leadIds: string[]; salesManagerId: string };
 
+@ApiTags('Leads')
+@ApiBearerAuth('bearer')
 @Controller(['leads', 'lead'])
 export class LeadsController {
   constructor(private readonly leadsService: LeadsService) {}
 
   @Post()
+  @ApiOperation({ summary: 'Create manual lead', description: 'Create a new lead manually. Requires super_admin or sales_manager role.' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   @HttpCode(HttpStatus.CREATED)
@@ -119,6 +128,12 @@ export class LeadsController {
   }
 
   @Post('register')
+  @ApiOperation({
+    summary: 'Public lead registration',
+    description:
+      'Public endpoint. Register a new lead from website. Rate limited by ThrottlerGuard.',
+    security: [],
+  })
   @UseGuards(ThrottlerGuard)
   @HttpCode(HttpStatus.CREATED)
   createLead(
@@ -135,6 +150,7 @@ export class LeadsController {
   }
 
   @Post('import')
+  @ApiOperation({ summary: 'Import leads in bulk', description: 'Import multiple leads at once. Super admin only.' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin')
   @HttpCode(HttpStatus.CREATED)
@@ -143,6 +159,7 @@ export class LeadsController {
   }
 
   @Get('dashboard-stats')
+  @ApiOperation({ summary: 'Get dashboard statistics', description: 'Returns lead statistics for dashboard. Supports date range filtering.' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   getDashboardStats(
@@ -154,6 +171,7 @@ export class LeadsController {
   }
 
   @Get()
+  @ApiOperation({ summary: 'List leads', description: 'Returns paginated list of leads with filtering support.' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   listLeads(
@@ -193,6 +211,7 @@ export class LeadsController {
   }
 
   @Get('follow-ups')
+  @ApiOperation({ summary: 'List follow-ups', description: 'Returns paginated list of lead follow-ups.' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   listFollowUps(
@@ -220,6 +239,7 @@ export class LeadsController {
   }
 
   @Patch(':id/follow-ups/:followUpId/status')
+  @ApiOperation({ summary: 'Update follow-up status' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   async updateFollowUpStatus(
@@ -247,6 +267,7 @@ export class LeadsController {
   }
 
   @Get('notes')
+  @ApiOperation({ summary: 'List lead notes' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   listNotes(
@@ -274,6 +295,7 @@ export class LeadsController {
   // Dev/testing: public notes listing without auth, uses the same search filters
   // Do not expose in production environments
   @Get('notes-public')
+  @ApiOperation({ summary: 'List notes (public, dev only)', description: 'Development-only public endpoint without authentication. Do not expose in production.' })
   listNotesPublic(
     @Query('page') page?: string,
     @Query('limit') limit?: string,
@@ -297,6 +319,12 @@ export class LeadsController {
   // Dev/testing: public follow-ups listing without auth, uses the same search filters
   // Do not expose in production environments
   @Get('follow-ups-public')
+  @ApiOperation({
+    summary: 'List follow-ups (public, dev only)',
+    description:
+      'Development-only public endpoint without authentication. Do not expose in production.',
+    security: [],
+  })
   listFollowUpsPublic(
     @Query('page') page?: string,
     @Query('limit') limit?: string,
@@ -320,6 +348,7 @@ export class LeadsController {
   }
 
   @Patch(':id/status')
+  @ApiOperation({ summary: 'Update lead status' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   async updateLeadStatus(
@@ -336,6 +365,7 @@ export class LeadsController {
   }
 
   @Patch(':id')
+  @ApiOperation({ summary: 'Update lead details' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   async updateLeadDetails(
@@ -352,6 +382,7 @@ export class LeadsController {
   }
 
   @Patch('assign')
+  @ApiOperation({ summary: 'Bulk assign leads', description: 'Assign multiple leads to a sales manager. Super admin only.' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin')
   bulkAssignLeads(
@@ -366,6 +397,7 @@ export class LeadsController {
   }
 
   @Post(':id/convert')
+  @ApiOperation({ summary: 'Convert lead to seller', description: 'Convert a lead into a seller account with subscription details.' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   async convertLead(
@@ -378,6 +410,7 @@ export class LeadsController {
   }
 
   @Post(':id/notes')
+  @ApiOperation({ summary: 'Add note to lead' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   async addNote(
@@ -394,6 +427,7 @@ export class LeadsController {
   }
 
   @Patch(':id/notes/:noteId')
+  @ApiOperation({ summary: 'Update lead note' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   async updateNote(
@@ -412,6 +446,7 @@ export class LeadsController {
   }
 
   @Patch(':id/follow-ups/:followUpId')
+  @ApiOperation({ summary: 'Update follow-up details', description: 'Update scheduled time and notes for a follow-up.' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   async updateFollowUp(
@@ -430,6 +465,7 @@ export class LeadsController {
   }
 
   @Delete(':id/notes/:noteId')
+  @ApiOperation({ summary: 'Delete lead note' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   async deleteNote(
@@ -442,6 +478,7 @@ export class LeadsController {
   }
 
   @Delete(':id/follow-ups/:followUpId')
+  @ApiOperation({ summary: 'Delete follow-up' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   async deleteFollowUp(
@@ -458,6 +495,7 @@ export class LeadsController {
   }
 
   @Post(':id/subscription')
+  @ApiOperation({ summary: 'Update lead subscription', description: 'Assign GST slots and duration for lead subscription.' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   async updateSubscription(
@@ -474,6 +512,7 @@ export class LeadsController {
   }
 
   @Post(':id/payment-link')
+  @ApiOperation({ summary: 'Generate payment link for lead', description: 'Generate Cashfree payment link for lead subscription.' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   generatePaymentLink(
@@ -488,6 +527,7 @@ export class LeadsController {
   }
 
   @Patch(':id/payment-status')
+  @ApiOperation({ summary: 'Update lead payment status' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   async updatePaymentStatus(
@@ -504,6 +544,7 @@ export class LeadsController {
   }
 
   @Post(':id/follow-up')
+  @ApiOperation({ summary: 'Schedule follow-up', description: 'Schedule a follow-up call/meeting for a lead.' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   async scheduleFollowUp(
@@ -521,6 +562,7 @@ export class LeadsController {
   }
 
   @Post([':id/demo', ':id/demos', ':id/schedule-demo'])
+  @ApiOperation({ summary: 'Schedule demo', description: 'Schedule a product demo for a lead. Supports optional email notification and meeting link.' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   async scheduleDemo(
@@ -543,6 +585,7 @@ export class LeadsController {
   }
 
   @Patch(':id/demos/:demoId/status')
+  @ApiOperation({ summary: 'Update demo status', description: 'Mark demo as scheduled or done.' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   async updateDemoStatus(
@@ -564,6 +607,7 @@ export class LeadsController {
   }
 
   @Delete(':id')
+  @ApiOperation({ summary: 'Delete lead' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   async deleteLead(@Param('id') id: string, @Req() req: AuthenticatedRequest) {
@@ -572,6 +616,7 @@ export class LeadsController {
   }
 
   @Get(':id')
+  @ApiOperation({ summary: 'Get lead by ID' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   getLead(@Param('id') id: string, @Req() req: RequestWithUser) {

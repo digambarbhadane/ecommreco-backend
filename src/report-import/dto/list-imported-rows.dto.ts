@@ -15,6 +15,10 @@ export class ListImportedRowsDto {
 
   @IsOptional()
   @IsString()
+  documentType?: string;
+
+  @IsOptional()
+  @IsString()
   fromDate?: string;
 
   @IsOptional()

@@ -1,4 +1,9 @@
 import {
+  ApiTags,
+  ApiOperation,
+  ApiBearerAuth,
+} from '@nestjs/swagger';
+import {
   Body,
   Controller,
   Get,
@@ -24,12 +29,15 @@ type RequestUser = {
 };
 type RequestWithUser = Request & { user?: RequestUser };
 
+@ApiTags('Sales-Activity')
+@ApiBearerAuth()
 @Controller()
 @UseGuards(AuthGuard('jwt'), RolesGuard)
 export class SalesActivityController {
   constructor(private readonly svc: SalesActivityService) {}
 
   @Get('sales-activity/today')
+  @ApiOperation({ summary: 'Get today sales activity', description: 'Returns sales activity statistics for today.' })
   @Roles('sales_manager', 'super_admin')
   async getToday(
     @Req() req: RequestWithUser,
@@ -58,6 +66,7 @@ export class SalesActivityController {
   }
 
   @Post('sales-target')
+  @ApiOperation({ summary: 'Assign sales target', description: 'Assign lead contact and conversion targets to a sales manager.' })
   @Roles('sales_manager', 'super_admin')
   async assignTarget(
     @Body()
@@ -80,6 +89,7 @@ export class SalesActivityController {
   }
 
   @Get('sales-target/:salesManagerId')
+  @ApiOperation({ summary: 'Get sales target for manager' })
   @Roles('sales_manager', 'super_admin')
   async getTarget(
     @Param('salesManagerId') salesManagerId: string,

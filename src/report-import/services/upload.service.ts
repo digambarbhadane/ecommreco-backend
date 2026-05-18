@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { UploadReportDto } from '../dto/upload-report.dto';
@@ -30,56 +30,189 @@ export class UploadService {
   ) {}
 
   async uploadFlipkart(
-    file: { buffer: Buffer; originalname: string },
+    files: {
+      file?: { buffer: Buffer; originalname: string };
+      mtrB2bFile?: { buffer: Buffer; originalname: string };
+      mtrB2cFile?: { buffer: Buffer; originalname: string };
+      tcsSalesFile?: { buffer: Buffer; originalname: string };
+      tcsSalesReturnFile?: { buffer: Buffer; originalname: string };
+      orderReportFile?: { buffer: Buffer; originalname: string };
+      returnReportFile?: { buffer: Buffer; originalname: string };
+    },
     dto: UploadReportDto,
   ) {
-    const { gst, marketplace } = await this.validation.validateOwnership(dto);
-    const parsed = this.parser.parseFlipkartWorkbook(file.buffer);
+    const { gst, marketplace, marketplaceIdentifier } =
+      await this.validation.validateOwnership(dto);
+    const isAmazon = marketplaceIdentifier.includes('amazon');
+    const isMeesho = marketplaceIdentifier.includes('meesho');
+    const parsedFlipkart = !isAmazon && files.file
+      ? this.parser.parseFlipkartWorkbook(files.file.buffer)
+      : null;
+    const parsedAmazonB2b = isAmazon && files.mtrB2bFile
+      ? this.parser.parseAmazonWorkbook(files.mtrB2bFile.buffer)
+      : null;
+    const parsedAmazonB2c = isAmazon && files.mtrB2cFile
+      ? this.parser.parseAmazonWorkbook(files.mtrB2cFile.buffer)
+      : null;
+    const parsedMeeshoTcsSales = isMeesho && files.tcsSalesFile
+      ? this.parser.parseAmazonWorkbook(files.tcsSalesFile.buffer)
+      : null;
+    const parsedMeeshoTcsSalesReturn = isMeesho && files.tcsSalesReturnFile
+      ? this.parser.parseAmazonWorkbook(files.tcsSalesReturnFile.buffer)
+      : null;
+    const parsedMeeshoOrderReport = isMeesho && files.orderReportFile
+      ? this.parser.parseAmazonWorkbook(files.orderReportFile.buffer)
+      : null;
+    const parsedMeeshoReturnReport = isMeesho && files.returnReportFile
+      ? this.parser.parseAmazonWorkbook(files.returnReportFile.buffer)
+      : null;
 
-    const requiredSalesHeaderGroups = [
-      ['GST NO', 'Seller GSTIN'],
-      ['Order ID'],
-      ['Invoice No', 'Buyer Invoice ID'],
-      ['Buyer Invoice Date'],
-      [
-        'Invoice Amount',
-        'Final Invoice Amount',
-        'Final Invoice Amount (Price after discount+Shipping Charges)',
-      ],
-      ['Taxable Amount', 'Taxable Value'],
-      ['Document Type', 'Event Type'],
-    ];
-    const requiredCashbackHeaderGroups = [
-      ['GST NO', 'Seller GSTIN'],
-      ['Order ID'],
-      [
-        'Invoice No',
-        'Credit Note ID',
-        'Debit Note ID',
-        'Credit Note ID / Debit Note ID',
-      ],
-      ['Invoice Date'],
-      ['Invoice Amount'],
-      ['Taxable Amount', 'Taxable Value'],
-      ['Payment Mode', 'Document Type'],
-    ];
-    this.validation.validateRequiredHeaderGroups(
-      parsed.headers['Sales Report'],
-      requiredSalesHeaderGroups,
-      'Sales Report',
-    );
-    this.validation.validateRequiredHeaderGroups(
-      parsed.headers['Cash Back Report'],
-      requiredCashbackHeaderGroups,
-      'Cash Back Report',
-    );
+    if (isAmazon) {
+      if (!files.mtrB2cFile) {
+        throw new BadRequestException('Amazon upload requires MTR B2C Report file');
+      }
+    } else if (isMeesho) {
+      if (
+        !files.tcsSalesFile ||
+        !files.tcsSalesReturnFile ||
+        !files.orderReportFile ||
+        !files.returnReportFile
+      ) {
+        throw new BadRequestException(
+          'Meesho upload requires all files: TCS Sales, TCS Sales Return, Order Report, Return Report',
+        );
+      }
+    } else if (!files.file) {
+      throw new BadRequestException('Flipkart upload requires report file');
+    }
 
-    this.validation.validateGstinMatch(
-      [...parsed.salesRows, ...parsed.cashbackRows],
-      gst.gstNumber,
-    );
+    if (isAmazon && parsedAmazonB2c) {
+      const requiredAmazonHeaderGroups = [
+        ['Seller Gstin', 'Seller GSTIN', 'GST NO'],
+        ['Order Id', 'Order ID'],
+        ['Sku', 'SKU'],
+        ['Hsn/sac', 'HSN Code'],
+        ['Transaction Type'],
+        ['Payment Method', 'Payment Mode', 'Payment Method Code'],
+        ['Fulfillment Channel', 'Fullfilment Channel', 'Fulfilment Type'],
+        ['Quantity'],
+        ['Invoice Amount'],
+        ['Tax Exclusive Gross', 'Taxable Amount', 'Taxable Value'],
+        ['Igst Rate', 'IGST Rate'],
+        ['Igst Tax', 'IGST Amount'],
+        ['Cgst Rate', 'CGST Rate'],
+        ['Cgst Tax', 'CGST Amount'],
+        ['Sgst Rate', 'SGST Rate'],
+        ['Sgst Tax', 'SGST Amount'],
+        ['Invoice Number', 'Invoice No'],
+        ['Invoice Date'],
+        ['Ship To Postal Code', 'Pincode'],
+        ['Ship To State', 'State Name'],
+      ];
+      this.validation.validateRequiredHeaderGroups(
+        parsedAmazonB2c.headers,
+        requiredAmazonHeaderGroups,
+        'Amazon MTR B2C Report',
+      );
+      this.validation.validateGstinMatch(parsedAmazonB2c.rows, gst.gstNumber);
 
-    const fileHash = this.validation.computeFileHash(file.buffer);
+      if (parsedAmazonB2b) {
+        this.validation.validateRequiredHeaderGroups(
+          parsedAmazonB2b.headers,
+          requiredAmazonHeaderGroups,
+          'Amazon MTR B2B Report',
+        );
+        this.validation.validateRequiredHeaderGroups(
+          parsedAmazonB2b.headers,
+          [['Customer Bill To Gstid'], ['Buyer Name']],
+          'Amazon MTR B2B Report',
+        );
+        this.validation.validateGstinMatch(parsedAmazonB2b.rows, gst.gstNumber);
+      }
+    } else if (parsedFlipkart) {
+      const requiredSalesHeaderGroups = [
+        ['GST NO', 'Seller GSTIN'],
+        ['Order ID'],
+        ['Invoice No', 'Buyer Invoice ID'],
+        ['Buyer Invoice Date'],
+        [
+          'Invoice Amount',
+          'Final Invoice Amount',
+          'Final Invoice Amount (Price after discount+Shipping Charges)',
+        ],
+        ['Taxable Amount', 'Taxable Value'],
+        ['Document Type', 'Event Type'],
+      ];
+      const requiredCashbackHeaderGroups = [
+        ['GST NO', 'Seller GSTIN'],
+        ['Order ID'],
+        [
+          'Invoice No',
+          'Credit Note ID',
+          'Debit Note ID',
+          'Credit Note ID / Debit Note ID',
+        ],
+        ['Invoice Date'],
+        ['Invoice Amount'],
+        ['Taxable Amount', 'Taxable Value'],
+        ['Payment Mode', 'Document Type'],
+      ];
+      this.validation.validateRequiredHeaderGroups(
+        parsedFlipkart.headers['Sales Report'],
+        requiredSalesHeaderGroups,
+        'Sales Report',
+      );
+      this.validation.validateRequiredHeaderGroups(
+        parsedFlipkart.headers['Cash Back Report'],
+        requiredCashbackHeaderGroups,
+        'Cash Back Report',
+      );
+      this.validation.validateGstinMatch(
+        [...parsedFlipkart.salesRows, ...parsedFlipkart.cashbackRows],
+        gst.gstNumber,
+      );
+    } else if (
+      isMeesho &&
+      parsedMeeshoTcsSales &&
+      parsedMeeshoTcsSalesReturn &&
+      parsedMeeshoOrderReport &&
+      parsedMeeshoReturnReport
+    ) {
+      this.validation.validateGstinMatch(parsedMeeshoTcsSales.rows, gst.gstNumber);
+      this.validation.validateGstinMatch(
+        parsedMeeshoTcsSalesReturn.rows,
+        gst.gstNumber,
+      );
+      this.validation.validateGstinMatch(parsedMeeshoOrderReport.rows, gst.gstNumber);
+      this.validation.validateGstinMatch(parsedMeeshoReturnReport.rows, gst.gstNumber);
+    }
+
+    const singleFileHash = files.file
+      ? this.validation.computeFileHash(files.file.buffer)
+      : '';
+    const b2bFileHash = files.mtrB2bFile
+      ? this.validation.computeFileHash(files.mtrB2bFile.buffer)
+      : '';
+    const b2cFileHash = files.mtrB2cFile
+      ? this.validation.computeFileHash(files.mtrB2cFile.buffer)
+      : '';
+    const tcsSalesFileHash = files.tcsSalesFile
+      ? this.validation.computeFileHash(files.tcsSalesFile.buffer)
+      : '';
+    const tcsSalesReturnFileHash = files.tcsSalesReturnFile
+      ? this.validation.computeFileHash(files.tcsSalesReturnFile.buffer)
+      : '';
+    const orderReportFileHash = files.orderReportFile
+      ? this.validation.computeFileHash(files.orderReportFile.buffer)
+      : '';
+    const returnReportFileHash = files.returnReportFile
+      ? this.validation.computeFileHash(files.returnReportFile.buffer)
+      : '';
+    const fileHash = isAmazon
+      ? `amazon|b2c:${b2cFileHash}|b2b:${b2bFileHash || 'none'}`
+      : isMeesho
+        ? `meesho|tcsSales:${tcsSalesFileHash}|tcsSalesReturn:${tcsSalesReturnFileHash}|order:${orderReportFileHash}|return:${returnReportFileHash}`
+      : `single:${singleFileHash}`;
     const normalizedRows: Array<
       NormalizedImportRow & {
         __sheetName: string;
@@ -92,37 +225,122 @@ export class UploadService {
       error: string;
     }> = [];
 
-    parsed.salesRows.forEach((row) => {
-      try {
-        normalizedRows.push({
-          ...this.mapping.mapSalesRow(row),
-          __sheetName: row.__sheetName,
-          __rowNumber: row.__rowNumber,
-        });
-      } catch {
-        rowErrors.push({
-          sheetName: row.__sheetName,
-          rowNumber: row.__rowNumber,
-          error: 'Failed to normalize sales row',
-        });
-      }
-    });
+    if (isAmazon && parsedAmazonB2c) {
+      [...(parsedAmazonB2b?.rows ?? []), ...parsedAmazonB2c.rows].forEach((row) => {
+        try {
+          normalizedRows.push({
+            ...this.mapping.mapAmazonRow(row),
+            __sheetName: row.__sheetName,
+            __rowNumber: row.__rowNumber,
+          });
+        } catch {
+          rowErrors.push({
+            sheetName: row.__sheetName,
+            rowNumber: row.__rowNumber,
+            error: 'Failed to normalize amazon row',
+          });
+        }
+      });
+    } else if (
+      isMeesho &&
+      parsedMeeshoTcsSales &&
+      parsedMeeshoTcsSalesReturn &&
+      parsedMeeshoOrderReport &&
+      parsedMeeshoReturnReport
+    ) {
+      parsedMeeshoTcsSales.rows.forEach((row) => {
+        try {
+          normalizedRows.push({
+            ...this.mapping.mapSalesRow(row),
+            __sheetName: row.__sheetName,
+            __rowNumber: row.__rowNumber,
+          });
+        } catch {
+          rowErrors.push({
+            sheetName: row.__sheetName,
+            rowNumber: row.__rowNumber,
+            error: 'Failed to normalize tcs sales row',
+          });
+        }
+      });
+      parsedMeeshoOrderReport.rows.forEach((row) => {
+        try {
+          normalizedRows.push({
+            ...this.mapping.mapSalesRow(row),
+            __sheetName: row.__sheetName,
+            __rowNumber: row.__rowNumber,
+          });
+        } catch {
+          rowErrors.push({
+            sheetName: row.__sheetName,
+            rowNumber: row.__rowNumber,
+            error: 'Failed to normalize order report row',
+          });
+        }
+      });
+      parsedMeeshoTcsSalesReturn.rows.forEach((row) => {
+        try {
+          normalizedRows.push({
+            ...this.mapping.mapCashbackRow(row),
+            __sheetName: row.__sheetName,
+            __rowNumber: row.__rowNumber,
+          });
+        } catch {
+          rowErrors.push({
+            sheetName: row.__sheetName,
+            rowNumber: row.__rowNumber,
+            error: 'Failed to normalize tcs sales return row',
+          });
+        }
+      });
+      parsedMeeshoReturnReport.rows.forEach((row) => {
+        try {
+          normalizedRows.push({
+            ...this.mapping.mapCashbackRow(row),
+            __sheetName: row.__sheetName,
+            __rowNumber: row.__rowNumber,
+          });
+        } catch {
+          rowErrors.push({
+            sheetName: row.__sheetName,
+            rowNumber: row.__rowNumber,
+            error: 'Failed to normalize return report row',
+          });
+        }
+      });
+    } else if (parsedFlipkart) {
+      parsedFlipkart.salesRows.forEach((row) => {
+        try {
+          normalizedRows.push({
+            ...this.mapping.mapSalesRow(row),
+            __sheetName: row.__sheetName,
+            __rowNumber: row.__rowNumber,
+          });
+        } catch {
+          rowErrors.push({
+            sheetName: row.__sheetName,
+            rowNumber: row.__rowNumber,
+            error: 'Failed to normalize sales row',
+          });
+        }
+      });
 
-    parsed.cashbackRows.forEach((row) => {
-      try {
-        normalizedRows.push({
-          ...this.mapping.mapCashbackRow(row),
-          __sheetName: row.__sheetName,
-          __rowNumber: row.__rowNumber,
-        });
-      } catch {
-        rowErrors.push({
-          sheetName: row.__sheetName,
-          rowNumber: row.__rowNumber,
-          error: 'Failed to normalize cashback row',
-        });
-      }
-    });
+      parsedFlipkart.cashbackRows.forEach((row) => {
+        try {
+          normalizedRows.push({
+            ...this.mapping.mapCashbackRow(row),
+            __sheetName: row.__sheetName,
+            __rowNumber: row.__rowNumber,
+          });
+        } catch {
+          rowErrors.push({
+            sheetName: row.__sheetName,
+            rowNumber: row.__rowNumber,
+            error: 'Failed to normalize cashback row',
+          });
+        }
+      });
+    }
 
     const invoiceDates = normalizedRows
       .map((row) => row.invoiceDate)
@@ -133,10 +351,26 @@ export class UploadService {
 
     const minInvoiceDate = invoiceDates[0];
     const maxInvoiceDate = invoiceDates[invoiceDates.length - 1];
+    const marketplaceId = marketplace._id?.toString?.() ?? dto.marketplaceId;
+    await this.validation.ensureNoDuplicateFileHashes({
+      sellerId: dto.sellerId,
+      gstin: gst.gstNumber,
+      marketplace: marketplaceId,
+      fileHashes: isAmazon
+        ? [b2cFileHash, b2bFileHash].filter(Boolean)
+        : isMeesho
+          ? [
+              tcsSalesFileHash,
+              tcsSalesReturnFileHash,
+              orderReportFileHash,
+              returnReportFileHash,
+            ].filter(Boolean)
+        : [singleFileHash].filter(Boolean),
+    });
     await this.validation.ensureNotDuplicate({
       sellerId: dto.sellerId,
       gstin: gst.gstNumber,
-      marketplace: marketplace._id?.toString?.() ?? dto.marketplaceId,
+      marketplace: marketplaceId,
       fileHash,
       minInvoiceDate,
       maxInvoiceDate,
@@ -147,8 +381,12 @@ export class UploadService {
       sellerId: dto.sellerId,
       gstId: dto.gstId,
       gstin: gst.gstNumber,
-      marketplace: marketplace._id?.toString?.() ?? dto.marketplaceId,
-      fileName: file.originalname,
+      marketplace: marketplaceId,
+      fileName: isAmazon
+        ? `${files.mtrB2bFile?.originalname ?? 'MTR-B2B'} + ${files.mtrB2cFile?.originalname ?? 'MTR-B2C'}`
+        : isMeesho
+          ? `${files.tcsSalesFile?.originalname ?? 'TCS-Sales'} + ${files.tcsSalesReturnFile?.originalname ?? 'TCS-Sales-Return'} + ${files.orderReportFile?.originalname ?? 'Order-Report'} + ${files.returnReportFile?.originalname ?? 'Return-Report'}`
+        : (files.file?.originalname ?? 'report.xlsx'),
       fileHash,
       totalRecords: normalizedRows.length,
       minInvoiceDate,
@@ -170,7 +408,7 @@ export class UploadService {
           uploadId,
           sellerId: dto.sellerId,
           gstin: gst.gstNumber,
-          marketplace: marketplace._id?.toString?.() ?? dto.marketplaceId,
+          marketplace: marketplaceId,
           reportType: row.reportType,
           documentType: row.documentType,
           voucherType: row.voucherType,
@@ -193,6 +431,8 @@ export class UploadService {
           invoiceDate: row.invoiceDate,
           pincode: row.pincode,
           stateName: row.stateName,
+          customerGstNo: row.customerGstNo,
+          buyerName: row.buyerName,
         })),
         { ordered: false },
       );

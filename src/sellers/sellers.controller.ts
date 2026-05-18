@@ -1,4 +1,10 @@
 import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+} from '@nestjs/swagger';
+import {
   Body,
   Controller,
   Get,
@@ -19,17 +25,25 @@ import { RegisterSellerDto } from './dto/register-seller.dto';
 import { SendPaymentLinkDto } from './dto/send-payment-link.dto';
 import { SellersService } from './sellers.service';
 
+@ApiTags('Sellers')
+@ApiBearerAuth('bearer')
 @Controller('sellers')
 export class SellersController {
   constructor(private readonly sellersService: SellersService) {}
 
   @Post('register')
+  @ApiOperation({
+    summary: 'Register new seller',
+    description: 'Public endpoint. Register a new seller account.',
+    security: [],
+  })
   @HttpCode(HttpStatus.CREATED)
   register(@Body() dto: RegisterSellerDto) {
     return this.sellersService.register(dto);
   }
 
   @Get()
+  @ApiOperation({ summary: 'List sellers', description: 'Returns paginated list of sellers based on user role.' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles(
     'super_admin',
@@ -59,6 +73,7 @@ export class SellersController {
   }
 
   @Get('super-admin')
+  @ApiOperation({ summary: 'List sellers (super admin view)', description: 'Super admin only. Returns all sellers with full details.' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin')
   listSuperAdmin(
@@ -83,6 +98,7 @@ export class SellersController {
   }
 
   @Get(':id')
+  @ApiOperation({ summary: 'Get seller by ID' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles(
     'super_admin',
@@ -99,6 +115,7 @@ export class SellersController {
   }
 
   @Get('super-admin/:id')
+  @ApiOperation({ summary: 'Get seller by ID (super admin view)' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin')
   getSellerSuperAdmin(@Param('id') id: string, @Req() req: RequestWithUser) {
@@ -106,6 +123,7 @@ export class SellersController {
   }
 
   @Post(':id/payment-link')
+  @ApiOperation({ summary: 'Send payment link', description: 'Send payment link to seller via email.' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   sendPaymentLink(@Param('id') id: string, @Body() dto: SendPaymentLinkDto) {
@@ -113,6 +131,7 @@ export class SellersController {
   }
 
   @Post(':id/payment-completed')
+  @ApiOperation({ summary: 'Mark payment as completed', description: 'Accounts manager or super admin confirms payment received.' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'accounts_manager')
   markPaymentCompleted(@Param('id') id: string, @Req() req: RequestWithUser) {
@@ -120,6 +139,7 @@ export class SellersController {
   }
 
   @Post(':id/generate-credentials')
+  @ApiOperation({ summary: 'Generate seller credentials', description: 'Generate login credentials for seller.' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'accounts_manager')
   generateCredentials(
@@ -131,6 +151,7 @@ export class SellersController {
   }
 
   @Post(':id/approve-credentials')
+  @ApiOperation({ summary: 'Approve seller credentials', description: 'Super admin approves generated credentials.' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin')
   approveCredentials(@Param('id') id: string, @Req() req: RequestWithUser) {
@@ -138,6 +159,7 @@ export class SellersController {
   }
 
   @Post(':id/complete-training')
+  @ApiOperation({ summary: 'Mark training as completed', description: 'Mark seller training as completed.' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('training_and_support_manager', 'super_admin')
   completeTraining(@Param('id') id: string, @Req() req: RequestWithUser) {
@@ -145,6 +167,7 @@ export class SellersController {
   }
 
   @Post(':id/account-status')
+  @ApiOperation({ summary: 'Update seller account status', description: 'Super admin updates seller account status.' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin')
   updateAccountStatus(

@@ -28,6 +28,7 @@ export class ReportImportService {
     if (query.sellerId) filter.sellerId = query.sellerId;
     if (query.gstin) filter.gstin = query.gstin.trim().toUpperCase();
     if (query.marketplace) filter.marketplace = query.marketplace;
+    if (query.documentType) filter.documentType = query.documentType;
     if (query.fromDate || query.toDate) {
       filter.invoiceDate = {};
       if (query.fromDate) {
