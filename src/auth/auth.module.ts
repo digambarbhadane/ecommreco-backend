@@ -8,6 +8,14 @@ import { AuthService } from './auth.service';
 import { JwtStrategy } from './jwt.strategy';
 import { Seller, SellerSchema } from '../sellers/schemas/seller.schema';
 import { User, UserSchema } from '../users/schemas/user.schema';
+import {
+  UserActivityLog,
+  UserActivityLogSchema,
+} from '../profile/schemas/user-activity-log.schema';
+import {
+  UserSecurity,
+  UserSecuritySchema,
+} from '../profile/schemas/user-security.schema';
 
 @Module({
   imports: [
@@ -23,6 +31,8 @@ import { User, UserSchema } from '../users/schemas/user.schema';
     MongooseModule.forFeature([
       { name: Seller.name, schema: SellerSchema },
       { name: User.name, schema: UserSchema },
+      { name: UserSecurity.name, schema: UserSecuritySchema },
+      { name: UserActivityLog.name, schema: UserActivityLogSchema },
     ]),
   ],
   controllers: [AuthController],

@@ -152,10 +152,12 @@ export class MarketplacesService {
       status,
       name: platformName ?? item.storeName ?? 'Marketplace',
       storeName: item.storeName,
+      platformSlug: platform?.slug ?? '',
       platformMarketplaceId: platform
         ? {
             _id: platform._id?.toString?.() ?? platform._id,
             name: platform.name,
+            slug: platform.slug,
             logoUrl: platform.logoUrl,
             description: platform.description,
             status: platform.status,

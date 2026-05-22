@@ -2,6 +2,7 @@ import { Transform } from 'class-transformer';
 import {
   IsEmail,
   IsNotEmpty,
+  IsObject,
   IsOptional,
   IsString,
   MaxLength,
@@ -10,12 +11,12 @@ import {
 } from 'class-validator';
 
 export class CreateManualLeadDto {
-  @IsNotEmpty()
+  @IsOptional()
   @IsString()
   @Transform(({ value }) =>
     typeof value === 'string' ? value.trim() : undefined,
   )
-  fullName: string;
+  fullName?: string;
 
   @IsNotEmpty()
   @IsString()
@@ -27,14 +28,14 @@ export class CreateManualLeadDto {
   )
   contactNumber: string;
 
-  @IsNotEmpty()
+  @IsOptional()
   @IsEmail()
   @Transform(({ value }) =>
     typeof value === 'string' ? value.trim().toLowerCase() : undefined,
   )
-  email: string;
+  email?: string;
 
-  @IsNotEmpty()
+  @IsOptional()
   @IsString()
   @Transform(({ value }) =>
     typeof value === 'string' ? value.trim().toUpperCase() : undefined,
@@ -44,9 +45,24 @@ export class CreateManualLeadDto {
   @Matches(/^[A-Za-z0-9]{16}$/, {
     message: 'gstNumber must be 16 alphanumeric characters',
   })
-  gstNumber: string;
+  gstNumber?: string;
 
   @IsOptional()
   @IsString()
   source?: string;
+
+  @IsOptional()
+  @IsString()
+  assignedSalesManagerId?: string;
+
+  @IsOptional()
+  @IsEmail()
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim().toLowerCase() : undefined,
+  )
+  assignedSalesManagerEmail?: string;
+
+  @IsOptional()
+  @IsObject()
+  metadata?: Record<string, any>;
 }
