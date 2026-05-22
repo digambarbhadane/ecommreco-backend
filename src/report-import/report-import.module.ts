@@ -22,6 +22,7 @@ import {
 } from './schemas/import-row-error.schema';
 import { FileParserService } from './services/file-parser.service';
 import { MappingService } from './services/mapping.service';
+import { MeeshoImportService } from './services/meesho-import.service';
 import { UploadService } from './services/upload.service';
 import { ValidationService } from './services/validation.service';
 
@@ -42,6 +43,7 @@ import { ValidationService } from './services/validation.service';
     FileParserService,
     ValidationService,
     MappingService,
+    MeeshoImportService,
     UploadService,
   ],
 })

@@ -39,14 +39,20 @@ export class ValidationService {
     marketplaceId: string;
   }) {
     const gst = await this.gstModel.findById(payload.gstId).lean().exec();
-    if (!gst || gst.sellerId !== payload.sellerId) {
+    if (
+      !gst ||
+      String(gst.sellerId) !== String(payload.sellerId).trim()
+    ) {
       throw new NotFoundException('Selected GST profile not found');
     }
     const marketplace = await this.marketplaceModel
       .findById(payload.marketplaceId)
       .lean()
       .exec();
-    if (!marketplace || marketplace.sellerId !== payload.sellerId) {
+    if (
+      !marketplace ||
+      String(marketplace.sellerId) !== String(payload.sellerId).trim()
+    ) {
       throw new NotFoundException('Selected marketplace not found');
     }
     if (marketplace.gstId !== payload.gstId) {
@@ -98,7 +104,7 @@ export class ValidationService {
   validateGstinMatch(rows: ParsedSheetRow[], expectedGstin: string) {
     const distinct = new Set<string>();
     const aliasSet = new Set(
-      ['GST NO', 'Seller GSTIN', 'seller_gstin'].map((item) =>
+      ['GST NO', 'Seller GSTIN', 'seller_gstin', 'gstin'].map((item) =>
         normalizeHeader(item),
       ),
     );
@@ -181,14 +187,21 @@ export class ValidationService {
     );
     if (!uniqueHashes.length) return;
 
+    const escapeRegex = (value: string) =>
+      value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const existing = await this.uploadModel
       .findOne({
         sellerId: payload.sellerId,
         gstin: payload.gstin,
         marketplace: payload.marketplace,
-        $or: uniqueHashes.map((hash) => ({
-          fileHash: { $regex: hash },
-        })),
+        $or: uniqueHashes.flatMap((hash) => [
+          { fileHash: hash },
+          {
+            fileHash: {
+              $regex: `(^|\\|)[^:]*:${escapeRegex(hash)}($|\\|)`,
+            },
+          },
+        ]),
       })
       .lean()
       .exec();

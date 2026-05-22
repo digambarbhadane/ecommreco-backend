@@ -91,6 +91,25 @@ export class ImportRow {
 
   @Prop()
   buyerName?: string; // Amazon optional: Buyer Name
+
+  /** Meesho-only — enriched from TCS Sales Return / Return Report */
+  @Prop()
+  returnInvoiceDate?: string;
+
+  @Prop()
+  typeOfReturn?: string;
+
+  @Prop()
+  subType?: string;
+
+  @Prop()
+  returnQty?: number;
+
+  @Prop()
+  returnReason?: string;
+
+  @Prop()
+  detailedReturnReason?: string;
 }
 
 export const ImportRowSchema = SchemaFactory.createForClass(ImportRow);

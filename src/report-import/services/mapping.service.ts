@@ -32,6 +32,41 @@ export type NormalizedImportRow = {
   stateName?: string;
   customerGstNo?: string;
   buyerName?: string;
+  returnInvoiceDate?: string;
+  typeOfReturn?: string;
+  subType?: string;
+  returnQty?: number;
+  returnReason?: string;
+  detailedReturnReason?: string;
+};
+
+/** Column names used as order key across Meesho reports (matched after normalizeHeader). */
+export const MEESHO_ORDER_ID_ALIASES = [
+  'sub_order_num',
+  'Order ID',
+  'Sub Order No',
+  'Order Number',
+] as const;
+
+export const normalizeStateName = (value?: string): string => {
+  if (!value) return '';
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, 'and')
+    .replace(/\s+/g, ' ');
+};
+
+export const getRowCell = (
+  row: ParsedSheetRow,
+  ...aliases: string[]
+): unknown => {
+  const aliasSet = new Set(aliases.map((item) => normalizeHeader(item)));
+  const entry = Object.entries(row).find(
+    ([key]) =>
+      !key.startsWith('__') && aliasSet.has(normalizeHeader(key)),
+  );
+  return entry?.[1];
 };
 
 type MappingConfig = {
@@ -348,8 +383,124 @@ const AMAZON_MAPPINGS: MappingConfig[] = [
   },
 ];
 
+const MEESHO_TCS_SALES_MAPPINGS: MappingConfig[] = [
+  { source: ['gstin', 'GST NO'], target: 'sellerGSTIN', transform: normalizeGstin },
+  {
+    source: [...MEESHO_ORDER_ID_ALIASES],
+    target: 'orderID',
+    transform: asString,
+  },
+  { source: ['hsn_code', 'HSN Code'], target: 'hsnCode', transform: asString },
+  { source: ['quantity', 'Quantity'], target: 'quantity', transform: asNumber },
+  {
+    source: ['total_invoice_value', 'Invoice Amount'],
+    target: 'invoiceAmount',
+    transform: asNumber,
+  },
+  {
+    source: ['total_taxable_sale_value', 'Taxable Amount'],
+    target: 'taxableAmount',
+    transform: asNumber,
+  },
+  { source: ['gst_rate', 'IGST Rate'], target: 'igstRate', transform: asNumber },
+  { source: ['tax_amount', 'IGST Amount'], target: 'igstAmount', transform: asNumber },
+  {
+    source: ['order_date', 'Invoice Date'],
+    target: 'invoiceDate',
+    transform: asDate,
+  },
+  {
+    source: ['end_customer_state_new', 'State Name'],
+    target: 'stateName',
+    transform: asString,
+  },
+];
+
 @Injectable()
 export class MappingService {
+  mapMeeshoTcsSalesRow(
+    row: ParsedSheetRow,
+    sellerState?: string,
+  ): NormalizedImportRow {
+    const mapped = this.mapRow(row, 'sales', MEESHO_TCS_SALES_MAPPINGS);
+    if (!mapped.documentType) {
+      mapped.documentType = 'SALE';
+    }
+
+    const sellerStateNorm = normalizeStateName(sellerState);
+    const customerStateNorm = normalizeStateName(mapped.stateName);
+    const isIntraState =
+      sellerStateNorm.length > 0 &&
+      customerStateNorm.length > 0 &&
+      sellerStateNorm === customerStateNorm;
+
+    if (isIntraState) {
+      const igstRate = mapped.igstRate;
+      const igstAmount = mapped.igstAmount;
+      if (typeof igstRate === 'number' && Number.isFinite(igstRate)) {
+        mapped.cgstRate = igstRate / 2;
+        mapped.sgstRate = igstRate / 2;
+      }
+      if (typeof igstAmount === 'number' && Number.isFinite(igstAmount)) {
+        mapped.cgstAmount = igstAmount / 2;
+        mapped.sgstAmount = igstAmount / 2;
+      }
+    } else {
+      mapped.cgstRate = undefined;
+      mapped.cgstAmount = undefined;
+      mapped.sgstRate = undefined;
+      mapped.sgstAmount = undefined;
+    }
+
+    return mapped;
+  }
+
+  enrichMeeshoFromOrderReport(
+    mapped: NormalizedImportRow,
+    orderRow?: ParsedSheetRow,
+  ): NormalizedImportRow {
+    if (!orderRow) return mapped;
+    const sku = asString(getRowCell(orderRow, 'SKU', 'SKU ID'));
+    const documentType = asString(
+      getRowCell(orderRow, 'Reason for Credit Entry', 'Document Type'),
+    );
+    if (sku) mapped.skuID = sku;
+    if (documentType) mapped.documentType = documentType;
+    return mapped;
+  }
+
+  enrichMeeshoFromTcsSalesReturn(
+    mapped: NormalizedImportRow,
+    returnRow?: ParsedSheetRow,
+  ): NormalizedImportRow {
+    if (!returnRow) return mapped;
+    const returnInvoiceDate = asDate(
+      getRowCell(returnRow, 'cancel_return_date', 'Return Invoice Date'),
+    );
+    if (returnInvoiceDate) mapped.returnInvoiceDate = returnInvoiceDate;
+    return mapped;
+  }
+
+  enrichMeeshoFromReturnReport(
+    mapped: NormalizedImportRow,
+    returnRow?: ParsedSheetRow,
+  ): NormalizedImportRow {
+    if (!returnRow) return mapped;
+    const typeOfReturn = asString(getRowCell(returnRow, 'Type of Return'));
+    const subType = asString(getRowCell(returnRow, 'Sub Type'));
+    const returnQty = asNumber(getRowCell(returnRow, 'Qty', 'Return Qty'));
+    const returnReason = asString(getRowCell(returnRow, 'Return Reason'));
+    const detailedReturnReason = asString(
+      getRowCell(returnRow, 'Detailed Return Reason'),
+    );
+    if (typeOfReturn) mapped.typeOfReturn = typeOfReturn;
+    if (subType) mapped.subType = subType;
+    if (returnQty !== undefined) mapped.returnQty = returnQty;
+    if (returnReason) mapped.returnReason = returnReason;
+    if (detailedReturnReason) mapped.detailedReturnReason = detailedReturnReason;
+    return mapped;
+  }
+
   mapSalesRow(row: ParsedSheetRow): NormalizedImportRow {
     return this.mapRow(row, 'sales', SALES_MAPPINGS);
   }

@@ -62,6 +62,21 @@ export class FileParserService {
     };
   }
 
+  parseMeeshoWorkbook(buffer: Buffer): ParsedSingleSheetWorkbook {
+    const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: true });
+    if (!workbook.SheetNames.length) {
+      throw new BadRequestException('Workbook does not contain any sheet');
+    }
+    const firstSheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[firstSheetName];
+    const headerRowIndex = this.detectMeeshoHeaderRowIndex(sheet);
+    const rows = this.parseSheetRows(sheet, firstSheetName, headerRowIndex);
+    return {
+      rows,
+      headers: this.extractHeaders(sheet, headerRowIndex),
+    };
+  }
+
   parseAmazonWorkbook(buffer: Buffer): ParsedSingleSheetWorkbook {
     const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: true });
     if (!workbook.SheetNames.length) {
@@ -168,6 +183,56 @@ export class FileParserService {
           )
             ? 1
             : 0),
+        0,
+      );
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = i;
+      }
+    }
+    return bestIndex;
+  }
+
+  private detectMeeshoHeaderRowIndex(sheet: XLSX.WorkSheet) {
+    const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+      header: 1,
+      raw: false,
+      blankrows: false,
+    });
+    const aliases = [
+      'sub order num',
+      'sub order no',
+      'order number',
+      'gstin',
+      'hsn code',
+      'total invoice value',
+      'order date',
+      'cancel return date',
+      'reason for credit entry',
+      'type of return',
+    ];
+
+    let bestIndex = 0;
+    let bestScore = -1;
+    const scanLimit = Math.min(rows.length, 40);
+    for (let i = 0; i < scanLimit; i += 1) {
+      const row = Array.isArray(rows[i]) ? rows[i] : [];
+      const normalizedCells = row
+        .map((item) => {
+          if (
+            typeof item === 'string' ||
+            typeof item === 'number' ||
+            typeof item === 'boolean'
+          ) {
+            return normalizeHeader(String(item));
+          }
+          return '';
+        })
+        .filter((item) => item.length > 0);
+      if (!normalizedCells.length) continue;
+      const score = aliases.reduce(
+        (acc, alias) =>
+          acc + (normalizedCells.some((cell) => cell === alias || cell.includes(alias)) ? 1 : 0),
         0,
       );
       if (score > bestScore) {
