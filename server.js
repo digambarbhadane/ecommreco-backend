@@ -12,9 +12,10 @@ const envFile =
       ? '.env.uat'
       : '.env.development';
 
-// Load the selected environment file
+// Load the selected environment file (do not override vars set by Render/host)
 dotenv.config({
   path: path.resolve(process.cwd(), envFile),
+  override: false,
 });
 
 console.log(`Loaded environment file: ${envFile}`);
@@ -25,5 +26,12 @@ if (env === 'development') {
   require('tsconfig-paths/register');
   require(path.resolve(__dirname, 'src/main'));
 } else {
-  require(path.resolve(__dirname, 'dist/src/main'));
+  const compiledMain = path.resolve(__dirname, 'dist/src/main.js');
+  if (!require('fs').existsSync(compiledMain)) {
+    console.error(
+      `Missing ${compiledMain}. Run "npm run build" during deploy (Render build command), not at start.`,
+    );
+    process.exit(1);
+  }
+  require(compiledMain);
 }
