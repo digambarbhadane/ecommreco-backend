@@ -1,9 +1,4 @@
-// eslint-disable-next-line @typescript-eslint/no-require-imports
 /// <reference types="node" />
-import * as path from 'path';
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-require(path.resolve(__dirname, '..', 'load-env'));
-
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import { SwaggerModule } from '@nestjs/swagger';
