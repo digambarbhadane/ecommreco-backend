@@ -12,13 +12,19 @@ import {
   ImportRowErrorDocument,
 } from '../schemas/import-row-error.schema';
 import { FileParserService } from './file-parser.service';
-import { MappingService, NormalizedImportRow } from './mapping.service';
+import { MeeshoImportService } from './meesho-import.service';
+import {
+  MappingService,
+  MEESHO_ORDER_ID_ALIASES,
+  NormalizedImportRow,
+} from './mapping.service';
 import { ValidationService } from './validation.service';
 
 @Injectable()
 export class UploadService {
   constructor(
     private readonly parser: FileParserService,
+    private readonly meeshoImport: MeeshoImportService,
     private readonly validation: ValidationService,
     private readonly mapping: MappingService,
     @InjectModel(ImportUpload.name)
@@ -54,18 +60,19 @@ export class UploadService {
     const parsedAmazonB2c = isAmazon && files.mtrB2cFile
       ? this.parser.parseAmazonWorkbook(files.mtrB2cFile.buffer)
       : null;
-    const parsedMeeshoTcsSales = isMeesho && files.tcsSalesFile
-      ? this.parser.parseAmazonWorkbook(files.tcsSalesFile.buffer)
-      : null;
-    const parsedMeeshoTcsSalesReturn = isMeesho && files.tcsSalesReturnFile
-      ? this.parser.parseAmazonWorkbook(files.tcsSalesReturnFile.buffer)
-      : null;
-    const parsedMeeshoOrderReport = isMeesho && files.orderReportFile
-      ? this.parser.parseAmazonWorkbook(files.orderReportFile.buffer)
-      : null;
-    const parsedMeeshoReturnReport = isMeesho && files.returnReportFile
-      ? this.parser.parseAmazonWorkbook(files.returnReportFile.buffer)
-      : null;
+    const parsedMeesho =
+      isMeesho &&
+      files.tcsSalesFile &&
+      files.tcsSalesReturnFile &&
+      files.orderReportFile &&
+      files.returnReportFile
+        ? this.meeshoImport.parseFiles({
+            tcsSalesFile: files.tcsSalesFile,
+            tcsSalesReturnFile: files.tcsSalesReturnFile,
+            orderReportFile: files.orderReportFile,
+            returnReportFile: files.returnReportFile,
+          })
+        : null;
 
     if (isAmazon) {
       if (!files.mtrB2cFile) {
@@ -171,20 +178,62 @@ export class UploadService {
         [...parsedFlipkart.salesRows, ...parsedFlipkart.cashbackRows],
         gst.gstNumber,
       );
-    } else if (
-      isMeesho &&
-      parsedMeeshoTcsSales &&
-      parsedMeeshoTcsSalesReturn &&
-      parsedMeeshoOrderReport &&
-      parsedMeeshoReturnReport
-    ) {
-      this.validation.validateGstinMatch(parsedMeeshoTcsSales.rows, gst.gstNumber);
+    } else if (isMeesho && parsedMeesho) {
+      const requiredTcsSalesHeaderGroups = [
+        ['gstin', 'GST NO'],
+        [...MEESHO_ORDER_ID_ALIASES],
+        ['hsn_code', 'HSN Code'],
+        ['quantity', 'Quantity'],
+        ['total_invoice_value', 'Invoice Amount'],
+        ['total_taxable_sale_value', 'Taxable Amount'],
+        ['gst_rate', 'IGST Rate'],
+        ['tax_amount', 'IGST Amount'],
+        ['order_date', 'Invoice Date'],
+        ['end_customer_state_new', 'State Name'],
+      ];
+      this.validation.validateRequiredHeaderGroups(
+        parsedMeesho.tcsSales.headers,
+        requiredTcsSalesHeaderGroups,
+        'TCS Sales Report',
+      );
+      this.validation.validateRequiredHeaderGroups(
+        parsedMeesho.orderReport.headers,
+        [
+          [...MEESHO_ORDER_ID_ALIASES],
+          ['SKU', 'SKU ID'],
+          ['Reason for Credit Entry'],
+        ],
+        'Order Report',
+      );
+      this.validation.validateRequiredHeaderGroups(
+        parsedMeesho.tcsSalesReturn.headers,
+        [
+          [...MEESHO_ORDER_ID_ALIASES],
+          ['cancel_return_date', 'Return Invoice Date'],
+        ],
+        'TCS Sales Return Report',
+      );
+      this.validation.validateRequiredHeaderGroups(
+        parsedMeesho.returnReport.headers,
+        [
+          [...MEESHO_ORDER_ID_ALIASES],
+          ['Type of Return'],
+          ['Sub Type'],
+          ['Qty', 'Return Qty'],
+          ['Return Reason'],
+          ['Detailed Return Reason'],
+        ],
+        'Return Report',
+      );
       this.validation.validateGstinMatch(
-        parsedMeeshoTcsSalesReturn.rows,
+        parsedMeesho.tcsSales.rows,
         gst.gstNumber,
       );
-      this.validation.validateGstinMatch(parsedMeeshoOrderReport.rows, gst.gstNumber);
-      this.validation.validateGstinMatch(parsedMeeshoReturnReport.rows, gst.gstNumber);
+      if (!gst.state?.trim()) {
+        throw new BadRequestException(
+          'Seller GST profile state is required for Meesho CGST/SGST calculation',
+        );
+      }
     }
 
     const singleFileHash = files.file
@@ -241,73 +290,13 @@ export class UploadService {
           });
         }
       });
-    } else if (
-      isMeesho &&
-      parsedMeeshoTcsSales &&
-      parsedMeeshoTcsSalesReturn &&
-      parsedMeeshoOrderReport &&
-      parsedMeeshoReturnReport
-    ) {
-      parsedMeeshoTcsSales.rows.forEach((row) => {
-        try {
-          normalizedRows.push({
-            ...this.mapping.mapSalesRow(row),
-            __sheetName: row.__sheetName,
-            __rowNumber: row.__rowNumber,
-          });
-        } catch {
-          rowErrors.push({
-            sheetName: row.__sheetName,
-            rowNumber: row.__rowNumber,
-            error: 'Failed to normalize tcs sales row',
-          });
-        }
-      });
-      parsedMeeshoOrderReport.rows.forEach((row) => {
-        try {
-          normalizedRows.push({
-            ...this.mapping.mapSalesRow(row),
-            __sheetName: row.__sheetName,
-            __rowNumber: row.__rowNumber,
-          });
-        } catch {
-          rowErrors.push({
-            sheetName: row.__sheetName,
-            rowNumber: row.__rowNumber,
-            error: 'Failed to normalize order report row',
-          });
-        }
-      });
-      parsedMeeshoTcsSalesReturn.rows.forEach((row) => {
-        try {
-          normalizedRows.push({
-            ...this.mapping.mapCashbackRow(row),
-            __sheetName: row.__sheetName,
-            __rowNumber: row.__rowNumber,
-          });
-        } catch {
-          rowErrors.push({
-            sheetName: row.__sheetName,
-            rowNumber: row.__rowNumber,
-            error: 'Failed to normalize tcs sales return row',
-          });
-        }
-      });
-      parsedMeeshoReturnReport.rows.forEach((row) => {
-        try {
-          normalizedRows.push({
-            ...this.mapping.mapCashbackRow(row),
-            __sheetName: row.__sheetName,
-            __rowNumber: row.__rowNumber,
-          });
-        } catch {
-          rowErrors.push({
-            sheetName: row.__sheetName,
-            rowNumber: row.__rowNumber,
-            error: 'Failed to normalize return report row',
-          });
-        }
-      });
+    } else if (isMeesho && parsedMeesho) {
+      const meeshoResult = this.meeshoImport.buildNormalizedRows(
+        parsedMeesho,
+        gst.state,
+      );
+      normalizedRows.push(...meeshoResult.rows);
+      rowErrors.push(...meeshoResult.errors);
     } else if (parsedFlipkart) {
       parsedFlipkart.salesRows.forEach((row) => {
         try {
@@ -351,6 +340,14 @@ export class UploadService {
 
     const minInvoiceDate = invoiceDates[0];
     const maxInvoiceDate = invoiceDates[invoiceDates.length - 1];
+    if (normalizedRows.length === 0) {
+      const hint = rowErrors.length
+        ? `${rowErrors.length} row(s) failed validation/mapping.`
+        : 'No data rows found in uploaded file(s). Check sheet names and required columns.';
+      throw new BadRequestException(
+        `Import produced no records. ${hint}`,
+      );
+    }
     const marketplaceId = marketplace._id?.toString?.() ?? dto.marketplaceId;
     await this.validation.ensureNoDuplicateFileHashes({
       sellerId: dto.sellerId,
@@ -433,6 +430,12 @@ export class UploadService {
           stateName: row.stateName,
           customerGstNo: row.customerGstNo,
           buyerName: row.buyerName,
+          returnInvoiceDate: row.returnInvoiceDate,
+          typeOfReturn: row.typeOfReturn,
+          subType: row.subType,
+          returnQty: row.returnQty,
+          returnReason: row.returnReason,
+          detailedReturnReason: row.detailedReturnReason,
         })),
         { ordered: false },
       );

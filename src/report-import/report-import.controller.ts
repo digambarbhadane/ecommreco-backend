@@ -104,17 +104,47 @@ export class ReportImportController {
         success: true,
         data: {
           marketplace: 'meesho',
+          processingNote:
+            'Upload all 4 files together. Rows are built from TCS Sales Report and enriched by sub_order_num from the other reports.',
           requiredSheets: [
-            'TCS Sales Report (single sheet)',
-            'TCS Sales Return Report (single sheet)',
-            'Order Report (single sheet)',
-            'Return Report (single sheet)',
+            'TCS Sales Report (primary — one row per order in DB)',
+            'TCS Sales Return Report',
+            'Order Report',
+            'Return Report',
           ],
           requiredColumns: {
-            'TCS Sales Report': ['Seller GSTIN / GST NO', 'Order ID'],
-            'TCS Sales Return Report': ['Seller GSTIN / GST NO', 'Order ID'],
-            'Order Report': ['Seller GSTIN / GST NO', 'Order ID'],
-            'Return Report': ['Seller GSTIN / GST NO', 'Order ID'],
+            'TCS Sales Report': [
+              'gstin',
+              'sub_order_num',
+              'hsn_code',
+              'quantity',
+              'total_invoice_value',
+              'total_taxable_sale_value',
+              'gst_rate',
+              'tax_amount',
+              'order_date',
+              'end_customer_state_new',
+            ],
+            'Order Report': ['Sub Order No', 'sub_order_num', 'SKU', 'Reason for Credit Entry'],
+            'TCS Sales Return Report': ['Sub Order No', 'sub_order_num', 'cancel_return_date'],
+            'Return Report': [
+              'Order Number',
+              'Sub Order No',
+              'sub_order_num',
+              'Type of Return',
+              'Sub Type',
+              'Qty',
+              'Return Reason',
+              'Detailed Return Reason',
+            ],
+            'Meesho-only stored fields': [
+              'Return Invoice Date',
+              'Type of Return',
+              'Sub Type',
+              'Return Qty',
+              'Return Reason',
+              'Detailed Return Reason',
+            ],
           },
         },
       };
@@ -166,15 +196,20 @@ export class ReportImportController {
   @Roles('seller', 'super_admin', 'accounts_manager')
   @ApiConsumes('multipart/form-data')
   @UseInterceptors(
-    FileFieldsInterceptor([
-      { name: 'file', maxCount: 1 },
-      { name: 'mtrB2bFile', maxCount: 1 },
-      { name: 'mtrB2cFile', maxCount: 1 },
-      { name: 'tcsSalesFile', maxCount: 1 },
-      { name: 'tcsSalesReturnFile', maxCount: 1 },
-      { name: 'orderReportFile', maxCount: 1 },
-      { name: 'returnReportFile', maxCount: 1 },
-    ]),
+    FileFieldsInterceptor(
+      [
+        { name: 'file', maxCount: 1 },
+        { name: 'mtrB2bFile', maxCount: 1 },
+        { name: 'mtrB2cFile', maxCount: 1 },
+        { name: 'tcsSalesFile', maxCount: 1 },
+        { name: 'tcsSalesReturnFile', maxCount: 1 },
+        { name: 'orderReportFile', maxCount: 1 },
+        { name: 'returnReportFile', maxCount: 1 },
+      ],
+      {
+        limits: { fileSize: 50 * 1024 * 1024 },
+      },
+    ),
   )
   uploadFlipkart(
     @UploadedFiles()
@@ -233,6 +268,16 @@ export class ReportImportController {
   @Roles('seller', 'super_admin', 'accounts_manager')
   summary(@Query() query: ListImportedRowsDto) {
     return this.reportImportService.getDocumentTypeSummary(query);
+  }
+
+  @Get('summary/marketplaces')
+  @ApiOperation({
+    summary: 'Get marketplace document summary',
+    description: 'Returns document type counts grouped by marketplace.',
+  })
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  marketplaceSummary(@Query() query: ListImportedRowsDto) {
+    return this.reportImportService.getMarketplaceDocumentSummary(query);
   }
 
   @Get('uploads')

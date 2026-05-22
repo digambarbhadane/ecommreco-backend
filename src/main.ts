@@ -72,6 +72,19 @@ const isPrivateNetworkOrigin = (origin: string) => {
   }
 };
 
+const DEFAULT_DEV_ORIGINS = [
+  'http://localhost:8080',
+  'http://127.0.0.1:8080',
+  'http://[::1]:8080',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://[::1]:5173',
+  'http://localhost:4173',
+  'http://127.0.0.1:4173',
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+];
+
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.use(express.json({ limit: '50mb' }));
@@ -99,13 +112,39 @@ async function bootstrap() {
   ];
   const whitelist = new Set(
     [
-      'http://localhost:5173',
-      'http://127.0.0.1:5173',
-      'http://[::1]:5173',
+      ...DEFAULT_DEV_ORIGINS,
       'https://ecommreco.com',
+      'https://www.ecommreco.com',
+      'https://uat.ecommreco.com',
       ...configuredOrigins,
     ].map(normalizeOrigin),
   );
+
+  const allowOrigin = (origin: string | undefined): boolean | string => {
+    if (!origin) {
+      return true;
+    }
+    if (allowAllOrigins) {
+      return origin;
+    }
+    if (!isProduction) {
+      return origin;
+    }
+    const normalizedOrigin = normalizeOrigin(origin);
+    if (isPrivateNetworkOrigin(normalizedOrigin)) {
+      return origin;
+    }
+    if (allowRenderOrigins && isRenderOrigin(normalizedOrigin)) {
+      return origin;
+    }
+    if (whitelist.has(normalizedOrigin)) {
+      return origin;
+    }
+    Logger.warn(
+      `CORS: origin not in whitelist (${origin}); allowing to avoid browser preflight failure.`,
+    );
+    return origin;
+  };
 
   app.enableCors({
     origin: (
@@ -113,54 +152,15 @@ async function bootstrap() {
       callback: (err: Error | null, allow?: boolean | string) => void,
     ) => {
       try {
-        if (!origin) {
-          callback(null, true);
-          return;
-        }
-        if (
-          isProduction &&
-          configuredOrigins.length === 0 &&
-          !allowAllOrigins
-        ) {
-          Logger.warn(
-            'FRONTEND_URL/FRONTEND_URLS not configured in production. Temporarily allowing all origins.',
-          );
-          callback(null, origin);
-          return;
-        }
-        if (allowAllOrigins) {
-          callback(null, origin);
-          return;
-        }
-        const normalizedOrigin = normalizeOrigin(origin);
-        if (!isProduction && isPrivateNetworkOrigin(normalizedOrigin)) {
-          callback(null, origin);
-          return;
-        }
-        if (allowRenderOrigins && isRenderOrigin(normalizedOrigin)) {
-          callback(null, origin);
-          return;
-        }
-        if (whitelist.has(normalizedOrigin)) {
-          callback(null, origin);
-          return;
-        }
-        if (isProduction) {
-          Logger.warn(
-            `CORS origin not in whitelist (${origin}). Allowing in production to avoid preflight failure.`,
-          );
-          callback(null, origin);
-          return;
-        }
-        Logger.warn(`CORS blocked for origin: ${origin}`);
-        callback(null, false);
+        const decision = allowOrigin(origin);
+        callback(null, decision);
       } catch (err: unknown) {
         const msg =
           err && typeof err === 'object' && 'message' in err
             ? String((err as { message?: unknown }).message)
             : String(err);
         Logger.error(`CORS origin evaluation failed: ${msg}`);
-        callback(null, true);
+        callback(null, origin ?? true);
       }
     },
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
@@ -171,9 +171,13 @@ async function bootstrap() {
       'Authorization',
       'X-Requested-With',
       'Origin',
+      'Access-Control-Request-Method',
+      'Access-Control-Request-Headers',
       'x-setup-token',
     ],
+    exposedHeaders: ['Content-Disposition', 'Content-Type'],
     optionsSuccessStatus: 204,
+    maxAge: 86400,
   });
 
   const configuredPort = config.get<string>('PORT');
@@ -221,6 +225,9 @@ async function bootstrap() {
 
   await app.listen(port, '0.0.0.0');
   Logger.log(`API running on port ${port}`);
+  Logger.log(
+    `CORS: allowAll=${allowAllOrigins} env=${nodeEnv} whitelist=${whitelist.size} origins`,
+  );
 }
 
 void bootstrap();

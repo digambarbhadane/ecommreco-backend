@@ -90,7 +90,13 @@ export class ReportImportService {
         count: number;
       }>([
         { $match: filter },
-        { $group: { _id: '$documentType', count: { $sum: 1 } } },
+        {
+          $group: {
+            _id: { $ifNull: ['$documentType', 'Unknown'] },
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { count: -1, _id: 1 } },
       ])
       .exec();
 
@@ -110,6 +116,77 @@ export class ReportImportService {
           count: item.count,
         })),
       },
+    };
+  }
+
+  async getMarketplaceDocumentSummary(
+    query: Pick<
+      ListImportedRowsDto,
+      'sellerId' | 'gstin' | 'fromDate' | 'toDate'
+    >,
+  ) {
+    const filter: Record<string, unknown> = {};
+    if (query.sellerId) filter.sellerId = query.sellerId;
+    if (query.gstin) filter.gstin = query.gstin.trim().toUpperCase();
+    if (query.fromDate || query.toDate) {
+      filter.invoiceDate = {};
+      if (query.fromDate) {
+        (filter.invoiceDate as Record<string, unknown>).$gte = query.fromDate;
+      }
+      if (query.toDate) {
+        (filter.invoiceDate as Record<string, unknown>).$lte = query.toDate;
+      }
+    }
+
+    const groups = await this.rowModel
+      .aggregate<{
+        marketplace: string;
+        documentType: string;
+        count: number;
+      }>([
+        { $match: filter },
+        {
+          $group: {
+            _id: {
+              marketplace: '$marketplace',
+              documentType: { $ifNull: ['$documentType', 'Unknown'] },
+            },
+            count: { $sum: 1 },
+          },
+        },
+        {
+          $project: {
+            _id: 0,
+            marketplace: '$_id.marketplace',
+            documentType: '$_id.documentType',
+            count: 1,
+          },
+        },
+        { $sort: { marketplace: 1, count: -1, documentType: 1 } },
+      ])
+      .exec();
+
+    const byMarketplace = new Map<
+      string,
+      { documentType: string; count: number }[]
+    >();
+    for (const row of groups) {
+      const mpId = String(row.marketplace ?? '');
+      const list = byMarketplace.get(mpId) ?? [];
+      list.push({
+        documentType: row.documentType,
+        count: row.count,
+      });
+      byMarketplace.set(mpId, list);
+    }
+
+    return {
+      success: true,
+      data: Array.from(byMarketplace.entries()).map(([marketplaceId, byDocumentType]) => ({
+        marketplaceId,
+        byDocumentType,
+        totalCount: byDocumentType.reduce((sum, item) => sum + item.count, 0),
+      })),
     };
   }
 
