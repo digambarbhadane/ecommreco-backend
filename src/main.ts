@@ -223,8 +223,13 @@ async function bootstrap() {
     );
   }
 
+  const http = app.getHttpAdapter().getInstance();
+  http.get('/api/v1/health', (_req: express.Request, res: express.Response) => {
+    res.status(200).json({ status: 'ok', env: nodeEnv });
+  });
+
   await app.listen(port, '0.0.0.0');
-  Logger.log(`API running on port ${port}`);
+  Logger.log(`API running on http://0.0.0.0:${port}`);
   Logger.log(
     `CORS: allowAll=${allowAllOrigins} env=${nodeEnv} whitelist=${whitelist.size} origins`,
   );
