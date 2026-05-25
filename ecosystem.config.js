@@ -20,9 +20,10 @@ module.exports = {
       exec_mode: 'fork',
       watch: false,
       max_memory_restart: '600M',
+      // Do not set PORT here — PM2 caches it; use .env.development only.
+      // After changing env: pm2 delete api-dev && pm2 start ecosystem.config.js
       env: {
         NODE_ENV: 'development',
-        PORT: 5000,
       },
     },
   ],

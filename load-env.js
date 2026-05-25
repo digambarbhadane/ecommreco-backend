@@ -16,9 +16,11 @@ if (!fs.existsSync(envPath)) {
 
 dotenv.config({
   path: envPath,
+  override: true,
 });
 
 console.log(`Loaded environment file: ${envFile}`);
 console.log(`NODE_ENV: ${env}`);
+console.log(`PORT: ${process.env.PORT ?? '(not set)'}`);
 
 module.exports = { env, envFile };
