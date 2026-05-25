@@ -97,13 +97,27 @@ curl http://127.0.0.1:5000/
 
 Open **security group** port `5000` (or proxy via Nginx on 80/443).
 
-## PM2 example
+## PM2 (recommended)
+
+Use the repo `ecosystem.config.js` — it runs `start-dist.js` (loads `.env.*` then `dist/src/main.js`).
 
 ```bash
-# ecosystem: NODE_ENV=production, cwd=ecommreco-backend, script server.js
-# Env file must be .env.production OR set variables in pm2 ecosystem env block
-pm2 start server.js --name ecommreco-api --cwd /home/ubuntu/ecommreco-backend
+cd ~/ecommreco_dev/ecommreco-backend
+npm run build
+pm2 delete api-dev 2>/dev/null || true
+pm2 start ecosystem.config.js --only api-dev
+pm2 logs api-dev
+curl http://127.0.0.1:5000/api/v1/health
+pm2 save
 ```
+
+For production env file:
+
+```bash
+pm2 start ecosystem.config.js --only api-prod
+```
+
+Do **not** point PM2 at `dist/main.js` (wrong path) or `dist/src/main.js` (skips dotenv).
 
 ## Common errors
 
