@@ -5,20 +5,35 @@
   "author": "",
   "private": true,
   "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20 <23"
+  },
   "scripts": {
     "build": "nest build",
+    "dev": "cross-env NODE_ENV=development nodemon server.js",
+    "dev:test": "cross-env NODE_ENV=test nodemon server.js",
+    "preuat": "npm run build",
+    "uat": "cross-env NODE_ENV=staging node server.js",
+    "prod": "cross-env NODE_ENV=production node server.js",
+    "start:dist": "node start-dist.js",
+    "start:dist:dev": "cross-env NODE_ENV=development node start-dist.js",
+    "start:dist:prod": "cross-env NODE_ENV=production node start-dist.js",
+    "pm2:dev": "pm2 start ecosystem.config.js --only api-dev",
+    "start:render": "cross-env NODE_ENV=production node server.js",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
-    "start": "nest start",
-    "start:dev": "nest start --watch",
+    "start": "cross-env NODE_ENV=production node server.js",
+    "start:dev": "npm run dev",
     "start:debug": "nest start --debug --watch",
-    "prestart:prod": "npm run build",
-    "start:prod": "node dist/main",
+    "start:prod": "npm run start:render",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
-    "test": "jest",
-    "test:watch": "jest --watch",
-    "test:cov": "jest --coverage",
+    "test": "jest --runInBand",
+    "test:watch": "jest --watch --runInBand",
+    "test:coverage": "jest --coverage --runInBand",
+    "audit": "npm audit",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test:e2e": "jest --runInBand --testMatch \"<rootDir>/tests/api/**/*.e2e-spec.ts\"",
+    "docs:swagger": "node scripts/validate-swagger.js",
+    "db:test": "node scripts/test-mongodb-connection.js"
   },
   "dependencies": {
     "@nestjs/axios": "^4.0.0",
@@ -34,14 +49,18 @@
     "@nestjs/throttler": "^6.5.0",
     "@types/nodemailer": "^7.0.9",
     "bcrypt": "^6.0.0",
+    "bullmq": "^5.71.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.3",
     "dotenv": "^17.2.3",
+    "handlebars": "^4.7.8",
+    "ioredis": "^5.10.1",
     "mongodb-memory-server": "^11.0.1",
     "mongoose": "^9.1.5",
     "nodemailer": "^8.0.1",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
+    "postmark": "^4.0.7",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "swagger-ui-express": "^5.0.1",
@@ -59,11 +78,13 @@
     "@types/node": "^22.10.7",
     "@types/passport-jwt": "^4.0.1",
     "@types/supertest": "^6.0.2",
+    "cross-env": "^10.1.0",
     "eslint": "^9.18.0",
     "eslint-config-prettier": "^10.0.1",
     "eslint-plugin-prettier": "^5.2.2",
     "globals": "^16.0.0",
     "jest": "^30.0.0",
+    "nodemon": "^3.1.14",
     "prettier": "^3.4.2",
     "source-map-support": "^0.5.21",
     "supertest": "^7.0.0",
@@ -73,22 +94,5 @@
     "tsconfig-paths": "^4.2.0",
     "typescript": "^5.7.3",
     "typescript-eslint": "^8.20.0"
-  },
-  "jest": {
-    "moduleFileExtensions": [
-      "js",
-      "json",
-      "ts"
-    ],
-    "rootDir": "src",
-    "testRegex": ".*\\.spec\\.ts$",
-    "transform": {
-      "^.+\\.(t|j)s$": "ts-jest"
-    },
-    "collectCoverageFrom": [
-      "**/*.(t|j)s"
-    ],
-    "coverageDirectory": "../coverage",
-    "testEnvironment": "node"
   }
 }

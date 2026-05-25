@@ -1,4 +1,9 @@
 import {
+  ApiTags,
+  ApiOperation,
+  ApiBearerAuth,
+} from '@nestjs/swagger';
+import {
   Body,
   Controller,
   Delete,
@@ -15,6 +20,8 @@ import { PlatformMarketplacesService } from '../platform-marketplaces/platform-m
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 
+@ApiTags('Marketplaces')
+@ApiBearerAuth()
 @Controller('marketplaces')
 @UseGuards(AuthGuard('jwt'), RolesGuard)
 export class MarketplacesController {
@@ -24,6 +31,7 @@ export class MarketplacesController {
   ) {}
 
   @Get()
+  @ApiOperation({ summary: 'List marketplaces', description: 'List platform or seller-specific marketplaces.' })
   @Roles(
     'super_admin',
     'sales_manager',
@@ -49,12 +57,14 @@ export class MarketplacesController {
   }
 
   @Post()
+  @ApiOperation({ summary: 'Create marketplace integration' })
   @Roles('super_admin', 'accounts_manager', 'seller')
   create(@Body() dto: CreateMarketplaceDto) {
     return this.marketplacesService.create(dto);
   }
 
   @Delete(':id')
+  @ApiOperation({ summary: 'Remove marketplace integration' })
   @Roles('super_admin', 'accounts_manager', 'seller')
   remove(@Param('id') id: string) {
     return this.marketplacesService.remove(id);

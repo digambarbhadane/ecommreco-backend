@@ -1,4 +1,10 @@
 import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+} from '@nestjs/swagger';
+import {
   Body,
   Controller,
   Get,
@@ -7,9 +13,11 @@ import {
   Param,
   Post,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
+import { Request } from 'express';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { GenerateCredentialsDto } from './dto/generate-credentials.dto';
@@ -17,17 +25,25 @@ import { RegisterSellerDto } from './dto/register-seller.dto';
 import { SendPaymentLinkDto } from './dto/send-payment-link.dto';
 import { SellersService } from './sellers.service';
 
+@ApiTags('Sellers')
+@ApiBearerAuth('bearer')
 @Controller('sellers')
 export class SellersController {
   constructor(private readonly sellersService: SellersService) {}
 
   @Post('register')
+  @ApiOperation({
+    summary: 'Register new seller',
+    description: 'Public endpoint. Register a new seller account.',
+    security: [],
+  })
   @HttpCode(HttpStatus.CREATED)
   register(@Body() dto: RegisterSellerDto) {
     return this.sellersService.register(dto);
   }
 
   @Get()
+  @ApiOperation({ summary: 'List sellers', description: 'Returns paginated list of sellers based on user role.' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles(
     'super_admin',
@@ -36,6 +52,7 @@ export class SellersController {
     'training_and_support_manager',
   )
   list(
+    @Req() req: RequestWithUser,
     @Query('status') status?: string,
     @Query('limit') limit?: string,
     @Query('skip') skip?: string,
@@ -43,27 +60,70 @@ export class SellersController {
   ) {
     const parsedLimit = typeof limit === 'string' ? Number(limit) : undefined;
     const parsedSkip = typeof skip === 'string' ? Number(skip) : undefined;
-    return this.sellersService.listSellers({
-      status,
-      limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
-      skip: Number.isFinite(parsedSkip) ? parsedSkip : undefined,
-      search,
-    });
+    return this.sellersService.listSellers(
+      {
+        status,
+        limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
+        skip: Number.isFinite(parsedSkip) ? parsedSkip : undefined,
+        search,
+        role: req.user?.role ?? 'seller',
+      },
+      req.user,
+    );
+  }
+
+  @Get('super-admin')
+  @ApiOperation({ summary: 'List sellers (super admin view)', description: 'Super admin only. Returns all sellers with full details.' })
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('super_admin')
+  listSuperAdmin(
+    @Req() req: RequestWithUser,
+    @Query('status') status?: string,
+    @Query('limit') limit?: string,
+    @Query('skip') skip?: string,
+    @Query('search') search?: string,
+  ) {
+    const parsedLimit = typeof limit === 'string' ? Number(limit) : undefined;
+    const parsedSkip = typeof skip === 'string' ? Number(skip) : undefined;
+    return this.sellersService.listSellers(
+      {
+        status,
+        limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
+        skip: Number.isFinite(parsedSkip) ? parsedSkip : undefined,
+        search,
+        role: 'super_admin',
+      },
+      req.user,
+    );
   }
 
   @Get(':id')
-  @UseGuards(RolesGuard)
+  @ApiOperation({ summary: 'Get seller by ID' })
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles(
     'super_admin',
     'sales_manager',
     'accounts_manager',
     'training_and_support_manager',
   )
-  getSeller(@Param('id') id: string) {
-    return this.sellersService.getSeller(id);
+  getSeller(@Req() req: RequestWithUser, @Param('id') id: string) {
+    return this.sellersService.getSeller(
+      id,
+      req.user?.role ?? 'seller',
+      req.user,
+    );
+  }
+
+  @Get('super-admin/:id')
+  @ApiOperation({ summary: 'Get seller by ID (super admin view)' })
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('super_admin')
+  getSellerSuperAdmin(@Param('id') id: string, @Req() req: RequestWithUser) {
+    return this.sellersService.getSeller(id, 'super_admin', req.user);
   }
 
   @Post(':id/payment-link')
+  @ApiOperation({ summary: 'Send payment link', description: 'Send payment link to seller via email.' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   sendPaymentLink(@Param('id') id: string, @Body() dto: SendPaymentLinkDto) {
@@ -71,33 +131,59 @@ export class SellersController {
   }
 
   @Post(':id/payment-completed')
+  @ApiOperation({ summary: 'Mark payment as completed', description: 'Accounts manager or super admin confirms payment received.' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'accounts_manager')
-  markPaymentCompleted(@Param('id') id: string) {
-    return this.sellersService.markPaymentCompleted(id);
+  markPaymentCompleted(@Param('id') id: string, @Req() req: RequestWithUser) {
+    return this.sellersService.markPaymentCompleted(id, req.user);
   }
 
   @Post(':id/generate-credentials')
+  @ApiOperation({ summary: 'Generate seller credentials', description: 'Generate login credentials for seller.' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'accounts_manager')
   generateCredentials(
     @Param('id') id: string,
     @Body() dto: GenerateCredentialsDto,
+    @Req() req: RequestWithUser,
   ) {
-    return this.sellersService.generateCredentials(id, dto);
+    return this.sellersService.generateCredentials(id, dto, req.user);
   }
 
   @Post(':id/approve-credentials')
+  @ApiOperation({ summary: 'Approve seller credentials', description: 'Super admin approves generated credentials.' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin')
-  approveCredentials(@Param('id') id: string) {
-    return this.sellersService.approveCredentials(id);
+  approveCredentials(@Param('id') id: string, @Req() req: RequestWithUser) {
+    return this.sellersService.approveCredentials(id, req.user);
   }
 
   @Post(':id/complete-training')
+  @ApiOperation({ summary: 'Mark training as completed', description: 'Mark seller training as completed.' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('training_and_support_manager', 'super_admin')
-  completeTraining(@Param('id') id: string) {
-    return this.sellersService.completeTraining(id);
+  completeTraining(@Param('id') id: string, @Req() req: RequestWithUser) {
+    return this.sellersService.completeTraining(id, req.user);
+  }
+
+  @Post(':id/account-status')
+  @ApiOperation({ summary: 'Update seller account status', description: 'Super admin updates seller account status.' })
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('super_admin')
+  updateAccountStatus(
+    @Param('id') id: string,
+    @Body() body: { status?: string },
+  ) {
+    return this.sellersService.updateAccountStatus(id, body.status ?? '');
   }
 }
+
+type RequestUser = {
+  id?: string;
+  role?: string;
+  email?: string;
+};
+
+type RequestWithUser = Request & {
+  user?: RequestUser;
+};

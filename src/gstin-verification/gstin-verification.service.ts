@@ -77,28 +77,6 @@ export class GstinVerificationService {
       this.config.get<string>('CASHFREE_CLIENT_SECRET')?.trim() ??
       this.config.get<string>('CASHFREE_CLIENT_SECRET_ID')?.trim();
     if (!clientId || !clientSecret) {
-      if (process.env.NODE_ENV !== 'production') {
-        this.logger.warn(
-          'Cashfree credentials missing in dev mode. Using mock response.',
-        );
-        return {
-          success: true,
-          data: {
-            gstin: gstin,
-            valid: true,
-            legalName: dto.businessName || 'Mock Legal Name',
-            tradeName: 'Mock Trade Name',
-            status: 'Active',
-            taxpayerType: 'Regular',
-            constitution: 'Private Limited Company',
-            registrationDate: new Date().toISOString(),
-            principalAddress: 'Mock Address, City, State - 000000',
-            natureOfBusinessActivities: ['Retail'],
-            lastUpdateDate: new Date().toISOString(),
-            lastVerifiedAt: new Date().toISOString(),
-          },
-        };
-      }
       throw new UnauthorizedException({
         success: false,
         message: 'Cashfree credentials are not configured',

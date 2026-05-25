@@ -38,7 +38,30 @@ export class RolesGuard implements CanActivate {
         errorCode: 'UNAUTHORIZED',
       });
     }
-    if (!user.role || !roles.includes(user.role)) {
+    const role = user.role;
+    if (!role) {
+      throw new ForbiddenException({
+        success: false,
+        message: 'Forbidden',
+        errorCode: 'FORBIDDEN',
+      });
+    }
+
+    if (role === 'super_admin') {
+      return true;
+    }
+
+    const roleImpliedAllowed: Record<string, string[]> = {
+      sales_admin: ['sales_manager'],
+      operations_admin: ['accounts_manager'],
+      onboarding_manager: ['training_and_support_manager'],
+    };
+
+    const allowed =
+      roles.includes(role) ||
+      (roleImpliedAllowed[role]?.some((r) => roles.includes(r)) ?? false);
+
+    if (!allowed) {
       throw new ForbiddenException({
         success: false,
         message: 'Forbidden',

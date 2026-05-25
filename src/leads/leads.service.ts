@@ -4,17 +4,33 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
+import { Model, PipelineStage, Types, UpdateQuery } from 'mongoose';
+import * as bcrypt from 'bcrypt';
 import { NotificationsService } from '../notifications/notifications.service';
+import { EmailService } from '../email/email.service';
+import { EmailType } from '../email/email.types';
 import { Seller, SellerDocument } from '../sellers/schemas/seller.schema';
+import { User, UserDocument } from '../users/schemas/user.schema';
+import { generatePublicId } from '../common/public-id';
 import { CreateLeadDto } from './dto/create-lead.dto';
 import { CreateManualLeadDto } from './dto/create-manual-lead.dto';
 import { ConvertLeadDto } from './dto/convert-lead.dto';
+import { ImportLeadsDto } from './dto/import-leads.dto';
 import { UpdateLeadStatusDto } from './dto/update-lead-status.dto';
+import { UpdateLeadDto } from './dto/update-lead.dto';
 import { Lead, LeadDocument } from './schemas/lead.schema';
 import { Counter, CounterDocument } from './schemas/counter.schema';
 
 const PRICE_PER_GST_PER_YEAR = 12000;
+
+type RequestUser = {
+  id?: string;
+  role?: string;
+  email?: string;
+  fullName?: string;
+  username?: string;
+  name?: string;
+};
 
 @Injectable()
 export class LeadsService {
@@ -23,18 +39,298 @@ export class LeadsService {
     private readonly leadModel: Model<LeadDocument>,
     @InjectModel(Seller.name)
     private readonly sellerModel: Model<SellerDocument>,
+    @InjectModel(User.name)
+    private readonly userModel: Model<UserDocument>,
     @InjectModel(Counter.name)
     private readonly counterModel: Model<CounterDocument>,
     private readonly notificationsService: NotificationsService,
+    private readonly emailService: EmailService,
   ) {}
 
-  private async getNextLeadId(): Promise<string> {
+  private async getNextLeadId(date = new Date()): Promise<string> {
+    const yyyy = date.getFullYear().toString();
+    const mm = (date.getMonth() + 1).toString().padStart(2, '0');
+    const yyyymm = `${yyyy}${mm}`;
+    const prefix = 'LEAD';
+
     const counter = await this.counterModel.findOneAndUpdate(
-      { id: 'leadId' },
+      { id: `leadId:${prefix}:${yyyymm}` },
       { $inc: { seq: 1 } },
       { new: true, upsert: true },
     );
-    return `LEAD-${counter.seq.toString().padStart(4, '0')}`;
+
+    const seq = counter.seq.toString().padStart(4, '0');
+    return `${prefix}-${yyyymm}-${seq}`;
+  }
+
+  private toDate(value: unknown): Date {
+    return value instanceof Date ? value : new Date();
+  }
+
+  private getSalesManagerIdentifiers(user?: RequestUser) {
+    const identifiers = [
+      typeof user?.email === 'string' ? user.email.toLowerCase() : undefined,
+      typeof user?.fullName === 'string' ? user.fullName : undefined,
+      typeof user?.username === 'string' ? user.username : undefined,
+      typeof user?.name === 'string' ? user.name : undefined,
+    ].filter((v): v is string => Boolean(v));
+    return Array.from(new Set(identifiers));
+  }
+
+  private normalizeEmail(value: unknown) {
+    return typeof value === 'string' ? value.trim().toLowerCase() : '';
+  }
+
+  private generateMeetLink() {
+    const chars = 'abcdefghijklmnopqrstuvwxyz';
+    const segment = (length: number) =>
+      Array.from(
+        { length },
+        () => chars[Math.floor(Math.random() * chars.length)],
+      ).join('');
+    return `https://meet.google.com/${segment(3)}-${segment(4)}-${segment(3)}`;
+  }
+
+  private async resolveSalesManager(params: {
+    id?: string;
+    email?: string;
+  }): Promise<{ id: string; email: string; fullName?: string } | undefined> {
+    const byId =
+      typeof params.id === 'string' && params.id.trim() ? params.id.trim() : '';
+    const byEmail = this.normalizeEmail(params.email);
+    if (!byId && !byEmail) return undefined;
+
+    const filter: Record<string, unknown> = { role: 'sales_manager' };
+    if (byId && Types.ObjectId.isValid(byId)) {
+      filter._id = new Types.ObjectId(byId);
+    } else if (byEmail) {
+      filter.email = byEmail;
+    } else {
+      return undefined;
+    }
+
+    const found = await this.userModel
+      .findOne(filter)
+      .select('_id email fullName status role')
+      .lean<{
+        _id: Types.ObjectId;
+        email: string;
+        fullName?: string;
+        status?: string;
+      }>()
+      .exec();
+    if (!found) return undefined;
+    if (found.status && found.status !== 'approved') return undefined;
+
+    return {
+      id: found._id.toString(),
+      email: this.normalizeEmail(found.email),
+      fullName: found.fullName,
+    };
+  }
+
+  private async pickNextSalesManager() {
+    const salesManagers = await this.userModel
+      .find({ role: 'sales_manager', status: 'approved' })
+      .select('email fullName createdAt')
+      .sort({ createdAt: 1, _id: 1 })
+      .lean<
+        Array<{
+          _id: Types.ObjectId;
+          email?: string;
+          fullName?: string;
+        }>
+      >()
+      .exec();
+
+    const candidates = salesManagers
+      .map((u) => {
+        const email = this.normalizeEmail(u.email);
+        if (!email) return undefined;
+        return { id: u._id.toString(), email };
+      })
+      .filter((v): v is { id: string; email: string } => Boolean(v));
+
+    if (candidates.length === 0) {
+      return undefined;
+    }
+
+    const counter = await this.counterModel.findOneAndUpdate(
+      { id: 'leadAssign:sales_manager' },
+      { $inc: { seq: 1 } },
+      { new: true, upsert: true },
+    );
+    const seq = typeof counter.seq === 'number' ? counter.seq : 1;
+    const index = (seq - 1) % candidates.length;
+    return candidates[index];
+  }
+
+  private buildSalesManagerLeadAccessFilter(user?: RequestUser) {
+    const role = typeof user?.role === 'string' ? user.role : undefined;
+    if (role !== 'sales_manager') return undefined;
+    const identifiers = this.getSalesManagerIdentifiers(user);
+    const userId =
+      typeof user?.id === 'string' && user.id.trim() ? user.id.trim() : '';
+    const hasUserId = userId && Types.ObjectId.isValid(userId);
+    if (!identifiers.length && !hasUserId) return undefined;
+
+    return {
+      $or: [
+        ...(hasUserId ? [{ assignedSalesManagerId: userId }] : []),
+        ...(identifiers.length
+          ? [{ assignedSalesManager: { $in: identifiers } }]
+          : []),
+        {
+          $and: [
+            { creatorRole: 'sales_manager' },
+            ...(hasUserId ? [{ createdByUserId: userId }] : []),
+            ...(identifiers.length
+              ? [{ createdBy: { $in: identifiers } }]
+              : []),
+          ],
+        },
+      ],
+    };
+  }
+
+  private buildLeadIdentityFilter(id: string) {
+    const filters: Array<Record<string, unknown>> = [
+      { leadId: id },
+      { publicId: id },
+    ];
+    if (
+      typeof id === 'string' &&
+      id.length === 24 &&
+      Types.ObjectId.isValid(id)
+    ) {
+      filters.unshift({ _id: id });
+    }
+    return { $or: filters };
+  }
+
+  async assertLeadAccess(leadId: string, user?: RequestUser) {
+    const role = typeof user?.role === 'string' ? user.role : undefined;
+    if (role !== 'sales_manager') return;
+
+    const filter = this.buildSalesManagerLeadAccessFilter(user);
+    if (!filter) return;
+
+    const identityFilter = this.buildLeadIdentityFilter(leadId);
+    const exists = await this.leadModel
+      .findOne({ $and: [identityFilter, filter] })
+      .select('_id')
+      .lean()
+      .exec();
+    if (!exists) {
+      throw new NotFoundException('Lead not found');
+    }
+  }
+
+  async bulkAssignLeadsToSalesManager(params: {
+    leadIds: string[];
+    salesManagerId: string;
+    user?: RequestUser;
+  }) {
+    const leadIds = Array.from(
+      new Set(
+        (Array.isArray(params.leadIds) ? params.leadIds : [])
+          .map((id) => (typeof id === 'string' ? id.trim() : ''))
+          .filter(Boolean),
+      ),
+    );
+
+    if (!leadIds.length) {
+      throw new BadRequestException('leadIds is required');
+    }
+
+    const salesManagerId =
+      typeof params.salesManagerId === 'string'
+        ? params.salesManagerId.trim()
+        : '';
+    if (!salesManagerId) {
+      throw new BadRequestException('salesManagerId is required');
+    }
+
+    const salesManager = await this.resolveSalesManager({ id: salesManagerId });
+    if (!salesManager) {
+      throw new BadRequestException('Sales manager not found');
+    }
+
+    const actorEmail = this.normalizeEmail(params.user?.email);
+    const actorName =
+      typeof params.user?.fullName === 'string' && params.user.fullName.trim()
+        ? params.user.fullName.trim()
+        : typeof params.user?.username === 'string' &&
+            params.user.username.trim()
+          ? params.user.username.trim()
+          : typeof params.user?.name === 'string' && params.user.name.trim()
+            ? params.user.name.trim()
+            : '';
+    const performedBy = actorEmail || actorName || 'super_admin';
+
+    const now = new Date();
+    const orFilters: Array<Record<string, unknown>> = [];
+    for (const id of leadIds) {
+      orFilters.push({ leadId: id });
+      if (id.length === 24 && Types.ObjectId.isValid(id)) {
+        orFilters.push({ _id: new Types.ObjectId(id) });
+      }
+    }
+
+    const result = await this.leadModel.updateMany(
+      { $or: orFilters },
+      {
+        $set: {
+          assignedSalesManager: salesManager.email,
+          assignedSalesManagerId: salesManager.id,
+          assignedBy: performedBy,
+          assignedAt: now,
+        },
+        $push: {
+          activityTimeline: {
+            action: 'lead_assigned',
+            description: `Lead assigned to ${salesManager.email}`,
+            performedBy,
+            timestamp: now,
+            metadata: {
+              assignedSalesManager: salesManager.email,
+              assignedSalesManagerId: salesManager.id,
+            },
+          },
+        },
+      },
+    );
+
+    return {
+      success: true,
+      data: {
+        matchedCount: result.matchedCount ?? 0,
+        modifiedCount: result.modifiedCount ?? 0,
+      },
+    };
+  }
+
+  async deleteLead(id: string, deletedBy: string) {
+    const identityFilter = this.buildLeadIdentityFilter(id);
+    const deletedLead = await this.leadModel
+      .findOneAndDelete(identityFilter)
+      .lean()
+      .exec();
+
+    if (!deletedLead) {
+      throw new NotFoundException('Lead not found');
+    }
+
+    return {
+      success: true,
+      message: 'Lead deleted successfully',
+      data: {
+        id: deletedLead._id?.toString?.() ?? '',
+        leadId: deletedLead.leadId,
+        publicId: deletedLead.publicId,
+        deletedBy,
+      },
+    };
   }
 
   async listFollowUps(params: {
@@ -42,10 +338,14 @@ export class LeadsService {
     limit: number;
     leadId?: string;
     status?: string;
+    search?: string;
+    from?: string;
+    to?: string;
+    user?: RequestUser;
   }) {
     const skip = (params.page - 1) * params.limit;
     // Ensure followUps is a non-empty array
-    const matchStage: any = {
+    const matchStage: Record<string, unknown> = {
       followUps: {
         $exists: true,
         $type: 'array',
@@ -54,10 +354,15 @@ export class LeadsService {
     };
 
     if (params.leadId) {
-      matchStage['leadId'] = { $regex: params.leadId, $options: 'i' };
+      matchStage.leadId = { $regex: params.leadId, $options: 'i' };
     }
 
-    const followUpMatch: any = {};
+    const salesFilter = this.buildSalesManagerLeadAccessFilter(params.user);
+    const leadMatch = salesFilter
+      ? ({ $and: [matchStage, salesFilter] } as Record<string, unknown>)
+      : matchStage;
+
+    const followUpMatch: Record<string, unknown> = {};
     if (params.status && params.status !== 'all') {
       followUpMatch['followUps.status'] = params.status;
     } else if (!params.status) {
@@ -65,10 +370,67 @@ export class LeadsService {
       followUpMatch['followUps.status'] = 'pending';
     }
 
-    const pipeline: any[] = [
-      { $match: matchStage },
+    const parseBound = (value: string, mode: 'start' | 'end') => {
+      const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+      if (dateOnly) {
+        const [y, m, d] = value.split('-').map((x) => Number(x));
+        const istMidnightUtcMs =
+          Date.UTC(y, (m || 1) - 1, d || 1) - 5.5 * 60 * 60000;
+        return mode === 'start'
+          ? new Date(istMidnightUtcMs)
+          : new Date(istMidnightUtcMs + 24 * 60 * 60 * 1000 - 1);
+      }
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+    };
+    const from = typeof params.from === 'string' ? params.from.trim() : '';
+    const to = typeof params.to === 'string' ? params.to.trim() : '';
+    const fromDate = from ? parseBound(from, 'start') : undefined;
+    const toDate = to ? parseBound(to, 'end') : undefined;
+    if (fromDate || toDate) {
+      followUpMatch['followUps.scheduledAt'] = {
+        ...(fromDate ? { $gte: fromDate } : {}),
+        ...(toDate ? { $lte: toDate } : {}),
+      };
+    }
+
+    const search =
+      typeof params.search === 'string' ? params.search.trim() : '';
+    const hasSearch = search.length > 0;
+
+    const pipeline: PipelineStage[] = [
+      { $match: leadMatch as PipelineStage.Match['$match'] },
       { $unwind: '$followUps' },
-      { $match: followUpMatch },
+      { $match: followUpMatch as PipelineStage.Match['$match'] },
+      {
+        $addFields: {
+          scheduledAtText: {
+            $dateToString: {
+              format: '%Y-%m-%d %H:%M',
+              date: '$followUps.scheduledAt',
+              timezone: 'UTC',
+            },
+          },
+        },
+      },
+      ...(hasSearch
+        ? [
+            {
+              $match: {
+                $or: [
+                  { leadId: { $regex: search, $options: 'i' } },
+                  { fullName: { $regex: search, $options: 'i' } },
+                  { 'followUps.notes': { $regex: search, $options: 'i' } },
+                  { 'followUps.status': { $regex: search, $options: 'i' } },
+                  { scheduledAtText: { $regex: search, $options: 'i' } },
+                  ...(Types.ObjectId.isValid(search)
+                    ? [{ _id: new Types.ObjectId(search) }]
+                    : []),
+                ],
+              } as PipelineStage.Match['$match'],
+            },
+          ]
+        : []),
       { $sort: { 'followUps.scheduledAt': 1 } }, // Ascending: Oldest (overdue) first
       { $skip: skip },
       { $limit: params.limit },
@@ -82,15 +444,51 @@ export class LeadsService {
       },
     ];
 
-    const data = await this.leadModel.aggregate(pipeline);
+    const data = await this.leadModel.aggregate<{
+      _id: Types.ObjectId;
+      leadId: string;
+      fullName: string;
+      followUp: unknown;
+    }>(pipeline);
 
-    const countPipeline: any[] = [
-      { $match: matchStage },
+    const countPipeline: PipelineStage[] = [
+      { $match: leadMatch as PipelineStage.Match['$match'] },
       { $unwind: '$followUps' },
-      { $match: followUpMatch },
+      { $match: followUpMatch as PipelineStage.Match['$match'] },
+      {
+        $addFields: {
+          scheduledAtText: {
+            $dateToString: {
+              format: '%Y-%m-%d %H:%M',
+              date: '$followUps.scheduledAt',
+              timezone: 'UTC',
+            },
+          },
+        },
+      },
+      ...(hasSearch
+        ? [
+            {
+              $match: {
+                $or: [
+                  { leadId: { $regex: search, $options: 'i' } },
+                  { fullName: { $regex: search, $options: 'i' } },
+                  { 'followUps.notes': { $regex: search, $options: 'i' } },
+                  { 'followUps.status': { $regex: search, $options: 'i' } },
+                  { scheduledAtText: { $regex: search, $options: 'i' } },
+                  ...(Types.ObjectId.isValid(search)
+                    ? [{ _id: new Types.ObjectId(search) }]
+                    : []),
+                ],
+              } as PipelineStage.Match['$match'],
+            },
+          ]
+        : []),
       { $count: 'total' },
     ];
-    const countResult = await this.leadModel.aggregate(countPipeline);
+    const countResult = await this.leadModel.aggregate<{ total: number }>(
+      countPipeline,
+    );
     const total = countResult[0]?.total || 0;
 
     return {
@@ -105,30 +503,45 @@ export class LeadsService {
   async updateFollowUpStatus(
     leadId: string,
     followUpId: string,
-    status: string,
+    status: 'pending' | 'completed' | 'missed',
     updatedBy: string,
   ) {
-    if (
-      !Types.ObjectId.isValid(leadId) ||
-      !Types.ObjectId.isValid(followUpId)
-    ) {
-      throw new BadRequestException('Invalid Lead ID or Follow-up ID');
+    const allowedStatuses = ['pending', 'completed', 'missed'] as const;
+    if (!allowedStatuses.includes(status)) {
+      throw new BadRequestException('Invalid follow-up status');
     }
 
-    const lead = await this.leadModel.findById(leadId);
+    if (!Types.ObjectId.isValid(followUpId)) {
+      throw new BadRequestException('Invalid Follow-up ID');
+    }
+
+    const lead = await this.leadModel.findOne(
+      this.buildLeadIdentityFilter(leadId),
+    );
     if (!lead) {
       throw new NotFoundException('Lead not found');
     }
+    if (!lead.leadId) {
+      lead.leadId = await this.getNextLeadId(
+        this.toDate((lead as unknown as { createdAt?: unknown }).createdAt),
+      );
+    }
+    if (!(lead as unknown as { publicId?: string }).publicId) {
+      (lead as unknown as { publicId?: string }).publicId = generatePublicId(
+        'lead',
+        (lead as unknown as { email?: string }).email ?? '',
+      );
+    }
 
-    const followUp = lead.followUps.find(
-      (f) => f['_id'].toString() === followUpId,
-    );
+    type FollowUpSubdoc = Lead['followUps'][number] & { _id: Types.ObjectId };
+    const followUps = lead.followUps as unknown as FollowUpSubdoc[];
+    const followUp = followUps.find((f) => f._id.toString() === followUpId);
     if (!followUp) {
       throw new NotFoundException('Follow-up not found in this lead');
     }
 
     // Update the follow-up status
-    followUp.status = status as any;
+    followUp.status = status;
 
     // Add to activity timeline
     lead.activityTimeline.push({
@@ -142,10 +555,18 @@ export class LeadsService {
     return { success: true, data: savedLead };
   }
 
-  async listNotes(params: { page: number; limit: number; leadId?: string }) {
+  async listNotes(params: {
+    page: number;
+    limit: number;
+    leadId?: string;
+    search?: string;
+    from?: string;
+    to?: string;
+    user?: RequestUser;
+  }) {
     const skip = (params.page - 1) * params.limit;
     // Ensure notes is a non-empty array
-    const matchStage: any = {
+    const matchStage: Record<string, unknown> = {
       notes: {
         $exists: true,
         $type: 'array',
@@ -154,12 +575,80 @@ export class LeadsService {
     };
 
     if (params.leadId) {
-      matchStage['leadId'] = { $regex: params.leadId, $options: 'i' };
+      matchStage.leadId = { $regex: params.leadId, $options: 'i' };
     }
 
-    const pipeline: any[] = [
-      { $match: matchStage },
+    const salesFilter = this.buildSalesManagerLeadAccessFilter(params.user);
+    const leadMatch = salesFilter
+      ? ({ $and: [matchStage, salesFilter] } as Record<string, unknown>)
+      : matchStage;
+
+    const search =
+      typeof params.search === 'string' ? params.search.trim() : '';
+    const hasSearch = search.length > 0;
+
+    const parseBound = (value: string, mode: 'start' | 'end') => {
+      const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+      if (dateOnly) {
+        const [y, m, d] = value.split('-').map((x) => Number(x));
+        const istMidnightUtcMs =
+          Date.UTC(y, (m || 1) - 1, d || 1) - 5.5 * 60 * 60000;
+        return mode === 'start'
+          ? new Date(istMidnightUtcMs)
+          : new Date(istMidnightUtcMs + 24 * 60 * 60 * 1000 - 1);
+      }
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+    };
+    const from = typeof params.from === 'string' ? params.from.trim() : '';
+    const to = typeof params.to === 'string' ? params.to.trim() : '';
+    const fromDate = from ? parseBound(from, 'start') : undefined;
+    const toDate = to ? parseBound(to, 'end') : undefined;
+    const dateMatch: Record<string, unknown> =
+      fromDate || toDate
+        ? {
+            'notes.createdAt': {
+              ...(fromDate ? { $gte: fromDate } : {}),
+              ...(toDate ? { $lte: toDate } : {}),
+            },
+          }
+        : {};
+
+    const pipeline: PipelineStage[] = [
+      { $match: leadMatch as PipelineStage.Match['$match'] },
       { $unwind: '$notes' },
+      ...(Object.keys(dateMatch).length
+        ? [{ $match: dateMatch as PipelineStage.Match['$match'] }]
+        : []),
+      {
+        $addFields: {
+          createdAtText: {
+            $dateToString: {
+              format: '%Y-%m-%d %H:%M',
+              date: '$notes.createdAt',
+              timezone: 'UTC',
+            },
+          },
+        },
+      },
+      ...(hasSearch
+        ? [
+            {
+              $match: {
+                $or: [
+                  { leadId: { $regex: search, $options: 'i' } },
+                  { fullName: { $regex: search, $options: 'i' } },
+                  { 'notes.addedBy': { $regex: search, $options: 'i' } },
+                  { 'notes.content': { $regex: search, $options: 'i' } },
+                  { createdAtText: { $regex: search, $options: 'i' } },
+                  ...(Types.ObjectId.isValid(search)
+                    ? [{ _id: new Types.ObjectId(search) }]
+                    : []),
+                ],
+              } as PipelineStage.Match['$match'],
+            },
+          ]
+        : []),
       { $sort: { 'notes.createdAt': -1 } },
       { $skip: skip },
       { $limit: params.limit },
@@ -173,14 +662,53 @@ export class LeadsService {
       },
     ];
 
-    const data = await this.leadModel.aggregate(pipeline);
+    const data = await this.leadModel.aggregate<{
+      _id: Types.ObjectId;
+      leadId: string;
+      fullName: string;
+      note: unknown;
+    }>(pipeline);
 
-    const countPipeline: any[] = [
-      { $match: matchStage },
+    const countPipeline: PipelineStage[] = [
+      { $match: leadMatch as PipelineStage.Match['$match'] },
       { $unwind: '$notes' },
+      ...(Object.keys(dateMatch).length
+        ? [{ $match: dateMatch as PipelineStage.Match['$match'] }]
+        : []),
+      {
+        $addFields: {
+          createdAtText: {
+            $dateToString: {
+              format: '%Y-%m-%d %H:%M',
+              date: '$notes.createdAt',
+              timezone: 'UTC',
+            },
+          },
+        },
+      },
+      ...(hasSearch
+        ? [
+            {
+              $match: {
+                $or: [
+                  { leadId: { $regex: search, $options: 'i' } },
+                  { fullName: { $regex: search, $options: 'i' } },
+                  { 'notes.addedBy': { $regex: search, $options: 'i' } },
+                  { 'notes.content': { $regex: search, $options: 'i' } },
+                  { createdAtText: { $regex: search, $options: 'i' } },
+                  ...(Types.ObjectId.isValid(search)
+                    ? [{ _id: new Types.ObjectId(search) }]
+                    : []),
+                ],
+              } as PipelineStage.Match['$match'],
+            },
+          ]
+        : []),
       { $count: 'total' },
     ];
-    const countResult = await this.leadModel.aggregate(countPipeline);
+    const countResult = await this.leadModel.aggregate<{ total: number }>(
+      countPipeline,
+    );
     const total = countResult[0]?.total || 0;
 
     return {
@@ -192,10 +720,55 @@ export class LeadsService {
     };
   }
 
-  async getDashboardStats() {
-    const totalLeads = await this.leadModel.countDocuments();
+  async getDashboardStats(
+    user?: RequestUser,
+    params?: { from?: string; to?: string },
+  ) {
+    const salesFilter = this.buildSalesManagerLeadAccessFilter(user);
+    const baseFilter: Record<string, unknown> = salesFilter ? salesFilter : {};
 
-    const leadsByStatus = await this.leadModel.aggregate([
+    const parseBound = (value: string, mode: 'start' | 'end') => {
+      const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+      if (dateOnly) {
+        const [y, m, d] = value.split('-').map((x) => Number(x));
+        const istMidnightUtcMs =
+          Date.UTC(y, (m || 1) - 1, d || 1) - 5.5 * 60 * 60000;
+        return mode === 'start'
+          ? new Date(istMidnightUtcMs)
+          : new Date(istMidnightUtcMs + 24 * 60 * 60 * 1000 - 1);
+      }
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+    };
+    const from = typeof params?.from === 'string' ? params.from.trim() : '';
+    const to = typeof params?.to === 'string' ? params.to.trim() : '';
+    const fromDate = from ? parseBound(from, 'start') : undefined;
+    const toDate = to ? parseBound(to, 'end') : undefined;
+    const hasRange = Boolean(fromDate || toDate);
+    const createdAtRange: Record<string, unknown> = hasRange
+      ? {
+          createdAt: {
+            ...(fromDate ? { $gte: fromDate } : {}),
+            ...(toDate ? { $lte: toDate } : {}),
+          },
+        }
+      : {};
+
+    const totalLeads = await this.leadModel.countDocuments(
+      hasRange
+        ? ({ $and: [baseFilter, createdAtRange] } as Record<string, unknown>)
+        : baseFilter,
+    );
+
+    const leadsByStatus = await this.leadModel.aggregate<{
+      _id: string;
+      count: number;
+    }>([
+      {
+        $match: (hasRange
+          ? ({ $and: [baseFilter, createdAtRange] } as Record<string, unknown>)
+          : baseFilter) as PipelineStage.Match['$match'],
+      },
       {
         $group: {
           _id: '$leadStatus',
@@ -204,47 +777,122 @@ export class LeadsService {
       },
     ]);
 
-    const statusMap = leadsByStatus.reduce((acc, curr) => {
-      acc[curr._id] = curr.count;
-      return acc;
-    }, {});
+    const statusMap = leadsByStatus.reduce<Record<string, number>>(
+      (acc, curr) => {
+        acc[curr._id] = curr.count;
+        return acc;
+      },
+      {},
+    );
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const newLeadsToday = await this.leadModel.countDocuments({
-      createdAt: { $gte: today },
-    });
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const newLeadsToday = await this.leadModel.countDocuments(
+      hasRange
+        ? ({ $and: [baseFilter, createdAtRange] } as Record<string, unknown>)
+        : {
+            ...(salesFilter ? baseFilter : {}),
+            createdAt: { $gte: startOfToday },
+          },
+    );
 
-    const pendingFollowUpsResult = await this.leadModel.aggregate([
+    const pendingFollowUpsResult = await this.leadModel.aggregate<{
+      count: number;
+    }>([
+      { $match: baseFilter as PipelineStage.Match['$match'] },
       { $unwind: '$followUps' },
-      { $match: { 'followUps.status': 'pending' } },
+      {
+        $match: {
+          'followUps.status': 'pending',
+          ...(hasRange
+            ? {
+                'followUps.scheduledAt': {
+                  ...(fromDate ? { $gte: fromDate } : {}),
+                  ...(toDate ? { $lte: toDate } : {}),
+                },
+              }
+            : {}),
+        } as Record<string, unknown>,
+      },
       { $count: 'count' },
     ]);
-    const pendingFollowUps = pendingFollowUpsResult[0]?.count || 0;
+    const pendingFollowUps = pendingFollowUpsResult[0]?.count ?? 0;
 
-    const convertedLeads = statusMap['converted'] || 0;
+    const convertedLeads = hasRange
+      ? await this.leadModel.countDocuments({
+          $and: [
+            baseFilter,
+            {
+              $or: [
+                {
+                  convertedAt: {
+                    ...(fromDate ? { $gte: fromDate } : {}),
+                    ...(toDate ? { $lte: toDate } : {}),
+                  },
+                },
+                {
+                  activityTimeline: {
+                    $elemMatch: {
+                      timestamp: {
+                        ...(fromDate ? { $gte: fromDate } : {}),
+                        ...(toDate ? { $lte: toDate } : {}),
+                      },
+                      'metadata.newStatus': 'CONVERTED',
+                    },
+                  },
+                },
+                {
+                  activityTimeline: {
+                    $elemMatch: {
+                      timestamp: {
+                        ...(fromDate ? { $gte: fromDate } : {}),
+                        ...(toDate ? { $lte: toDate } : {}),
+                      },
+                      'metadata.newLeadStatus': 'converted',
+                    },
+                  },
+                },
+              ],
+            },
+          ],
+        })
+      : statusMap['converted'] || 0;
     const conversionRate =
       totalLeads > 0 ? (convertedLeads / totalLeads) * 100 : 0;
 
     // Get recent leads (last 5)
     const recentLeads = await this.leadModel
-      .find()
+      .find(
+        hasRange
+          ? ({ $and: [baseFilter, createdAtRange] } as Record<string, unknown>)
+          : baseFilter,
+      )
       .sort({ createdAt: -1 })
       .limit(5)
       .select('fullName email contactNumber leadStatus createdAt leadId')
       .lean();
 
-    // Get today's follow-ups
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
     const endOfDay = new Date();
     endOfDay.setHours(23, 59, 59, 999);
+    const followUpFrom = hasRange ? fromDate : startOfDay;
+    const followUpTo = hasRange ? toDate : endOfDay;
 
-    const todaysFollowUps = await this.leadModel.aggregate([
+    const todaysFollowUps = await this.leadModel.aggregate<{
+      leadId: string;
+      fullName: string;
+      contactNumber: string;
+      followUp: unknown;
+    }>([
+      { $match: baseFilter as PipelineStage.Match['$match'] },
       { $unwind: '$followUps' },
       {
         $match: {
-          'followUps.scheduledAt': { $gte: startOfDay, $lte: endOfDay },
+          'followUps.scheduledAt': {
+            ...(followUpFrom ? { $gte: followUpFrom } : {}),
+            ...(followUpTo ? { $lte: followUpTo } : {}),
+          },
           'followUps.status': 'pending',
         },
       },
@@ -273,11 +921,16 @@ export class LeadsService {
     };
   }
 
-  async createManualLead(
-    dto: CreateManualLeadDto,
-    createdBy: string,
-    creatorRole: string,
-  ) {
+  async createManualLead(dto: CreateManualLeadDto, user?: RequestUser) {
+    const creatorRole = typeof user?.role === 'string' ? user.role : 'admin';
+    const requesterEmail = this.normalizeEmail(user?.email);
+    const requesterId =
+      typeof user?.id === 'string' && user.id.trim() ? user.id.trim() : '';
+    const createdBy =
+      creatorRole === 'sales_manager' || creatorRole === 'super_admin'
+        ? requesterEmail || user?.username || user?.fullName || 'admin'
+        : user?.fullName || user?.username || requesterEmail || 'admin';
+
     // 1. Check for duplicates (Lead & Seller)
     await this.checkDuplicates(dto as CreateLeadDto);
 
@@ -288,8 +941,23 @@ export class LeadsService {
     const leadId = await this.getNextLeadId();
 
     // 4. Create Lead
+    const explicitAssignee = await this.resolveSalesManager({
+      id: (dto as unknown as { assignedSalesManagerId?: string })
+        .assignedSalesManagerId,
+      email: (dto as unknown as { assignedSalesManagerEmail?: string })
+        .assignedSalesManagerEmail,
+    });
+
+    const autoAssignee = await this.pickNextSalesManager();
+
+    const assigned =
+      creatorRole === 'sales_manager' && requesterEmail
+        ? { id: requesterId, email: requesterEmail }
+        : (explicitAssignee ?? autoAssignee);
+
     const created = await this.leadModel.create({
       ...dto,
+      publicId: generatePublicId('lead', dto.email),
       leadId,
       source: dto.source || 'manual',
       leadStatus: 'new',
@@ -298,10 +966,17 @@ export class LeadsService {
       verificationMethod: 'manual',
       createdBy,
       creatorRole,
+      createdByUserId: requesterId || undefined,
+      assignedSalesManager: assigned?.email,
+      assignedSalesManagerId: assigned?.id,
+      assignedTo: assigned?.id,
+      assignedBy: requesterEmail || createdBy,
+      assignedAt: assigned ? new Date() : undefined,
       metadata: {
         createdBy,
         creatorRole,
         createdAt: new Date(),
+        ...(dto.metadata ?? {}),
       },
       lastRegistrationAttempt: new Date(),
       activityTimeline: [
@@ -324,7 +999,7 @@ export class LeadsService {
     await this.notificationsService.createNotification({
       event: 'lead_created',
       recipientRole: 'sales_admin',
-      message: `New manual lead created for ${created.fullName} by ${createdBy}. Score: ${leadScore}`,
+      message: `New manual lead created for ${created.fullName || created.contactNumber} by ${createdBy}. Score: ${leadScore}`,
     });
 
     return {
@@ -339,38 +1014,43 @@ export class LeadsService {
     ipAddress?: string,
     userAgent?: string,
   ) {
-    // 1. Validate CAPTCHA
-    await this.validateCaptcha(dto.captchaToken);
-
-    // 2. Check for duplicates (Lead & Seller)
+    // 1. Check for duplicates (Lead & Seller)
     await this.checkDuplicates(dto);
 
-    // 3. Check Cooldown (IP based)
+    // 2. Check Cooldown (IP based)
     if (ipAddress) {
       await this.checkIpCooldown(ipAddress);
     }
 
-    // 4. Calculate Lead Score
+    // 3. Calculate Lead Score
     const leadScore = this.calculateLeadScore(dto);
 
-    // 5. Generate Lead ID
+    // 4. Generate Lead ID
     const leadId = await this.getNextLeadId();
 
-    // 6. Create Lead
+    // 5. Create Lead
+    const assigned = await this.pickNextSalesManager();
+
     const created = await this.leadModel.create({
       ...dto,
+      publicId: generatePublicId('lead', dto.email),
       leadId,
       source,
       leadStatus: 'new',
       createdBy: dto.fullName,
       creatorRole: 'seller',
+      assignedSalesManager: assigned?.email,
+      assignedSalesManagerId: assigned?.id,
+      assignedTo: assigned?.id,
+      assignedBy: assigned ? 'system' : undefined,
+      assignedAt: assigned ? new Date() : undefined,
       ipAddress,
       userAgent,
       leadScore,
       isMobileVerified: false,
       verificationMethod: 'manual',
       metadata: {
-        captchaToken: dto.captchaToken,
+        termsAccepted: dto.termsAccepted,
         ipAddress,
         userAgent,
       },
@@ -404,27 +1084,771 @@ export class LeadsService {
     };
   }
 
-  private async validateCaptcha(token: string) {
-    // TODO: Implement actual CAPTCHA validation with Google/Cloudflare
-    // For now, we assume if token is present, it's valid (or mock check)
-    if (!token || token === 'invalid-token') {
-      // In a real scenario, we would call an external API here
-      // throw new BadRequestException('Invalid CAPTCHA');
-      // For development ease, we allow bypassing if needed or just log
-      console.log('Mock CAPTCHA validation passed');
+  async importLeads(dto: ImportLeadsDto, user?: RequestUser) {
+    const requesterEmail = this.normalizeEmail(user?.email);
+    const requesterId =
+      typeof user?.id === 'string' && user.id.trim() ? user.id.trim() : '';
+
+    const leads = Array.isArray(dto.leads) ? dto.leads : [];
+    if (!leads.length) {
+      throw new BadRequestException('No leads provided');
     }
+    if (leads.length > 20000) {
+      throw new BadRequestException(
+        'Maximum 20000 leads are allowed per request',
+      );
+    }
+
+    const mode = dto.assignmentMode ?? 'auto';
+    const selectedIds = Array.isArray(dto.salesManagerIds)
+      ? dto.salesManagerIds.filter((id) => typeof id === 'string' && id.trim())
+      : [];
+
+    let resolvedSelected: Array<{ id: string; email: string }> = [];
+    if (mode === 'round_robin_selected' || mode === 'random_selected') {
+      const unique = Array.from(new Set(selectedIds));
+      const found = await this.userModel
+        .find({
+          _id: { $in: unique.filter((id) => Types.ObjectId.isValid(id)) },
+          role: 'sales_manager',
+          status: 'approved',
+        })
+        .select('_id email')
+        .lean<Array<{ _id: Types.ObjectId; email: string }>>()
+        .exec();
+      resolvedSelected = found
+        .map((u) => ({
+          id: u._id.toString(),
+          email: this.normalizeEmail(u.email),
+        }))
+        .filter((u) => u.email.length > 0);
+      if (!resolvedSelected.length) {
+        throw new BadRequestException('No valid sales managers selected');
+      }
+    }
+
+    let rrStart = 0;
+    if (mode === 'round_robin_selected') {
+      const counter = await this.counterModel.findOneAndUpdate(
+        { id: 'leadAssign:sales_manager:selected' },
+        { $inc: { seq: 1 } },
+        { new: true, upsert: true },
+      );
+      const seq = typeof counter.seq === 'number' ? counter.seq : 1;
+      rrStart = (seq - 1) % resolvedSelected.length;
+    }
+
+    const created: Array<Lead> = [];
+    const skipped: Array<{ index: number; reason: string }> = [];
+    const failed: Array<{ index: number; reason: string }> = [];
+
+    const normalizeContactNumber = (value: unknown) => {
+      const raw =
+        typeof value === 'string'
+          ? value
+          : typeof value === 'number'
+            ? String(value)
+            : typeof value === 'bigint'
+              ? value.toString()
+              : '';
+      const digits = raw.trim().replace(/\D/g, '');
+      if (digits.length === 12 && digits.startsWith('91'))
+        return digits.slice(2);
+      if (digits.length === 11 && digits.startsWith('0'))
+        return digits.slice(1);
+      return digits;
+    };
+
+    const toOptionalTrimmedString = (value: unknown) => {
+      if (value === null || value === undefined) return '';
+      if (typeof value === 'string') return value.trim();
+      if (typeof value === 'number') return String(value).trim();
+      return '';
+    };
+
+    const normalizePipelineStage = (value: unknown) => {
+      const next = toOptionalTrimmedString(value);
+      if (!next) return '';
+      const allowed = new Set([
+        'New Lead',
+        'Contacted',
+        'Interested',
+        'Payment Link Generated',
+        'Payment Pending',
+        'Payment Completed',
+        'Converted to Seller',
+      ]);
+      if (allowed.has(next)) return next;
+      return '';
+    };
+
+    const assigneeIds = new Set<string>();
+    const assigneeEmails = new Set<string>();
+    for (let i = 0; i < leads.length; i += 1) {
+      const row = leads[i] as unknown as {
+        assignedSalesManagerId?: unknown;
+        assignedSalesManagerEmail?: unknown;
+      };
+      const id =
+        typeof row.assignedSalesManagerId === 'string'
+          ? row.assignedSalesManagerId.trim()
+          : '';
+      const email = this.normalizeEmail(row.assignedSalesManagerEmail);
+      if (id) assigneeIds.add(id);
+      if (email) assigneeEmails.add(email);
+    }
+
+    const validAssigneeIds = Array.from(assigneeIds).filter((id) =>
+      Types.ObjectId.isValid(id),
+    );
+    const validAssigneeEmails = Array.from(assigneeEmails);
+
+    const assignees =
+      validAssigneeIds.length || validAssigneeEmails.length
+        ? await this.userModel
+            .find({
+              role: 'sales_manager',
+              status: 'approved',
+              $or: [
+                ...(validAssigneeIds.length
+                  ? [
+                      {
+                        _id: {
+                          $in: validAssigneeIds.map(
+                            (id) => new Types.ObjectId(id),
+                          ),
+                        },
+                      },
+                    ]
+                  : []),
+                ...(validAssigneeEmails.length
+                  ? [{ email: { $in: validAssigneeEmails } }]
+                  : []),
+              ],
+            })
+            .select('_id email')
+            .lean<Array<{ _id: Types.ObjectId; email: string }>>()
+            .exec()
+        : [];
+
+    const assigneeById = new Map<string, { id: string; email: string }>();
+    const assigneeByEmail = new Map<string, { id: string; email: string }>();
+    for (const a of assignees) {
+      const email = this.normalizeEmail(a.email);
+      if (!email) continue;
+      const id = a._id.toString();
+      assigneeById.set(id, { id, email });
+      assigneeByEmail.set(email, { id, email });
+    }
+
+    const autoCandidates =
+      mode === 'auto'
+        ? await this.userModel
+            .find({ role: 'sales_manager', status: 'approved' })
+            .select('email createdAt')
+            .sort({ createdAt: 1, _id: 1 })
+            .lean<Array<{ _id: Types.ObjectId; email?: string }>>()
+            .exec()
+        : [];
+
+    const normalizedAutoCandidates =
+      mode === 'auto'
+        ? autoCandidates
+            .map((u) => {
+              const email = this.normalizeEmail(u.email);
+              if (!email) return undefined;
+              return { id: u._id.toString(), email };
+            })
+            .filter((v): v is { id: string; email: string } => Boolean(v))
+        : [];
+
+    const selectedSingle =
+      mode === 'specific' && selectedIds.length === 1
+        ? await this.resolveSalesManager({ id: selectedIds[0] })
+        : undefined;
+
+    type PreparedLead = {
+      index: number;
+      fullName: string;
+      email: string;
+      contactNumber: string;
+      gstNumber: string;
+      source: string;
+      firmName?: string;
+      city?: string;
+      state?: string;
+      businessType?: string;
+      pipelineStage: string;
+      metadata?: Record<string, unknown>;
+      explicitAssignee?: { id: string; email: string };
+    };
+
+    const prepared: PreparedLead[] = [];
+    for (let i = 0; i < leads.length; i += 1) {
+      const row = leads[i];
+      try {
+        const rawContact = (row as unknown as { contactNumber?: unknown })
+          .contactNumber;
+        const contactNumber = normalizeContactNumber(rawContact);
+        if (!/^\d{10}$/.test(contactNumber)) {
+          throw new BadRequestException(
+            'contactNumber must be exactly 10 digits',
+          );
+        }
+
+        const fullName = (() => {
+          const raw = (row as unknown as { fullName?: unknown }).fullName;
+          const next =
+            typeof raw === 'string'
+              ? raw.trim()
+              : typeof raw === 'number'
+                ? String(raw).trim()
+                : '';
+          return next.length ? next : '';
+        })();
+
+        const email = (() => {
+          const next = this.normalizeEmail(
+            (row as unknown as { email?: unknown }).email,
+          );
+          return next.length ? next : '';
+        })();
+
+        const gstNumber = (() => {
+          const raw = (row as unknown as { gstNumber?: unknown }).gstNumber;
+          const next =
+            typeof raw === 'string'
+              ? raw.trim().toUpperCase()
+              : typeof raw === 'number'
+                ? String(raw).trim().toUpperCase()
+                : '';
+          return next.length ? next : '';
+        })();
+
+        const source = (() => {
+          const raw = (row as unknown as { source?: unknown }).source;
+          const next = toOptionalTrimmedString(raw);
+          return next.length ? next : '';
+        })();
+
+        const firmName = (() => {
+          const raw = (row as unknown as { firmName?: unknown }).firmName;
+          const next = toOptionalTrimmedString(raw);
+          return next.length ? next : '';
+        })();
+
+        const city = (() => {
+          const raw = (row as unknown as { city?: unknown }).city;
+          const next = toOptionalTrimmedString(raw);
+          return next.length ? next : '';
+        })();
+
+        const state = (() => {
+          const raw = (row as unknown as { state?: unknown }).state;
+          const next = toOptionalTrimmedString(raw);
+          return next.length ? next : '';
+        })();
+
+        const businessType = (() => {
+          const raw = (row as unknown as { businessType?: unknown })
+            .businessType;
+          const next = toOptionalTrimmedString(raw);
+          return next.length ? next : '';
+        })();
+
+        const pipelineStage = (() => {
+          const raw = (row as unknown as { pipelineStage?: unknown })
+            .pipelineStage;
+          const next = normalizePipelineStage(raw);
+          return next.length ? next : 'New Lead';
+        })();
+
+        const assignee = (() => {
+          const rawId = (row as unknown as { assignedSalesManagerId?: unknown })
+            .assignedSalesManagerId;
+          const rawEmail = (
+            row as unknown as { assignedSalesManagerEmail?: unknown }
+          ).assignedSalesManagerEmail;
+          const id = typeof rawId === 'string' ? rawId.trim() : '';
+          const email = this.normalizeEmail(rawEmail);
+          if (id && assigneeById.has(id)) return assigneeById.get(id);
+          if (email && assigneeByEmail.has(email))
+            return assigneeByEmail.get(email);
+          return undefined;
+        })();
+
+        prepared.push({
+          index: i,
+          fullName,
+          email,
+          contactNumber,
+          gstNumber,
+          source,
+          firmName: firmName || undefined,
+          city: city || undefined,
+          state: state || undefined,
+          businessType: businessType || undefined,
+          pipelineStage,
+          metadata:
+            row && typeof row === 'object'
+              ? ((row as { metadata?: unknown }).metadata as
+                  | Record<string, unknown>
+                  | undefined)
+              : undefined,
+          explicitAssignee: assignee,
+        });
+      } catch (err: unknown) {
+        let message = 'Failed to import';
+        if (err instanceof BadRequestException) {
+          const response = err.getResponse();
+          if (typeof response === 'string') {
+            message = response;
+          } else if (response && typeof response === 'object') {
+            const maybeMessage = (response as { message?: unknown }).message;
+            if (typeof maybeMessage === 'string') {
+              message = maybeMessage;
+            } else if (Array.isArray(maybeMessage)) {
+              const joined = maybeMessage
+                .filter((m) => typeof m === 'string')
+                .join(', ');
+              message = joined || 'Bad Request';
+            } else {
+              message = 'Bad Request';
+            }
+          } else {
+            message = 'Bad Request';
+          }
+        } else if (err instanceof Error) {
+          message = err.message;
+        }
+        failed.push({ index: i, reason: message });
+      }
+    }
+
+    const seenContact = new Map<string, number>();
+    const seenEmail = new Map<string, number>();
+    const seenGst = new Map<string, number>();
+    const uniquePrepared: PreparedLead[] = [];
+    for (const p of prepared) {
+      const dupReason = (() => {
+        if (seenContact.has(p.contactNumber)) {
+          return 'Duplicate mobile number in file';
+        }
+        if (p.email && seenEmail.has(p.email)) {
+          return 'Duplicate email in file';
+        }
+        if (p.gstNumber && seenGst.has(p.gstNumber)) {
+          return 'Duplicate GST number in file';
+        }
+        return '';
+      })();
+      if (dupReason) {
+        skipped.push({ index: p.index, reason: dupReason });
+        continue;
+      }
+      seenContact.set(p.contactNumber, p.index);
+      if (p.email) seenEmail.set(p.email, p.index);
+      if (p.gstNumber) seenGst.set(p.gstNumber, p.index);
+      uniquePrepared.push(p);
+    }
+
+    const emailsToCheck = Array.from(
+      new Set(uniquePrepared.map((p) => p.email).filter((e) => e && e.length)),
+    );
+    const contactsToCheck = Array.from(
+      new Set(uniquePrepared.map((p) => p.contactNumber)),
+    );
+    const gstsToCheck = Array.from(
+      new Set(
+        uniquePrepared.map((p) => p.gstNumber).filter((g) => g && g.length),
+      ),
+    );
+
+    const [existingSellers, existingLeads] =
+      emailsToCheck.length || contactsToCheck.length || gstsToCheck.length
+        ? await Promise.all([
+            this.sellerModel
+              .find({
+                $or: [
+                  ...(emailsToCheck.length
+                    ? [{ email: { $in: emailsToCheck } }]
+                    : []),
+                  ...(contactsToCheck.length
+                    ? [{ contactNumber: { $in: contactsToCheck } }]
+                    : []),
+                  ...(gstsToCheck.length
+                    ? [{ gstNumber: { $in: gstsToCheck } }]
+                    : []),
+                ],
+              })
+              .select('email contactNumber gstNumber')
+              .lean<
+                Array<{
+                  email?: string;
+                  contactNumber?: string;
+                  gstNumber?: string;
+                }>
+              >()
+              .exec(),
+            this.leadModel
+              .find({
+                $or: [
+                  ...(emailsToCheck.length
+                    ? [{ email: { $in: emailsToCheck } }]
+                    : []),
+                  ...(contactsToCheck.length
+                    ? [{ contactNumber: { $in: contactsToCheck } }]
+                    : []),
+                  ...(gstsToCheck.length
+                    ? [{ gstNumber: { $in: gstsToCheck } }]
+                    : []),
+                ],
+              })
+              .select('email contactNumber gstNumber')
+              .lean<
+                Array<{
+                  email?: string;
+                  contactNumber?: string;
+                  gstNumber?: string;
+                }>
+              >()
+              .exec(),
+          ])
+        : [[], []];
+
+    const existingSellerEmails = new Set<string>();
+    const existingSellerContacts = new Set<string>();
+    const existingSellerGsts = new Set<string>();
+    for (const s of existingSellers) {
+      const email = this.normalizeEmail(s.email);
+      if (email) existingSellerEmails.add(email);
+      const contact =
+        typeof s.contactNumber === 'string' ? s.contactNumber : '';
+      if (contact) existingSellerContacts.add(contact);
+      const gst =
+        typeof s.gstNumber === 'string' ? s.gstNumber.trim().toUpperCase() : '';
+      if (gst) existingSellerGsts.add(gst);
+    }
+
+    const existingLeadEmails = new Set<string>();
+    const existingLeadContacts = new Set<string>();
+    const existingLeadGsts = new Set<string>();
+    for (const l of existingLeads) {
+      const email = this.normalizeEmail(l.email);
+      if (email) existingLeadEmails.add(email);
+      const contact =
+        typeof l.contactNumber === 'string' ? l.contactNumber : '';
+      if (contact) existingLeadContacts.add(contact);
+      const gst =
+        typeof l.gstNumber === 'string' ? l.gstNumber.trim().toUpperCase() : '';
+      if (gst) existingLeadGsts.add(gst);
+    }
+
+    const insertable: PreparedLead[] = [];
+    for (const p of uniquePrepared) {
+      const sellerConflict = (() => {
+        if (p.email && existingSellerEmails.has(p.email))
+          return 'An account with this email already exists.';
+        if (existingSellerContacts.has(p.contactNumber))
+          return 'An account with this mobile number already exists.';
+        if (p.gstNumber && existingSellerGsts.has(p.gstNumber))
+          return 'An account with this GST number already exists.';
+        return '';
+      })();
+      if (sellerConflict) {
+        skipped.push({ index: p.index, reason: sellerConflict });
+        continue;
+      }
+
+      const leadConflict = (() => {
+        if (p.email && existingLeadEmails.has(p.email))
+          return 'A lead with this email already exists.';
+        if (existingLeadContacts.has(p.contactNumber))
+          return 'A lead with this mobile number already exists.';
+        if (p.gstNumber && existingLeadGsts.has(p.gstNumber))
+          return 'A lead with this GST number already exists.';
+        return '';
+      })();
+      if (leadConflict) {
+        skipped.push({ index: p.index, reason: leadConflict });
+        continue;
+      }
+
+      insertable.push(p);
+    }
+
+    const computeLeadIdRange = async (count: number, date = new Date()) => {
+      if (count <= 0) {
+        return { prefix: 'LEAD', yyyymm: '', startSeq: 0 };
+      }
+      const yyyy = date.getFullYear().toString();
+      const mm = (date.getMonth() + 1).toString().padStart(2, '0');
+      const yyyymm = `${yyyy}${mm}`;
+      const prefix = 'LEAD';
+
+      const counter = await this.counterModel.findOneAndUpdate(
+        { id: `leadId:${prefix}:${yyyymm}` },
+        { $inc: { seq: count } },
+        { new: true, upsert: true },
+      );
+      const seqEndRaw = (counter as unknown as { seq?: unknown }).seq;
+      const seqEnd =
+        typeof seqEndRaw === 'number'
+          ? seqEndRaw
+          : Number.isFinite(Number(seqEndRaw))
+            ? Number(seqEndRaw)
+            : count;
+      const startSeq = seqEnd - count + 1;
+      return { prefix, yyyymm, startSeq };
+    };
+
+    const now = new Date();
+
+    const docs: Array<Record<string, unknown>> = [];
+    const docInputIndexes: number[] = [];
+    const needsAutoAssignmentIndexes: number[] = [];
+
+    for (const p of insertable) {
+      let assigned: { id: string; email: string } | undefined = undefined;
+
+      if (mode === 'specific') {
+        if (p.explicitAssignee) {
+          assigned = p.explicitAssignee;
+        } else if (selectedSingle) {
+          assigned = { id: selectedSingle.id, email: selectedSingle.email };
+        } else if (resolvedSelected.length === 1) {
+          assigned = resolvedSelected[0];
+        }
+
+        if (!assigned) {
+          failed.push({
+            index: p.index,
+            reason: 'Missing assigned sales manager for this row',
+          });
+          continue;
+        }
+      } else if (mode === 'random_selected') {
+        const idx = Math.floor(Math.random() * resolvedSelected.length);
+        assigned = resolvedSelected[idx];
+      } else if (mode === 'round_robin_selected') {
+        assigned =
+          resolvedSelected[(rrStart + p.index) % resolvedSelected.length];
+      } else if (p.explicitAssignee) {
+        assigned = p.explicitAssignee;
+      }
+
+      const leadScore = this.calculateLeadScore({
+        email: p.email,
+        contactNumber: p.contactNumber,
+        gstNumber: p.gstNumber,
+      });
+
+      const doc: Record<string, unknown> = {
+        contactNumber: p.contactNumber,
+        publicId: generatePublicId('lead', p.email || ''),
+        pipelineStage: p.pipelineStage,
+        leadStatus: 'new',
+        leadScore,
+        isMobileVerified: true,
+        verificationMethod: 'manual',
+        createdBy: requesterEmail || 'super_admin',
+        createdByUserId: requesterId || undefined,
+        creatorRole: user?.role || 'super_admin',
+        assignedSalesManager: assigned?.email,
+        assignedSalesManagerId: assigned?.id,
+        assignedTo: assigned?.id,
+        assignedBy: requesterEmail || 'super_admin',
+        assignedAt: assigned ? now : undefined,
+        metadata: {
+          createdBy: requesterEmail || 'super_admin',
+          creatorRole: user?.role || 'super_admin',
+          createdAt: now,
+          import: true,
+          ...(p.source ? { source: p.source } : {}),
+          ...(p.metadata ?? {}),
+        },
+        lastRegistrationAttempt: now,
+        activityTimeline: [
+          {
+            action: 'lead_imported',
+            description: `Lead imported by ${requesterEmail || 'super_admin'}`,
+            performedBy: requesterEmail || 'super_admin',
+            timestamp: now,
+            metadata: {
+              assignmentMode: mode,
+              assignedSalesManager: assigned?.email,
+            },
+          },
+        ],
+        notes: [
+          {
+            content: `Lead imported by ${requesterEmail || 'super_admin'}.`,
+            addedBy: requesterEmail || 'super_admin',
+            createdAt: now,
+          },
+        ],
+      };
+      if (p.fullName) doc.fullName = p.fullName;
+      if (p.email) doc.email = p.email;
+      if (p.gstNumber) doc.gstNumber = p.gstNumber;
+      if (p.source) doc.source = p.source;
+      if (p.firmName) doc.firmName = p.firmName;
+      if (p.city) doc.city = p.city;
+      if (p.state) doc.state = p.state;
+      if (p.businessType) doc.businessType = p.businessType;
+
+      docs.push(doc);
+      docInputIndexes.push(p.index);
+      if (mode === 'auto' && !assigned) {
+        needsAutoAssignmentIndexes.push(docs.length - 1);
+      }
+    }
+
+    if (mode === 'auto' && needsAutoAssignmentIndexes.length) {
+      if (!normalizedAutoCandidates.length) {
+        for (const docIdx of needsAutoAssignmentIndexes) {
+          docs[docIdx].assignedSalesManager = undefined;
+          docs[docIdx].assignedSalesManagerId = undefined;
+          docs[docIdx].assignedTo = undefined;
+        }
+      } else {
+        const counter = await this.counterModel.findOneAndUpdate(
+          { id: 'leadAssign:sales_manager' },
+          { $inc: { seq: needsAutoAssignmentIndexes.length } },
+          { new: true, upsert: true },
+        );
+        const seqRaw = (counter as unknown as { seq?: unknown }).seq;
+        const seqEnd =
+          typeof seqRaw === 'number'
+            ? seqRaw
+            : Number.isFinite(Number(seqRaw))
+              ? Number(seqRaw)
+              : needsAutoAssignmentIndexes.length;
+        const start = seqEnd - needsAutoAssignmentIndexes.length + 1;
+
+        for (let j = 0; j < needsAutoAssignmentIndexes.length; j += 1) {
+          const docIdx = needsAutoAssignmentIndexes[j];
+          const candidateIndex =
+            (start - 1 + j) % normalizedAutoCandidates.length;
+          const candidate = normalizedAutoCandidates[candidateIndex];
+          docs[docIdx].assignedSalesManager = candidate.email;
+          docs[docIdx].assignedSalesManagerId = candidate.id;
+          docs[docIdx].assignedTo = candidate.id;
+          docs[docIdx].assignedAt = now;
+        }
+      }
+    }
+
+    const leadIdRange = await computeLeadIdRange(docs.length, now);
+    if (docs.length) {
+      for (let i = 0; i < docs.length; i += 1) {
+        const seq = leadIdRange.startSeq + i;
+        const padded = String(seq).padStart(4, '0');
+        docs[i].leadId =
+          `${leadIdRange.prefix}-${leadIdRange.yyyymm}-${padded}`;
+      }
+    }
+
+    let insertedDocs: Array<unknown> = [];
+    try {
+      insertedDocs = await this.leadModel.insertMany(docs, { ordered: false });
+    } catch (err: unknown) {
+      const maybe = err as {
+        insertedDocs?: unknown[];
+        writeErrors?: Array<{ index?: number; code?: number; errmsg?: string }>;
+        message?: string;
+      };
+      if (Array.isArray(maybe.insertedDocs)) {
+        insertedDocs = maybe.insertedDocs;
+      }
+
+      const writeErrors = Array.isArray(maybe.writeErrors)
+        ? maybe.writeErrors
+        : [];
+      for (const we of writeErrors) {
+        const docIdx = typeof we.index === 'number' ? we.index : -1;
+        const inputIndex =
+          docIdx >= 0 && docIdx < docInputIndexes.length
+            ? docInputIndexes[docIdx]
+            : undefined;
+        if (inputIndex === undefined) continue;
+
+        if (we.code === 11000) {
+          skipped.push({
+            index: inputIndex,
+            reason: 'Duplicate details found.',
+          });
+        } else {
+          failed.push({
+            index: inputIndex,
+            reason:
+              typeof we.errmsg === 'string' && we.errmsg.trim().length
+                ? we.errmsg
+                : 'Failed to import',
+          });
+        }
+      }
+
+      if (!writeErrors.length) {
+        for (const docIdx of docInputIndexes) {
+          failed.push({
+            index: docIdx,
+            reason:
+              typeof maybe.message === 'string' && maybe.message.trim().length
+                ? maybe.message
+                : 'Failed to import',
+          });
+        }
+      }
+    }
+
+    const maxCreatedToReturn = 200;
+    const limitedInserted = Array.isArray(insertedDocs)
+      ? insertedDocs.slice(0, maxCreatedToReturn)
+      : [];
+    for (const doc of limitedInserted) {
+      const obj =
+        doc && typeof doc === 'object' && 'toObject' in doc
+          ? (doc as { toObject: () => unknown }).toObject()
+          : doc;
+      created.push(obj as Lead);
+    }
+
+    return {
+      success: true,
+      data: {
+        createdCount: Array.isArray(insertedDocs)
+          ? insertedDocs.length
+          : created.length,
+        skippedCount: skipped.length,
+        failedCount: failed.length,
+        created,
+        skipped,
+        failed,
+      },
+    };
   }
 
-  private async checkDuplicates(dto: CreateLeadDto) {
+  private async checkDuplicates(
+    dto: Pick<CreateLeadDto, 'email' | 'contactNumber' | 'gstNumber'>,
+  ) {
     const { email, contactNumber, gstNumber } = dto;
     const errors: Record<string, string> = {};
 
     // Check for duplicates in Sellers collection
-    const existingSeller = await this.sellerModel
-      .findOne({
-        $or: [{ email }, { contactNumber }, { gstNumber }],
-      })
-      .exec();
+    const sellerOrFilters = [
+      ...(email ? [{ email }] : []),
+      ...(contactNumber ? [{ contactNumber }] : []),
+      ...(gstNumber ? [{ gstNumber }] : []),
+    ];
+    const existingSeller =
+      sellerOrFilters.length > 0
+        ? await this.sellerModel
+            .findOne({
+              $or: sellerOrFilters,
+            })
+            .exec()
+        : null;
 
     if (existingSeller) {
       if (existingSeller.email === email) {
@@ -442,11 +1866,19 @@ export class LeadsService {
     // Check for duplicates in Leads collection
     // We only need to check if we haven't already found an error for a field,
     // but to be thorough and catch all conflicts, we check anyway.
-    const existingLead = await this.leadModel
-      .findOne({
-        $or: [{ email }, { contactNumber }, { gstNumber }],
-      })
-      .exec();
+    const leadOrFilters = [
+      ...(email ? [{ email }] : []),
+      ...(contactNumber ? [{ contactNumber }] : []),
+      ...(gstNumber ? [{ gstNumber }] : []),
+    ];
+    const existingLead =
+      leadOrFilters.length > 0
+        ? await this.leadModel
+            .findOne({
+              $or: leadOrFilters,
+            })
+            .exec()
+        : null;
 
     if (existingLead) {
       if (existingLead.email === email && !errors.email) {
@@ -490,7 +1922,9 @@ export class LeadsService {
     }
   }
 
-  private calculateLeadScore(dto: CreateLeadDto): number {
+  private calculateLeadScore(
+    dto: Pick<CreateLeadDto, 'email' | 'contactNumber' | 'gstNumber'>,
+  ): number {
     let score = 0;
 
     // Base score for completing form
@@ -521,21 +1955,247 @@ export class LeadsService {
     return score;
   }
 
-  async listLeads(params: { status?: string; limit?: number; skip?: number }) {
-    const limit = Math.max(0, params.limit ?? 10);
-    const skip = Math.max(0, params.skip ?? 0);
+  async listLeads(
+    params: {
+      status?: string;
+      limit?: number;
+      skip?: number;
+      page?: number;
+      search?: string;
+      today?: boolean;
+      activity?: 'generated' | 'contacted' | 'connected' | 'converted' | 'lost';
+      from?: string;
+      to?: string;
+    },
+    user?: RequestUser,
+  ) {
+    const limit = Math.max(1, params.limit ?? 10);
+    const skip =
+      typeof params.page === 'number' && params.page > 0
+        ? (params.page - 1) * limit
+        : Math.max(0, params.skip ?? 0);
     const filter: Record<string, unknown> = {};
     if (params.status) {
       filter.leadStatus = params.status;
     }
+    const salesFilter = this.buildSalesManagerLeadAccessFilter(user);
+    if (salesFilter) {
+      Object.assign(filter, salesFilter);
+    }
+    const parseBound = (value: string, mode: 'start' | 'end') => {
+      const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+      if (dateOnly) {
+        const [y, m, d] = value.split('-').map((x) => Number(x));
+        const istMidnightUtcMs =
+          Date.UTC(y, (m || 1) - 1, d || 1) - 5.5 * 60 * 60000;
+        return mode === 'start'
+          ? new Date(istMidnightUtcMs)
+          : new Date(istMidnightUtcMs + 24 * 60 * 60 * 1000 - 1);
+      }
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+    };
+
+    const from = typeof params.from === 'string' ? params.from.trim() : '';
+    const to = typeof params.to === 'string' ? params.to.trim() : '';
+    const fromDate = from ? parseBound(from, 'start') : undefined;
+    const toDate = to ? parseBound(to, 'end') : undefined;
+    const hasExplicitRange = Boolean(fromDate || toDate);
+
+    const andFilters: Array<Record<string, unknown>> = [filter];
+
+    if (hasExplicitRange || params.today) {
+      let start = fromDate;
+      let end = toDate;
+      if (!hasExplicitRange && params.today) {
+        const now = new Date();
+        const utcMs = now.getTime() + now.getTimezoneOffset() * 60000;
+        const istNow = new Date(utcMs + 5.5 * 60 * 60000);
+        const istY = istNow.getFullYear();
+        const istM = istNow.getMonth();
+        const istD = istNow.getDate();
+        const istMidnightUtcMs = Date.UTC(istY, istM, istD) - 5.5 * 60 * 60000;
+        start = new Date(istMidnightUtcMs);
+        end = new Date(istMidnightUtcMs + 24 * 60 * 60 * 1000 - 1);
+      }
+
+      const timeRange: Record<string, unknown> = {
+        ...(start ? { $gte: start } : {}),
+        ...(end ? { $lte: end } : {}),
+      };
+
+      const activity = params.activity || 'generated';
+      if (activity === 'generated') {
+        andFilters.push({ createdAt: timeRange });
+      } else if (activity === 'contacted') {
+        andFilters.push({
+          $or: [
+            { lastContactedAt: timeRange },
+            {
+              activityTimeline: {
+                $elemMatch: {
+                  timestamp: timeRange,
+                  'metadata.newStatus': 'CONTACTED',
+                },
+              },
+            },
+            {
+              activityTimeline: {
+                $elemMatch: {
+                  timestamp: timeRange,
+                  'metadata.newLeadStatus': 'contacted',
+                },
+              },
+            },
+          ],
+        });
+      } else if (activity === 'connected') {
+        andFilters.push({
+          $or: [
+            { lastConnectedAt: timeRange },
+            {
+              activityTimeline: {
+                $elemMatch: {
+                  timestamp: timeRange,
+                  'metadata.newStatus': 'CONNECTED',
+                },
+              },
+            },
+            {
+              activityTimeline: {
+                $elemMatch: {
+                  timestamp: timeRange,
+                  'metadata.newLeadStatus': 'interested',
+                },
+              },
+            },
+          ],
+        });
+      } else if (activity === 'converted') {
+        andFilters.push({
+          $or: [
+            { convertedAt: timeRange },
+            {
+              activityTimeline: {
+                $elemMatch: {
+                  timestamp: timeRange,
+                  'metadata.newStatus': 'CONVERTED',
+                },
+              },
+            },
+            {
+              activityTimeline: {
+                $elemMatch: {
+                  timestamp: timeRange,
+                  'metadata.newLeadStatus': 'converted',
+                },
+              },
+            },
+          ],
+        });
+      } else if (activity === 'lost') {
+        andFilters.push({
+          $or: [
+            {
+              activityTimeline: {
+                $elemMatch: {
+                  timestamp: timeRange,
+                  'metadata.newStatus': 'LOST',
+                },
+              },
+            },
+            {
+              activityTimeline: {
+                $elemMatch: {
+                  timestamp: timeRange,
+                  'metadata.newLeadStatus': 'rejected',
+                },
+              },
+            },
+          ],
+        });
+      }
+    }
+    const search =
+      typeof params.search === 'string' ? params.search.trim() : '';
+    const hasSearch = search.length > 0;
+    const searchOrFilters: Array<Record<string, unknown>> = [];
+    if (hasSearch) {
+      searchOrFilters.push(
+        { fullName: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { contactNumber: { $regex: search, $options: 'i' } },
+        { gstNumber: { $regex: search, $options: 'i' } },
+        { leadId: { $regex: search, $options: 'i' } },
+        { publicId: { $regex: search, $options: 'i' } },
+      );
+      if (Types.ObjectId.isValid(search)) {
+        searchOrFilters.unshift({ _id: new Types.ObjectId(search) });
+      }
+    }
+    const searchFilter: Record<string, unknown> =
+      hasSearch && searchOrFilters.length ? { $or: searchOrFilters } : {};
+    const effectiveFilter =
+      andFilters.length > 1
+        ? ({ $and: andFilters } as Record<string, unknown>)
+        : filter;
     const data = await this.leadModel
-      .find(filter)
+      .find(
+        hasSearch
+          ? ({ $and: [effectiveFilter, searchFilter] } as Record<
+              string,
+              unknown
+            >)
+          : effectiveFilter,
+      )
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
-      .lean()
+      .lean<
+        Array<Lead & { _id: Types.ObjectId; createdAt?: Date; leadId?: string }>
+      >()
       .exec();
-    const total = await this.leadModel.countDocuments(filter);
+
+    const ops: Array<{
+      updateOne: {
+        filter: { _id: Types.ObjectId };
+        update: { $set: { leadId?: string; publicId?: string } };
+      };
+    }> = [];
+    for (const lead of data) {
+      const setUpdate: { leadId?: string; publicId?: string } = {};
+      const currentLeadId = (lead as unknown as { leadId?: string }).leadId;
+      if (!currentLeadId) {
+        const leadId = await this.getNextLeadId(this.toDate(lead.createdAt));
+        (lead as unknown as { leadId?: string }).leadId = leadId;
+        setUpdate.leadId = leadId;
+      }
+      const currentPublicId = (lead as unknown as { publicId?: string })
+        .publicId;
+      if (!currentPublicId) {
+        const email = (lead as unknown as { email?: string }).email ?? '';
+        const publicId = generatePublicId('lead', email);
+        (lead as unknown as { publicId?: string }).publicId = publicId;
+        setUpdate.publicId = publicId;
+      }
+      if (Object.keys(setUpdate).length) {
+        ops.push({
+          updateOne: {
+            filter: { _id: lead._id },
+            update: { $set: setUpdate },
+          },
+        });
+      }
+    }
+    if (ops.length) {
+      await this.leadModel.bulkWrite(ops);
+    }
+
+    const total = await this.leadModel.countDocuments(
+      hasSearch
+        ? ({ $and: [effectiveFilter, searchFilter] } as Record<string, unknown>)
+        : effectiveFilter,
+    );
     return {
       success: true,
       data,
@@ -545,26 +2205,99 @@ export class LeadsService {
     };
   }
 
-  async getLead(id: string) {
-    const lead = await this.leadModel.findById(id).lean().exec();
+  async updateLeadDetails(id: string, dto: UpdateLeadDto, updatedBy: string) {
+    const identityFilter = this.buildLeadIdentityFilter(id);
+    const setUpdate: UpdateQuery<Lead>['$set'] = {};
+    const allowedKeys: Array<keyof UpdateLeadDto> = [
+      'fullName',
+      'email',
+      'contactNumber',
+      'gstNumber',
+      'gstNumbers',
+      'gstCount',
+      'marketplaces',
+      'firmName',
+      'city',
+      'state',
+      'businessType',
+      'source',
+    ];
+    for (const key of allowedKeys) {
+      if (Object.prototype.hasOwnProperty.call(dto, key)) {
+        // Allow clearing to empty string; set undefined removes key
+        const value = (dto as Record<string, unknown>)[key];
+        (setUpdate as Record<string, unknown>)[key] = value;
+      }
+    }
+    if (Object.keys(setUpdate).length === 0) {
+      return this.getLead(id);
+    }
+    const updated = await this.leadModel.findOneAndUpdate(
+      identityFilter,
+      {
+        $set: setUpdate,
+        $push: {
+          activityTimeline: {
+            action: 'lead_updated',
+            description: 'Lead details updated',
+            performedBy: updatedBy,
+            timestamp: new Date(),
+            metadata: Object.keys(setUpdate),
+          },
+        },
+      },
+      { new: true },
+    );
+    if (!updated) {
+      throw new NotFoundException('Lead not found');
+    }
+    return { success: true, data: updated };
+  }
+
+  async getLead(id: string, user?: RequestUser) {
+    const salesFilter = this.buildSalesManagerLeadAccessFilter(user);
+    const identityFilter = this.buildLeadIdentityFilter(id);
+    const query = salesFilter
+      ? { $and: [identityFilter, salesFilter] }
+      : identityFilter;
+    const lead = await this.leadModel.findOne(query).exec();
     if (!lead) {
       throw new NotFoundException('Lead not found');
     }
+    if (!lead.leadId) {
+      lead.leadId = await this.getNextLeadId(
+        this.toDate((lead as unknown as { createdAt?: unknown }).createdAt),
+      );
+    }
+    if (!(lead as unknown as { publicId?: string }).publicId) {
+      (lead as unknown as { publicId?: string }).publicId = generatePublicId(
+        'lead',
+        (lead as unknown as { email?: string }).email ?? '',
+      );
+    }
+    if (lead.isModified()) {
+      await lead.save();
+    }
     return {
       success: true,
-      data: lead,
+      data: lead.toObject(),
     };
   }
 
   async addNote(id: string, content: string, addedBy: string) {
+    const identityFilter = this.buildLeadIdentityFilter(id);
     // Check if notes is an array, if not (e.g. string or null), reset it to empty array
-    const existing = await this.leadModel.findById(id).select('notes').lean();
+    const existing = await this.leadModel
+      .findOne(identityFilter)
+      .select('notes')
+      .lean<{ notes?: unknown }>()
+      .exec();
     if (existing && !Array.isArray(existing.notes)) {
-      await this.leadModel.findByIdAndUpdate(id, { $set: { notes: [] } });
+      await this.leadModel.updateOne(identityFilter, { $set: { notes: [] } });
     }
 
-    const lead = await this.leadModel.findByIdAndUpdate(
-      id,
+    const lead = await this.leadModel.findOneAndUpdate(
+      identityFilter,
       {
         $push: {
           notes: {
@@ -585,6 +2318,110 @@ export class LeadsService {
     return { success: true, data: lead };
   }
 
+  async updateNote(
+    id: string,
+    noteId: string,
+    content: string,
+    updatedBy: string,
+  ) {
+    const identityFilter = this.buildLeadIdentityFilter(id);
+    const updated = await this.leadModel.findOneAndUpdate(
+      identityFilter,
+      {
+        $set: { 'notes.$[n].content': content },
+        $push: {
+          activityTimeline: {
+            action: 'note_updated',
+            description: 'Note updated',
+            performedBy: updatedBy,
+            timestamp: new Date(),
+          },
+        },
+      },
+      {
+        arrayFilters: [{ 'n._id': new Types.ObjectId(noteId) }],
+        new: true,
+      },
+    );
+    return { success: true, data: updated };
+  }
+
+  async deleteNote(id: string, noteId: string, deletedBy: string) {
+    const identityFilter = this.buildLeadIdentityFilter(id);
+    const updated = await this.leadModel.findOneAndUpdate(
+      identityFilter,
+      {
+        $pull: { notes: { _id: new Types.ObjectId(noteId) } },
+        $push: {
+          activityTimeline: {
+            action: 'note_deleted',
+            description: 'Note deleted',
+            performedBy: deletedBy,
+            timestamp: new Date(),
+          },
+        },
+      },
+      { new: true },
+    );
+    return { success: true, data: updated };
+  }
+
+  async updateFollowUp(
+    id: string,
+    followUpId: string,
+    body: { scheduledAt?: string | Date; notes?: string },
+    updatedBy: string,
+  ) {
+    const identityFilter = this.buildLeadIdentityFilter(id);
+    const setOps: Record<string, unknown> = {};
+    if (body.scheduledAt) {
+      const d = new Date(body.scheduledAt);
+      setOps['followUps.$[f].scheduledAt'] = d;
+    }
+    if (typeof body.notes === 'string') {
+      setOps['followUps.$[f].notes'] = body.notes;
+    }
+    const updated = await this.leadModel.findOneAndUpdate(
+      identityFilter,
+      {
+        $set: setOps,
+        $push: {
+          activityTimeline: {
+            action: 'follow_up_updated',
+            description: 'Follow-up updated',
+            performedBy: updatedBy,
+            timestamp: new Date(),
+          },
+        },
+      },
+      {
+        arrayFilters: [{ 'f._id': new Types.ObjectId(followUpId) }],
+        new: true,
+      },
+    );
+    return { success: true, data: updated };
+  }
+
+  async deleteFollowUp(id: string, followUpId: string, deletedBy: string) {
+    const identityFilter = this.buildLeadIdentityFilter(id);
+    const updated = await this.leadModel.findOneAndUpdate(
+      identityFilter,
+      {
+        $pull: { followUps: { _id: new Types.ObjectId(followUpId) } },
+        $push: {
+          activityTimeline: {
+            action: 'follow_up_deleted',
+            description: 'Follow-up deleted',
+            performedBy: deletedBy,
+            timestamp: new Date(),
+          },
+        },
+      },
+      { new: true },
+    );
+    return { success: true, data: updated };
+  }
+
   async updateSubscription(
     id: string,
     config: { gstSlots: number; durationYears: number },
@@ -592,8 +2429,8 @@ export class LeadsService {
   ) {
     const amount =
       config.gstSlots * config.durationYears * PRICE_PER_GST_PER_YEAR;
-    const lead = await this.leadModel.findByIdAndUpdate(
-      id,
+    const lead = await this.leadModel.findOneAndUpdate(
+      this.buildLeadIdentityFilter(id),
       {
         $set: {
           subscriptionConfig: {
@@ -619,27 +2456,46 @@ export class LeadsService {
   }
 
   async generatePaymentLink(id: string, generatedBy: string) {
-    const lead = await this.leadModel.findById(id);
+    const identityFilter = this.buildLeadIdentityFilter(id);
+    const lead = await this.leadModel.findOne(identityFilter);
     if (!lead) throw new NotFoundException('Lead not found');
     if (!lead.subscriptionConfig) {
       throw new BadRequestException('Subscription configuration missing');
     }
+    if (!lead.leadId) {
+      lead.leadId = await this.getNextLeadId(
+        this.toDate((lead as unknown as { createdAt?: unknown }).createdAt),
+      );
+    }
+    if (!(lead as unknown as { publicId?: string }).publicId) {
+      (lead as unknown as { publicId?: string }).publicId = generatePublicId(
+        'lead',
+        (lead as unknown as { email?: string }).email ?? '',
+      );
+    }
+    if (lead.isModified()) {
+      await lead.save();
+    }
 
-    // Mock payment link generation
-    const paymentLink = `https://pay.example.com/${id}?amount=${lead.subscriptionConfig.amount}`;
-    const transactionId = `TXN-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    const expiryDate = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const paymentLink = this.buildPaymentLink({
+      sellerEmail: typeof lead.email === 'string' ? lead.email : '',
+      gstSlots: lead.subscriptionConfig.gstSlots,
+      durationYears: lead.subscriptionConfig.durationYears,
+      amount: lead.subscriptionConfig.amount,
+      expiryDate,
+    });
 
-    const updated = await this.leadModel.findByIdAndUpdate(
-      id,
+    const updated = await this.leadModel.findOneAndUpdate(
+      identityFilter,
       {
         $set: {
           paymentDetails: {
             link: paymentLink,
-            status: 'pending',
-            transactionId,
+            status: 'sent',
             generatedBy,
             generatedAt: new Date(),
-            expiryDate: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours expiry
+            expiryDate,
           },
           pipelineStage: 'Payment Link Generated',
         },
@@ -659,8 +2515,8 @@ export class LeadsService {
   }
 
   async updatePaymentStatus(id: string, status: string, updatedBy: string) {
-    const lead = await this.leadModel.findByIdAndUpdate(
-      id,
+    const lead = await this.leadModel.findOneAndUpdate(
+      this.buildLeadIdentityFilter(id),
       {
         $set: {
           'paymentDetails.status': status,
@@ -680,6 +2536,19 @@ export class LeadsService {
       },
       { new: true },
     );
+
+    if (!lead) {
+      throw new NotFoundException('Lead not found');
+    }
+
+    if (status === 'completed') {
+      await this.notificationsService.createNotification({
+        event: 'payment_completed',
+        recipientRole: 'accounts_manager',
+        message: `Payment completed for lead ${lead.fullName}. Please verify and proceed with onboarding.`,
+      });
+    }
+
     return { success: true, data: lead };
   }
 
@@ -689,8 +2558,8 @@ export class LeadsService {
     notes: string,
     createdBy: string,
   ) {
-    const lead = await this.leadModel.findByIdAndUpdate(
-      id,
+    const lead = await this.leadModel.findOneAndUpdate(
+      this.buildLeadIdentityFilter(id),
       {
         $push: {
           followUps: {
@@ -712,19 +2581,159 @@ export class LeadsService {
     return { success: true, data: lead };
   }
 
+  async scheduleDemo(
+    id: string,
+    payload: {
+      scheduledAt: Date;
+      notes?: string;
+      recipientEmail?: string;
+      sendEmail?: boolean;
+      meetLink?: string;
+    },
+    createdBy: string,
+  ) {
+    if (
+      !(payload.scheduledAt instanceof Date) ||
+      Number.isNaN(payload.scheduledAt.getTime())
+    ) {
+      throw new BadRequestException('Invalid demo date/time');
+    }
+    if (payload.scheduledAt.getTime() < Date.now()) {
+      throw new BadRequestException('Demo date/time must be in the future');
+    }
+
+    const lead = await this.leadModel
+      .findOne(this.buildLeadIdentityFilter(id))
+      .exec();
+    if (!lead) {
+      throw new NotFoundException('Lead not found');
+    }
+
+    const recipientEmail = this.normalizeEmail(
+      payload.recipientEmail || lead.email,
+    );
+    const sendEmail = Boolean(payload.sendEmail);
+    if (sendEmail && !recipientEmail) {
+      throw new BadRequestException(
+        'Recipient email is required to send demo invite',
+      );
+    }
+
+    const meetLink =
+      typeof payload.meetLink === 'string' && payload.meetLink.trim().length > 0
+        ? payload.meetLink.trim()
+        : this.generateMeetLink();
+
+    let emailSent = false;
+    if (sendEmail && recipientEmail) {
+      const fullName = (lead.fullName || '').trim() || 'Seller';
+      await this.emailService.sendEmail({
+        to: recipientEmail,
+        type: EmailType.NOTIFICATION,
+        subject: 'Demo Scheduled - EcommReco',
+        payload: {
+          message: `Hi ${fullName}, your demo is scheduled for ${payload.scheduledAt.toLocaleString()}. Join using this Google Meet link: ${meetLink}`,
+          actionUrl: meetLink,
+          actionText: 'Join Demo',
+        },
+      });
+      emailSent = true;
+    }
+
+    lead.demos = Array.isArray(lead.demos) ? lead.demos : [];
+    lead.demos.push({
+      scheduledAt: payload.scheduledAt,
+      status: 'scheduled',
+      meetLink,
+      recipientEmail: recipientEmail || undefined,
+      emailSent,
+      notes: payload.notes,
+      createdBy,
+      updatedAt: new Date(),
+    });
+    lead.demoStatus = 'scheduled';
+    lead.activityTimeline.push({
+      action: 'demo_scheduled',
+      description: `Demo scheduled for ${payload.scheduledAt.toLocaleString()}`,
+      performedBy: createdBy,
+      timestamp: new Date(),
+      metadata: {
+        meetLink,
+        recipientEmail: recipientEmail || undefined,
+        emailSent,
+      },
+    });
+
+    const saved = await lead.save();
+    return { success: true, data: saved };
+  }
+
+  async updateDemoStatus(
+    id: string,
+    demoId: string,
+    status: 'scheduled' | 'done',
+    updatedBy: string,
+  ) {
+    if (!Types.ObjectId.isValid(demoId)) {
+      throw new BadRequestException('Invalid demo ID');
+    }
+
+    const lead = await this.leadModel
+      .findOne(this.buildLeadIdentityFilter(id))
+      .exec();
+    if (!lead) {
+      throw new NotFoundException('Lead not found');
+    }
+
+    type DemoSubdoc = Lead['demos'][number] & { _id: Types.ObjectId };
+    const demos = lead.demos as unknown as DemoSubdoc[];
+    const demo = demos.find((d) => d._id.toString() === demoId);
+    if (!demo) {
+      throw new NotFoundException('Demo not found in this lead');
+    }
+
+    demo.status = status;
+    demo.updatedAt = new Date();
+
+    const hasScheduled = demos.some((d) => d.status === 'scheduled');
+    if (status === 'done' && !hasScheduled) {
+      lead.demoStatus = 'done';
+    } else if (hasScheduled || status === 'scheduled') {
+      lead.demoStatus = 'scheduled';
+    } else {
+      lead.demoStatus = 'none';
+    }
+
+    lead.activityTimeline.push({
+      action: 'demo_status_updated',
+      description: `Demo status updated to ${status}`,
+      performedBy: updatedBy,
+      timestamp: new Date(),
+      metadata: {
+        demoId,
+        status,
+      },
+    });
+
+    const saved = await lead.save();
+    return { success: true, data: saved };
+  }
+
   async updateLeadStatus(
     leadId: string,
     dto: UpdateLeadStatusDto,
     updatedBy: string = 'system',
   ) {
+    const identityFilter = this.buildLeadIdentityFilter(leadId);
     // Safety check for notes and activityTimeline fields
     const existing = await this.leadModel
-      .findById(leadId)
+      .findOne(identityFilter)
       .select('notes activityTimeline')
-      .lean();
+      .lean<{ notes?: unknown; activityTimeline?: unknown }>()
+      .exec();
 
     if (existing) {
-      const updates: any = {};
+      const updates: Record<string, unknown> = {};
       if (!Array.isArray(existing.notes)) {
         updates.notes = [];
       }
@@ -733,13 +2742,60 @@ export class LeadsService {
       }
 
       if (Object.keys(updates).length > 0) {
-        await this.leadModel.findByIdAndUpdate(leadId, { $set: updates });
+        await this.leadModel.updateOne(identityFilter, { $set: updates });
       }
     }
 
+    const legacyFromEnum = (status: Lead['status']): Lead['leadStatus'] => {
+      switch (status) {
+        case 'GENERATED':
+          return 'new';
+        case 'CONTACTED':
+          return 'contacted';
+        case 'CONNECTED':
+          return 'interested';
+        case 'FOLLOW_UP':
+          return 'contacted';
+        case 'CONVERTED':
+          return 'converted';
+        case 'LOST':
+          return 'rejected';
+      }
+    };
+    const enumFromLegacy = (leadStatus: Lead['leadStatus']): Lead['status'] => {
+      switch (leadStatus) {
+        case 'new':
+          return 'GENERATED';
+        case 'contacted':
+          return 'CONTACTED';
+        case 'interested':
+          return 'CONNECTED';
+        case 'converted':
+          return 'CONVERTED';
+        case 'rejected':
+          return 'LOST';
+      }
+    };
+
+    const requestedLegacy = dto.leadStatus;
+    const requestedEnum = dto.status;
+    if (!requestedLegacy && !requestedEnum) {
+      throw new BadRequestException({
+        success: false,
+        message: 'leadStatus or status is required',
+      });
+    }
+
+    const effectiveLeadStatus: Lead['leadStatus'] = requestedLegacy
+      ? requestedLegacy
+      : legacyFromEnum(requestedEnum as Lead['status']);
+    const effectiveStatus: Lead['status'] = requestedEnum
+      ? requestedEnum
+      : enumFromLegacy(requestedLegacy as Lead['leadStatus']);
+
     // Map leadStatus to pipelineStage
-    let pipelineStage = 'New Lead';
-    switch (dto.leadStatus) {
+    let pipelineStage: Lead['pipelineStage'] = 'New Lead';
+    switch (effectiveLeadStatus) {
       case 'new':
         pipelineStage = 'New Lead';
         break;
@@ -753,40 +2809,69 @@ export class LeadsService {
         pipelineStage = 'Converted to Seller';
         break;
       case 'rejected':
-        // Keep current stage or move to a specific rejected stage if exists
-        // For now, we'll keep it as is, or maybe 'Rejected' if the frontend supports it.
-        // The frontend SalesPipeline doesn't have 'Rejected', so we might leave it or set to last known.
-        // Let's not update pipelineStage for rejected to avoid breaking the UI flow visualization.
         break;
     }
 
-    const updateOps: any = {
-      $set: { leadStatus: dto.leadStatus },
-      $push: {
-        activityTimeline: {
-          action: 'status_updated',
-          description: `Status updated to ${dto.leadStatus}`,
-          performedBy: updatedBy,
-          timestamp: new Date(),
-        },
+    const activityTimelineEntry = {
+      action: 'status_updated',
+      description: `Status updated to ${effectiveStatus}`,
+      performedBy: updatedBy,
+      timestamp: new Date(),
+      metadata: {
+        newLeadStatus: effectiveLeadStatus,
+        newStatus: effectiveStatus,
       },
     };
 
-    if (dto.leadStatus !== 'rejected') {
-      updateOps.$set.pipelineStage = pipelineStage;
+    const setUpdate: Partial<
+      Pick<
+        Lead,
+        | 'leadStatus'
+        | 'pipelineStage'
+        | 'status'
+        | 'lastContactedAt'
+        | 'lastConnectedAt'
+        | 'convertedAt'
+      >
+    > = {
+      leadStatus: effectiveLeadStatus,
+      status: effectiveStatus,
+    };
+    if (effectiveLeadStatus !== 'rejected') {
+      setUpdate.pipelineStage = pipelineStage;
+    }
+    if (effectiveLeadStatus === 'contacted') {
+      setUpdate.lastContactedAt = new Date();
+    }
+    if (effectiveLeadStatus === 'interested') {
+      setUpdate.lastConnectedAt = new Date();
+    }
+    if (effectiveLeadStatus === 'converted') {
+      setUpdate.convertedAt = new Date();
     }
 
+    const pushUpdate: NonNullable<UpdateQuery<LeadDocument>['$push']> = {
+      activityTimeline: activityTimelineEntry,
+    };
+
     if (dto.notes) {
-      updateOps.$push.notes = {
+      pushUpdate.notes = {
         content: dto.notes,
         addedBy: updatedBy,
         createdAt: new Date(),
       };
-      updateOps.$push.activityTimeline.description += `. Note: ${dto.notes}`;
+      activityTimelineEntry.description = `${activityTimelineEntry.description}. Note: ${dto.notes}`;
     }
 
+    const updateOps: UpdateQuery<LeadDocument> = {
+      $set: setUpdate,
+      $push: pushUpdate,
+    };
+
     const updated = await this.leadModel
-      .findByIdAndUpdate(leadId, updateOps, { new: true })
+      .findOneAndUpdate(identityFilter, updateOps, {
+        new: true,
+      })
       .lean()
       .exec();
 
@@ -802,13 +2887,56 @@ export class LeadsService {
     };
   }
 
-  async convertLead(leadId: string, dto: ConvertLeadDto) {
-    const lead = await this.leadModel.findById(leadId).exec();
+  async convertLead(leadId: string, dto: ConvertLeadDto, user?: RequestUser) {
+    const identityFilter = this.buildLeadIdentityFilter(leadId);
+    const lead = await this.leadModel.findOne(identityFilter).exec();
     if (!lead) {
       throw new NotFoundException({
         success: false,
         message: 'Lead not found',
       });
+    }
+    if (typeof lead.sellerId === 'string' && lead.sellerId.trim().length > 0) {
+      const existingSeller = await this.sellerModel
+        .findById(lead.sellerId)
+        .exec();
+      if (!existingSeller) {
+        throw new NotFoundException({
+          success: false,
+          message: 'Linked seller record not found for this lead',
+        });
+      }
+      const userSync = await this.ensureSellerUserAccount(
+        existingSeller.email,
+        existingSeller.fullName,
+        existingSeller.contactNumber,
+        user?.email || 'system',
+      );
+      return {
+        success: true,
+        message: userSync.created
+          ? 'Seller already existed. Missing user account has been created.'
+          : 'Seller already existed and user account is already present.',
+        data: {
+          leadId: lead.leadId,
+          sellerId: existingSeller._id.toString(),
+          userId: userSync.userId,
+        },
+      };
+    }
+    if (!lead.leadId) {
+      lead.leadId = await this.getNextLeadId(
+        this.toDate((lead as unknown as { createdAt?: unknown }).createdAt),
+      );
+    }
+    if (!(lead as unknown as { publicId?: string }).publicId) {
+      (lead as unknown as { publicId?: string }).publicId = generatePublicId(
+        'lead',
+        (lead as unknown as { email?: string }).email ?? '',
+      );
+    }
+    if (lead.isModified()) {
+      await lead.save();
     }
     if (lead.leadStatus === 'converted') {
       throw new BadRequestException({
@@ -845,23 +2973,19 @@ export class LeadsService {
 
     // Force payment completion as per Sales Manager action
     const paymentCompletedAt = new Date();
-
-    // Create Seller Record
-    const createdSeller = await this.sellerModel.create({
-      fullName: lead.fullName,
-      contactNumber: lead.contactNumber,
-      email: lead.email,
-      gstNumber: lead.gstNumber,
-      leadId: lead._id.toString(),
-      gstSlots,
-      durationYears,
-      amount,
-      paymentCompletedAt,
-      onboardingStatus: 'payment_completed',
-    });
-    const seller = Array.isArray(createdSeller)
-      ? createdSeller[0]
-      : createdSeller;
+    const subscriptionId = this.generateSubscriptionId();
+    const leadCreatedAt = (lead as unknown as { createdAt?: Date }).createdAt;
+    const leadEmail = typeof lead.email === 'string' ? lead.email.trim() : '';
+    if (!leadEmail) {
+      throw new BadRequestException({
+        success: false,
+        message: 'Lead email is required before conversion',
+      });
+    }
+    const leadContactNumber =
+      typeof lead.contactNumber === 'string' ? lead.contactNumber.trim() : '';
+    const leadGstNumber =
+      typeof lead.gstNumber === 'string' ? lead.gstNumber.trim() : '';
 
     // Update Lead Status
     lead.leadStatus = 'converted';
@@ -878,30 +3002,169 @@ export class LeadsService {
     paymentDetails.paymentDate = paymentCompletedAt;
     lead.paymentDetails = paymentDetails;
 
+    lead.subscriptionConfig = {
+      gstSlots,
+      durationYears,
+      amount,
+      updatedAt: new Date(),
+      updatedBy: user?.email || 'sales_manager',
+    };
+
+    (
+      lead as unknown as { conversionRequestedAt?: Date }
+    ).conversionRequestedAt = paymentCompletedAt;
+    (
+      lead as unknown as { conversionRequestedBy?: string }
+    ).conversionRequestedBy = user?.email || 'system';
+    (
+      lead as unknown as { conversionSubscriptionId?: string }
+    ).conversionSubscriptionId = subscriptionId;
+    (lead as unknown as { conversionAmount?: number }).conversionAmount =
+      amount;
+    (
+      lead as unknown as { conversionLeadCreatedAt?: Date }
+    ).conversionLeadCreatedAt = leadCreatedAt;
+
+    await lead.save();
+
+    const salesManagerEmail =
+      typeof user?.email === 'string' ? user.email.toLowerCase() : '';
+
+    const seller = await this.sellerModel.create({
+      publicId: generatePublicId('seller', leadEmail.toLowerCase()),
+      fullName: lead.fullName,
+      contactNumber: leadContactNumber,
+      email: leadEmail.toLowerCase(),
+      gstNumber: leadGstNumber,
+      leadId: lead.leadId || lead._id.toString(),
+      gstSlots,
+      gstSlotsPurchased: gstSlots,
+      gstSlotsUsed: 0,
+      durationYears,
+      subscriptionDuration: durationYears,
+      amount,
+      subscriptionId,
+      onboardingStatus: 'payment_completed',
+      paymentStatus: 'payment_completed',
+      paymentDate: paymentCompletedAt,
+      paymentCompletedAt,
+      paymentCompletedBy: salesManagerEmail || 'sales_manager',
+      paymentAmount: amount,
+      paymentId: '',
+      transactionId: '',
+      username: '',
+      trainingStatus: '',
+      salesManager: salesManagerEmail,
+      firmName: '',
+      city: '',
+      state: '',
+      salesNotes: '',
+      verificationNotes: '',
+      credentialGeneratedBy: '',
+      businessType: lead.businessType || '',
+      leadSource: lead.source || '',
+      leadCreatedAt: leadCreatedAt || new Date(),
+      leadContactedAt: undefined,
+      leadConvertedAt: paymentCompletedAt,
+      leadConvertedBy: salesManagerEmail || 'sales_manager',
+      leadCreatedBy: lead.createdBy || '',
+      leadContactedBy: '',
+      paymentLinkGeneratedBy: lead.paymentDetails?.generatedBy || '',
+      accountCreatedBy: '',
+      adminApprovalRequestedBy: '',
+    });
+
+    const userSync = await this.ensureSellerUserAccount(
+      leadEmail.toLowerCase(),
+      lead.fullName || leadEmail,
+      leadContactNumber,
+      user?.email || 'sales_manager',
+    );
+
+    lead.sellerId = String((seller as unknown as { _id: unknown })._id);
     await lead.save();
 
     await this.notificationsService.createNotification({
       event: 'lead_converted',
       recipientRole: 'operations_admin', // Notify ops/accounts
-      message: `Lead ${lead.fullName} converted to seller ${seller._id.toString()}. Payment marked as completed.`,
+      message: `Lead ${lead.fullName} converted to seller ${seller.id}. Payment marked as completed.`,
     });
 
-    // Also notify accounts manager specifically if needed, or rely on 'operations_admin' role covering it.
-    // Assuming 'accounts_manager' is a separate role, let's add notification for them too.
     await this.notificationsService.createNotification({
-      event: 'lead_converted',
+      event: 'lead_conversion_requested',
       recipientRole: 'accounts_manager',
-      message: `New Seller ${lead.fullName} onboarded. Payment of ₹${amount} marked as completed.`,
+      message: `New conversion request: ${lead.fullName} (Lead ID: ${lead.leadId}). Payment marked completed.`,
     });
 
     return {
       success: true,
       data: {
-        seller,
+        leadId: lead.leadId,
+        sellerId: seller._id.toString(),
+        userId: userSync.userId,
         amount,
         paymentCompletedAt,
       },
     };
+  }
+
+  private generateTempPassword() {
+    return (
+      Math.random().toString(36).slice(-8) +
+      Math.random().toString(36).slice(-4)
+    );
+  }
+
+  private async ensureSellerUserAccount(
+    email: string,
+    fullName: string,
+    mobile: string,
+    actorEmail: string,
+  ) {
+    const normalizedEmail = email.trim().toLowerCase();
+    const existingUser = await this.userModel
+      .findOne({ email: normalizedEmail })
+      .select('_id role')
+      .lean<{ _id: Types.ObjectId; role: string }>()
+      .exec();
+
+    if (existingUser) {
+      if (existingUser.role !== 'seller') {
+        throw new BadRequestException({
+          success: false,
+          message:
+            'User with this email already exists with a different role. Cannot create seller user.',
+        });
+      }
+      return { created: false, userId: existingUser._id.toString() };
+    }
+
+    const hashedPassword = await bcrypt.hash(this.generateTempPassword(), 10);
+    const createdUser = await this.userModel.create({
+      publicId: generatePublicId('user', normalizedEmail),
+      username: normalizedEmail,
+      fullName: fullName || normalizedEmail,
+      email: normalizedEmail,
+      password: hashedPassword,
+      role: 'seller',
+      mobile,
+      status: 'approved',
+      profileCompleted: true,
+      mustChangePassword: true,
+      credentialsGeneratedAt: new Date(),
+      credentialsGeneratedBy: actorEmail,
+    });
+
+    return { created: true, userId: createdUser._id.toString() };
+  }
+
+  private generateSubscriptionId() {
+    const date = new Date();
+    const y = date.getFullYear().toString();
+    const m = (date.getMonth() + 1).toString().padStart(2, '0');
+    const d = date.getDate().toString().padStart(2, '0');
+    const rand = Math.random().toString(36).slice(2, 8).toUpperCase();
+    return `SUB-${y}${m}${d}-${rand}`;
   }
 
   private buildPaymentLink(params: {

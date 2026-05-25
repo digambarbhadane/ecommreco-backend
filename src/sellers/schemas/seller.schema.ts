@@ -5,6 +5,9 @@ export type SellerDocument = Seller & Document;
 
 @Schema({ timestamps: true })
 export class Seller {
+  @Prop({ unique: true, index: true })
+  publicId?: string;
+
   @Prop({ required: true, index: true })
   fullName: string;
 
@@ -14,11 +17,26 @@ export class Seller {
   @Prop({ required: true, index: true })
   email: string;
 
+  @Prop()
+  firmName?: string;
+
+  @Prop()
+  address?: string;
+
+  @Prop()
+  bio?: string;
+
+  @Prop()
+  businessType?: string;
+
   @Prop({ required: true })
   gstNumber: string;
 
   @Prop()
   password?: string;
+
+  @Prop()
+  username?: string;
 
   @Prop()
   leadId?: string;
@@ -27,7 +45,32 @@ export class Seller {
   gstSlots?: number;
 
   @Prop()
+  gstSlotsPurchased?: number;
+
+  @Prop({ default: 0 })
+  gstSlotsUsed?: number;
+
+  @Prop({
+    type: [
+      {
+        panNumber: { type: String, required: true },
+        businessName: { type: String },
+        createdAt: { type: Date, default: Date.now },
+      },
+    ],
+    default: [],
+  })
+  panProfiles?: {
+    panNumber: string;
+    businessName?: string;
+    createdAt: Date;
+  }[];
+
+  @Prop()
   durationYears?: number;
+
+  @Prop()
+  subscriptionDuration?: number;
 
   @Prop()
   amount?: number;
@@ -42,10 +85,28 @@ export class Seller {
   paymentCompletedAt?: Date;
 
   @Prop()
+  paymentCompletedBy?: string;
+
+  @Prop()
+  paymentVerifiedAt?: Date;
+
+  @Prop()
+  paymentVerifiedBy?: string;
+
+  @Prop()
+  verificationNotes?: string;
+
+  @Prop()
   credentialsGeneratedAt?: Date;
 
   @Prop()
+  credentialGeneratedBy?: string;
+
+  @Prop()
   credentialsApprovedAt?: Date;
+
+  @Prop()
+  credentialsApprovedBy?: string;
 
   @Prop()
   credentialsSentAt?: Date;
@@ -54,10 +115,88 @@ export class Seller {
   trainingCompletedAt?: Date;
 
   @Prop()
+  trainingCompletedBy?: string;
+
+  @Prop()
   subscriptionStartsAt?: Date;
 
   @Prop()
   subscriptionEndsAt?: Date;
+
+  @Prop()
+  subscriptionId?: string;
+
+  @Prop()
+  paymentStatus?: string;
+
+  @Prop()
+  paymentDate?: Date;
+
+  @Prop()
+  paymentAmount?: number;
+
+  @Prop()
+  paymentId?: string;
+
+  @Prop()
+  transactionId?: string;
+
+  @Prop()
+  salesManager?: string;
+
+  @Prop()
+  leadSource?: string;
+
+  @Prop()
+  leadCreatedAt?: Date;
+
+  @Prop()
+  leadContactedAt?: Date;
+
+  @Prop()
+  leadConvertedAt?: Date;
+
+  @Prop()
+  leadConvertedBy?: string;
+
+  @Prop()
+  leadCreatedBy?: string;
+
+  @Prop()
+  leadContactedBy?: string;
+
+  @Prop()
+  paymentLinkGeneratedBy?: string;
+
+  @Prop()
+  accountCreatedAt?: Date;
+
+  @Prop()
+  accountCreatedBy?: string;
+
+  @Prop()
+  adminApprovalRequestedAt?: Date;
+
+  @Prop()
+  adminApprovalRequestedBy?: string;
+
+  @Prop()
+  trainingStatus?: string;
+
+  @Prop()
+  city?: string;
+
+  @Prop()
+  state?: string;
+
+  @Prop()
+  salesNotes?: string;
+
+  @Prop()
+  assignedAccountsManager?: string;
+
+  @Prop()
+  assignedTrainingSupportManager?: string;
 
   @Prop({ default: 'payment_pending' })
   onboardingStatus:
@@ -65,12 +204,17 @@ export class Seller {
     | 'sales_contacted'
     | 'payment_pending'
     | 'payment_completed'
+    | 'payment_verified'
+    | 'account_created'
     | 'credentials_generated'
     | 'awaiting_super_admin_approval'
     | 'credentials_sent'
     | 'training_pending'
     | 'training_completed'
     | 'active';
+
+  @Prop({ default: 'active' })
+  accountStatus: 'active' | 'paused' | 'suspended' | 'suspected';
 }
 
 export const SellerSchema = SchemaFactory.createForClass(Seller);
