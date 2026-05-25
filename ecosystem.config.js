@@ -27,19 +27,6 @@ module.exports = {
         PORT: 5000,
       },
     },
-    {
-      name: 'api-prod',
-      cwd: __dirname,
-      script: 'start-dist.js',
-      interpreter: 'node',
-      instances: 1,
-      exec_mode: 'fork',
-      watch: false,
-      max_memory_restart: '600M',
-      env: {
-        NODE_ENV: 'production',
-        PORT: 5000,
-      },
-    },
+    
   ],
 };
