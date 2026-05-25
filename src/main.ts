@@ -1,6 +1,6 @@
 /// <reference types="node" />
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe, Logger } from '@nestjs/common';
+import { Logger, RequestMethod, ValidationPipe } from '@nestjs/common';
 import { SwaggerModule } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import * as express from 'express';
@@ -217,11 +217,6 @@ async function bootstrap() {
       'Swagger documentation is disabled in production (set ENABLE_SWAGGER=true to enable)',
     );
   }
-
-  const http = app.getHttpAdapter().getInstance();
-  http.get('/api/v1/health', (_req: express.Request, res: express.Response) => {
-    res.status(200).json({ status: 'ok', env: nodeEnv });
-  });
 
   await app.listen(port, '0.0.0.0');
   Logger.log(`API running on http://0.0.0.0:${port}`);

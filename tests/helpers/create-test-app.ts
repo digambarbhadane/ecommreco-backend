@@ -1,4 +1,4 @@
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication, RequestMethod, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import * as express from 'express';
 import { AppModule } from '../../src/app.module';
@@ -18,7 +18,9 @@ export async function createTestApp(): Promise<INestApplication> {
       forbidNonWhitelisted: true,
     }),
   );
-  app.setGlobalPrefix('api/v1');
+  app.setGlobalPrefix('api/v1', {
+    exclude: [{ path: '', method: RequestMethod.GET }],
+  });
   await app.init();
   return app;
 }
