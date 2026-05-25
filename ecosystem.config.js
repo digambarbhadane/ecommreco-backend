@@ -1,15 +1,13 @@
 /**
- * PM2 — EcommReco API
+ * PM2 — EcommReco API (development on EC2)
  *
- * Prerequisites:
- *   npm ci --include=dev
+ * Uses NODE_ENV=development → loads .env.development
+ *
  *   npm run build
- *   .env.development or .env.production in this directory
- *
- * Start:
  *   pm2 start ecosystem.config.js
  *   pm2 logs api-dev
- *   pm2 save && pm2 startup
+ *
+ * Do not use api-prod here unless you create .env.production.
  */
 module.exports = {
   apps: [
@@ -27,6 +25,5 @@ module.exports = {
         PORT: 5000,
       },
     },
-    
   ],
 };
