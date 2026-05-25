@@ -91,7 +91,9 @@ async function bootstrap() {
       forbidNonWhitelisted: true,
     }),
   );
-  app.setGlobalPrefix('api/v1');
+  app.setGlobalPrefix('api/v1', {
+    exclude: [{ path: '', method: RequestMethod.GET }],
+  });
 
   const config = app.get(ConfigService);
   const nodeEnv = config.get<string>('NODE_ENV') ?? 'development';
@@ -220,6 +222,7 @@ async function bootstrap() {
 
   await app.listen(port, '0.0.0.0');
   Logger.log(`API running on http://0.0.0.0:${port}`);
+  Logger.log(`Health: http://0.0.0.0:${port}/ and http://0.0.0.0:${port}/api/v1/health`);
   Logger.log(
     `CORS: allowAll=${allowAllOrigins} env=${nodeEnv} whitelist=${whitelist.size} origins`,
   );
