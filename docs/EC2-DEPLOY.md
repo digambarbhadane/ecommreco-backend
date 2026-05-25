@@ -20,6 +20,15 @@ mv .env.dev .env.development   # only if NODE_ENV=development
 
 For a production-style EC2 deploy, use `.env.production` and `NODE_ENV=production`.
 
+## Do not run `node dist/src/main.js` directly
+
+That **skips** `.env.development` / `.env.production`. You will see:
+
+- `POSTMARK_API_KEY is not set`
+- MongoDB testing `mongodb://127.0.0.1:27017/sellerspl` (defaults)
+
+Always load env first via one of the commands below.
+
 ## Typical EC2 startup (production)
 
 ```bash
@@ -29,6 +38,15 @@ npm run build
 export NODE_ENV=production
 node server.js
 # or: npm run prod
+# or: npm run start:dist:prod
+```
+
+## EC2 with `.env.development` + compiled build
+
+```bash
+npm run build
+npm run start:dist:dev
+# same as: NODE_ENV=development node start-dist.js
 ```
 
 `npm start` / `npm run prod` always set `NODE_ENV=production` and read **`.env.production`**, not `.env.development`.
