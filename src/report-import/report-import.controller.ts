@@ -99,6 +99,55 @@ export class ReportImportController {
         },
       };
     }
+    if (name && name.includes('myntra')) {
+      return {
+        success: true,
+        data: {
+          marketplace: 'myntra',
+          processingNote:
+            'Upload all 6 files together. Rows are built from Sales Revenue Packed B2C and enriched by order id. GSTR RTO marks RTO Return; GSTR RT marks Customer Return.',
+          requiredSheets: [
+            'GSTR Report Packed',
+            'MDirect Orders Report',
+            'Sales Revenue Packed B2C (primary)',
+            'GSTR Report RTO',
+            'GSTR Report RT',
+            'MDirect Returns Report',
+          ],
+          requiredColumns: {
+            'GSTR Report Packed': [
+              'seller_gstin',
+              'order_id',
+              'payment_method',
+              'seller_type',
+              'quantity',
+              'seller_price',
+              'base_value',
+              'igst_rate',
+              'igst_amt',
+              'cgst_rate',
+              'cgst_amt',
+              'sgst_rate',
+              'sgst_amt',
+              'customer_delivery_state_code',
+            ],
+            'MDirect Orders Report': ['order_release_id', 'seller_sku_code'],
+            'Sales Revenue Packed B2C': [
+              'Sale_Order_Code',
+              'Invoice_Number',
+              'Packing_Date',
+            ],
+            'GSTR Report RTO': ['tax_seller_gstin', 'order_id'],
+            'GSTR Report RT': ['tax_seller_gstin', 'shipment_id'],
+            'MDirect Returns Report': [
+              'order_release_id / order_id',
+              'return_mode',
+              'return_reason',
+            ],
+          },
+        },
+      };
+    }
     if (name && name.includes('meesho')) {
       return {
         success: true,
@@ -191,7 +240,7 @@ export class ReportImportController {
   @Post('flipkart/upload')
   @ApiOperation({
     summary: 'Upload marketplace report',
-    description: 'Upload Excel/CSV reports for Flipkart, Amazon, or Meesho. Supports multiple file fields (file, mtrB2bFile, mtrB2cFile, tcsSalesFile, tcsSalesReturnFile, orderReportFile, returnReportFile). At least one file is required.',
+    description: 'Upload Excel/CSV reports for Flipkart, Amazon, Meesho, or Myntra. Supports multiple file fields including Myntra gstrReportPackedFile, mDirectOrdersReportFile, salesRevenuePackedB2cFile, gstrReportRtoFile, gstrReportRtFile, mDirectReturnsReportFile. At least one file is required.',
   })
   @Roles('seller', 'super_admin', 'accounts_manager')
   @ApiConsumes('multipart/form-data')
@@ -205,6 +254,12 @@ export class ReportImportController {
         { name: 'tcsSalesReturnFile', maxCount: 1 },
         { name: 'orderReportFile', maxCount: 1 },
         { name: 'returnReportFile', maxCount: 1 },
+        { name: 'gstrReportPackedFile', maxCount: 1 },
+        { name: 'mDirectOrdersReportFile', maxCount: 1 },
+        { name: 'salesRevenuePackedB2cFile', maxCount: 1 },
+        { name: 'gstrReportRtoFile', maxCount: 1 },
+        { name: 'gstrReportRtFile', maxCount: 1 },
+        { name: 'mDirectReturnsReportFile', maxCount: 1 },
       ],
       {
         limits: { fileSize: 50 * 1024 * 1024 },
@@ -221,6 +276,18 @@ export class ReportImportController {
       tcsSalesReturnFile?: Array<{ buffer: Buffer; originalname: string }>;
       orderReportFile?: Array<{ buffer: Buffer; originalname: string }>;
       returnReportFile?: Array<{ buffer: Buffer; originalname: string }>;
+      gstrReportPackedFile?: Array<{ buffer: Buffer; originalname: string }>;
+      mDirectOrdersReportFile?: Array<{ buffer: Buffer; originalname: string }>;
+      salesRevenuePackedB2cFile?: Array<{
+        buffer: Buffer;
+        originalname: string;
+      }>;
+      gstrReportRtoFile?: Array<{ buffer: Buffer; originalname: string }>;
+      gstrReportRtFile?: Array<{ buffer: Buffer; originalname: string }>;
+      mDirectReturnsReportFile?: Array<{
+        buffer: Buffer;
+        originalname: string;
+      }>;
     },
     @Body() dto: UploadReportDto,
   ) {
@@ -231,6 +298,12 @@ export class ReportImportController {
     const tcsSalesReturnFile = files?.tcsSalesReturnFile?.[0];
     const orderReportFile = files?.orderReportFile?.[0];
     const returnReportFile = files?.returnReportFile?.[0];
+    const gstrReportPackedFile = files?.gstrReportPackedFile?.[0];
+    const mDirectOrdersReportFile = files?.mDirectOrdersReportFile?.[0];
+    const salesRevenuePackedB2cFile = files?.salesRevenuePackedB2cFile?.[0];
+    const gstrReportRtoFile = files?.gstrReportRtoFile?.[0];
+    const gstrReportRtFile = files?.gstrReportRtFile?.[0];
+    const mDirectReturnsReportFile = files?.mDirectReturnsReportFile?.[0];
     if (
       !singleFile &&
       !mtrB2bFile &&
@@ -238,7 +311,13 @@ export class ReportImportController {
       !tcsSalesFile &&
       !tcsSalesReturnFile &&
       !orderReportFile &&
-      !returnReportFile
+      !returnReportFile &&
+      !gstrReportPackedFile &&
+      !mDirectOrdersReportFile &&
+      !salesRevenuePackedB2cFile &&
+      !gstrReportRtoFile &&
+      !gstrReportRtFile &&
+      !mDirectReturnsReportFile
     ) {
       throw new BadRequestException('At least one file is required');
     }
@@ -251,6 +330,12 @@ export class ReportImportController {
         tcsSalesReturnFile,
         orderReportFile,
         returnReportFile,
+        gstrReportPackedFile,
+        mDirectOrdersReportFile,
+        salesRevenuePackedB2cFile,
+        gstrReportRtoFile,
+        gstrReportRtFile,
+        mDirectReturnsReportFile,
       },
       dto,
     );

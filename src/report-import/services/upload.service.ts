@@ -13,6 +13,7 @@ import {
 } from '../schemas/import-row-error.schema';
 import { FileParserService } from './file-parser.service';
 import { MeeshoImportService } from './meesho-import.service';
+import { MyntraImportService } from './myntra-import.service';
 import {
   MappingService,
   MEESHO_ORDER_ID_ALIASES,
@@ -25,6 +26,7 @@ export class UploadService {
   constructor(
     private readonly parser: FileParserService,
     private readonly meeshoImport: MeeshoImportService,
+    private readonly myntraImport: MyntraImportService,
     private readonly validation: ValidationService,
     private readonly mapping: MappingService,
     @InjectModel(ImportUpload.name)
@@ -44,6 +46,12 @@ export class UploadService {
       tcsSalesReturnFile?: { buffer: Buffer; originalname: string };
       orderReportFile?: { buffer: Buffer; originalname: string };
       returnReportFile?: { buffer: Buffer; originalname: string };
+      gstrReportPackedFile?: { buffer: Buffer; originalname: string };
+      mDirectOrdersReportFile?: { buffer: Buffer; originalname: string };
+      salesRevenuePackedB2cFile?: { buffer: Buffer; originalname: string };
+      gstrReportRtoFile?: { buffer: Buffer; originalname: string };
+      gstrReportRtFile?: { buffer: Buffer; originalname: string };
+      mDirectReturnsReportFile?: { buffer: Buffer; originalname: string };
     },
     dto: UploadReportDto,
   ) {
@@ -51,9 +59,11 @@ export class UploadService {
       await this.validation.validateOwnership(dto);
     const isAmazon = marketplaceIdentifier.includes('amazon');
     const isMeesho = marketplaceIdentifier.includes('meesho');
-    const parsedFlipkart = !isAmazon && files.file
-      ? this.parser.parseFlipkartWorkbook(files.file.buffer)
-      : null;
+    const isMyntra = marketplaceIdentifier.includes('myntra');
+    const parsedFlipkart =
+      !isAmazon && !isMeesho && !isMyntra && files.file
+        ? this.parser.parseFlipkartWorkbook(files.file.buffer)
+        : null;
     const parsedAmazonB2b = isAmazon && files.mtrB2bFile
       ? this.parser.parseAmazonWorkbook(files.mtrB2bFile.buffer)
       : null;
@@ -73,6 +83,23 @@ export class UploadService {
             returnReportFile: files.returnReportFile,
           })
         : null;
+    const parsedMyntra =
+      isMyntra &&
+      files.gstrReportPackedFile &&
+      files.mDirectOrdersReportFile &&
+      files.salesRevenuePackedB2cFile &&
+      files.gstrReportRtoFile &&
+      files.gstrReportRtFile &&
+      files.mDirectReturnsReportFile
+        ? this.myntraImport.parseFiles({
+            gstrReportPackedFile: files.gstrReportPackedFile,
+            mDirectOrdersReportFile: files.mDirectOrdersReportFile,
+            salesRevenuePackedB2cFile: files.salesRevenuePackedB2cFile,
+            gstrReportRtoFile: files.gstrReportRtoFile,
+            gstrReportRtFile: files.gstrReportRtFile,
+            mDirectReturnsReportFile: files.mDirectReturnsReportFile,
+          })
+        : null;
 
     if (isAmazon) {
       if (!files.mtrB2cFile) {
@@ -87,6 +114,19 @@ export class UploadService {
       ) {
         throw new BadRequestException(
           'Meesho upload requires all files: TCS Sales, TCS Sales Return, Order Report, Return Report',
+        );
+      }
+    } else if (isMyntra) {
+      if (
+        !files.gstrReportPackedFile ||
+        !files.mDirectOrdersReportFile ||
+        !files.salesRevenuePackedB2cFile ||
+        !files.gstrReportRtoFile ||
+        !files.gstrReportRtFile ||
+        !files.mDirectReturnsReportFile
+      ) {
+        throw new BadRequestException(
+          'Myntra upload requires all files: GSTR Report Packed, MDirect Orders Report, Sales Revenue Packed B2C, GSTR Report RTO, GSTR Report RT, MDirect Returns Report',
         );
       }
     } else if (!files.file) {
@@ -234,6 +274,82 @@ export class UploadService {
           'Seller GST profile state is required for Meesho CGST/SGST calculation',
         );
       }
+    } else if (isMyntra && parsedMyntra) {
+      const requiredGstrHeaderGroups = [
+        ['seller_gstin'],
+        ['order_id'],
+        ['payment_method'],
+        ['seller_type'],
+        ['quantity'],
+        ['seller_price'],
+        ['base_value'],
+        ['igst_rate'],
+        ['igst_amt'],
+        ['cgst_rate'],
+        ['cgst_amt'],
+        ['sgst_rate'],
+        ['sgst_amt'],
+        ['customer_delivery_state_code'],
+      ];
+      const requiredMDirectHeaderGroups = [
+        ['order_release_id'],
+        ['seller_sku_code'],
+      ];
+      const requiredSalesRevenueHeaderGroups = [
+        ['Sale_Order_Code', 'sale_order_code'],
+        ['Invoice_Number', 'invoice_number'],
+        ['Packing_Date', 'packing_date'],
+      ];
+      this.validation.validateRequiredHeaderGroups(
+        parsedMyntra.gstrReportPacked.headers,
+        requiredGstrHeaderGroups,
+        'GSTR Report Packed',
+      );
+      this.validation.validateRequiredHeaderGroups(
+        parsedMyntra.mDirectOrders.headers,
+        requiredMDirectHeaderGroups,
+        'MDirect Orders Report',
+      );
+      this.validation.validateRequiredHeaderGroups(
+        parsedMyntra.salesRevenueB2c.headers,
+        requiredSalesRevenueHeaderGroups,
+        'Sales Revenue Packed B2C',
+      );
+      this.validation.validateGstinMatch(
+        parsedMyntra.gstrReportPacked.rows,
+        gst.gstNumber,
+      );
+      this.validation.validateRequiredHeaderGroups(
+        parsedMyntra.gstrReportRto.headers,
+        [['tax_seller_gstin'], ['order_id']],
+        'GSTR Report RTO',
+      );
+      this.validation.validateRequiredHeaderGroups(
+        parsedMyntra.gstrReportRt.headers,
+        [['tax_seller_gstin'], ['shipment_id']],
+        'GSTR Report RT',
+      );
+      if (parsedMyntra.gstrReportRto.rows.length > 0) {
+        this.validation.validateGstinMatch(
+          parsedMyntra.gstrReportRto.rows,
+          gst.gstNumber,
+        );
+      }
+      if (parsedMyntra.gstrReportRt.rows.length > 0) {
+        this.validation.validateGstinMatch(
+          parsedMyntra.gstrReportRt.rows,
+          gst.gstNumber,
+        );
+      }
+      this.validation.validateRequiredHeaderGroups(
+        parsedMyntra.mDirectReturns.headers,
+        [
+          ['order_release_id', 'order_id'],
+          ['return_mode'],
+          ['return_reason'],
+        ],
+        'MDirect Returns Report',
+      );
     }
 
     const singleFileHash = files.file
@@ -257,10 +373,30 @@ export class UploadService {
     const returnReportFileHash = files.returnReportFile
       ? this.validation.computeFileHash(files.returnReportFile.buffer)
       : '';
+    const gstrReportPackedFileHash = files.gstrReportPackedFile
+      ? this.validation.computeFileHash(files.gstrReportPackedFile.buffer)
+      : '';
+    const mDirectOrdersReportFileHash = files.mDirectOrdersReportFile
+      ? this.validation.computeFileHash(files.mDirectOrdersReportFile.buffer)
+      : '';
+    const salesRevenuePackedB2cFileHash = files.salesRevenuePackedB2cFile
+      ? this.validation.computeFileHash(files.salesRevenuePackedB2cFile.buffer)
+      : '';
+    const gstrReportRtoFileHash = files.gstrReportRtoFile
+      ? this.validation.computeFileHash(files.gstrReportRtoFile.buffer)
+      : '';
+    const gstrReportRtFileHash = files.gstrReportRtFile
+      ? this.validation.computeFileHash(files.gstrReportRtFile.buffer)
+      : '';
+    const mDirectReturnsReportFileHash = files.mDirectReturnsReportFile
+      ? this.validation.computeFileHash(files.mDirectReturnsReportFile.buffer)
+      : '';
     const fileHash = isAmazon
       ? `amazon|b2c:${b2cFileHash}|b2b:${b2bFileHash || 'none'}`
       : isMeesho
         ? `meesho|tcsSales:${tcsSalesFileHash}|tcsSalesReturn:${tcsSalesReturnFileHash}|order:${orderReportFileHash}|return:${returnReportFileHash}`
+        : isMyntra
+          ? `myntra|gstr:${gstrReportPackedFileHash}|mdirect:${mDirectOrdersReportFileHash}|sales:${salesRevenuePackedB2cFileHash}|rto:${gstrReportRtoFileHash}|rt:${gstrReportRtFileHash}|returns:${mDirectReturnsReportFileHash}`
       : `single:${singleFileHash}`;
     const normalizedRows: Array<
       NormalizedImportRow & {
@@ -297,6 +433,10 @@ export class UploadService {
       );
       normalizedRows.push(...meeshoResult.rows);
       rowErrors.push(...meeshoResult.errors);
+    } else if (isMyntra && parsedMyntra) {
+      const myntraResult = this.myntraImport.buildNormalizedRows(parsedMyntra);
+      normalizedRows.push(...myntraResult.rows);
+      rowErrors.push(...myntraResult.errors);
     } else if (parsedFlipkart) {
       parsedFlipkart.salesRows.forEach((row) => {
         try {
@@ -362,6 +502,15 @@ export class UploadService {
               orderReportFileHash,
               returnReportFileHash,
             ].filter(Boolean)
+          : isMyntra
+            ? [
+                gstrReportPackedFileHash,
+                mDirectOrdersReportFileHash,
+                salesRevenuePackedB2cFileHash,
+                gstrReportRtoFileHash,
+                gstrReportRtFileHash,
+                mDirectReturnsReportFileHash,
+              ].filter(Boolean)
         : [singleFileHash].filter(Boolean),
     });
     await this.validation.ensureNotDuplicate({
@@ -383,6 +532,8 @@ export class UploadService {
         ? `${files.mtrB2bFile?.originalname ?? 'MTR-B2B'} + ${files.mtrB2cFile?.originalname ?? 'MTR-B2C'}`
         : isMeesho
           ? `${files.tcsSalesFile?.originalname ?? 'TCS-Sales'} + ${files.tcsSalesReturnFile?.originalname ?? 'TCS-Sales-Return'} + ${files.orderReportFile?.originalname ?? 'Order-Report'} + ${files.returnReportFile?.originalname ?? 'Return-Report'}`
+          : isMyntra
+            ? `${files.gstrReportPackedFile?.originalname ?? 'GSTR-Packed'} + ${files.mDirectOrdersReportFile?.originalname ?? 'MDirect-Orders'} + ${files.salesRevenuePackedB2cFile?.originalname ?? 'Sales-Revenue-B2C'} + ${files.gstrReportRtoFile?.originalname ?? 'GSTR-RTO'} + ${files.gstrReportRtFile?.originalname ?? 'GSTR-RT'} + ${files.mDirectReturnsReportFile?.originalname ?? 'MDirect-Returns'}`
         : (files.file?.originalname ?? 'report.xlsx'),
       fileHash,
       totalRecords: normalizedRows.length,
