@@ -48,6 +48,45 @@ export const MEESHO_ORDER_ID_ALIASES = [
   'Order Number',
 ] as const;
 
+/** Sales Revenue Packed B2C — join key and invoice fields */
+export const MYNTRA_SALES_ORDER_ID_ALIASES = [
+  'Sale_Order_Code',
+  'sale_order_code',
+] as const;
+
+/** GSTR Report Packed — join key on order_id */
+export const MYNTRA_GSTR_ORDER_ID_ALIASES = ['order_id'] as const;
+
+/** MDirect Orders Report — join key on order_release_id */
+export const MYNTRA_MDIRECT_ORDER_ID_ALIASES = ['order_release_id'] as const;
+
+/** GSTR Report RTO — join key on order_id */
+export const MYNTRA_GSTR_RTO_ORDER_ID_ALIASES = ['order_id'] as const;
+
+/** GSTR Report RT — join key on shipment_id (matches Sale_Order_Code) */
+export const MYNTRA_GSTR_RT_ORDER_ID_ALIASES = ['shipment_id'] as const;
+
+/** @deprecated Use MYNTRA_GSTR_RTO_ORDER_ID_ALIASES or MYNTRA_GSTR_RT_ORDER_ID_ALIASES */
+export const MYNTRA_GSTR_RETURN_ORDER_ID_ALIASES = [
+  ...MYNTRA_GSTR_RTO_ORDER_ID_ALIASES,
+] as const;
+
+/** MDirect Returns Report — join key */
+export const MYNTRA_MDIRECT_RETURNS_ORDER_ID_ALIASES = [
+  'order_release_id',
+  'order_id',
+] as const;
+
+export const MYNTRA_DOCUMENT_TYPE_RTO = 'RTO Return';
+export const MYNTRA_DOCUMENT_TYPE_CUSTOMER_RETURN = 'Customer Return';
+
+/** @deprecated Use file-specific aliases above */
+export const MYNTRA_ORDER_ID_ALIASES = [
+  ...MYNTRA_SALES_ORDER_ID_ALIASES,
+  ...MYNTRA_GSTR_ORDER_ID_ALIASES,
+  ...MYNTRA_MDIRECT_ORDER_ID_ALIASES,
+] as const;
+
 export const normalizeStateName = (value?: string): string => {
   if (!value) return '';
   return value
@@ -383,6 +422,58 @@ const AMAZON_MAPPINGS: MappingConfig[] = [
   },
 ];
 
+/** GSTR Report Packed Excel headers → database fields */
+const MYNTRA_GSTR_MAPPINGS: MappingConfig[] = [
+  { source: ['seller_gstin'], target: 'sellerGSTIN', transform: normalizeGstin },
+  {
+    source: [...MYNTRA_GSTR_ORDER_ID_ALIASES, ...MYNTRA_SALES_ORDER_ID_ALIASES],
+    target: 'orderID',
+    transform: asString,
+  },
+  { source: ['payment_method'], target: 'paymentMode', transform: asString },
+  { source: ['seller_type'], target: 'fulfilmentType', transform: asString },
+  { source: ['quantity'], target: 'quantity', transform: asNumber },
+  { source: ['seller_price'], target: 'invoiceAmount', transform: asNumber },
+  { source: ['base_value'], target: 'taxableAmount', transform: asNumber },
+  { source: ['igst_rate'], target: 'igstRate', transform: asNumber },
+  { source: ['igst_amt'], target: 'igstAmount', transform: asNumber },
+  { source: ['cgst_rate'], target: 'cgstRate', transform: asNumber },
+  { source: ['cgst_amt'], target: 'cgstAmount', transform: asNumber },
+  { source: ['sgst_rate'], target: 'sgstRate', transform: asNumber },
+  { source: ['sgst_amt'], target: 'sgstAmount', transform: asNumber },
+  {
+    source: ['customer_delivery_state_code'],
+    target: 'stateName',
+    transform: asString,
+  },
+];
+
+/** MDirect Orders Report Excel headers → database fields */
+const MYNTRA_MDIRECT_MAPPINGS: MappingConfig[] = [
+  { source: ['seller_sku_code'], target: 'skuID', transform: asString },
+];
+
+/** MDirect Returns Report Excel headers → database fields */
+const MYNTRA_MDIRECT_RETURNS_MAPPINGS: MappingConfig[] = [
+  { source: ['return_mode'], target: 'returnReason', transform: asString },
+  {
+    source: ['return_reason'],
+    target: 'detailedReturnReason',
+    transform: asString,
+  },
+];
+
+/** Sales Revenue Packed B2C Excel headers → database fields */
+const MYNTRA_SALES_REVENUE_MAPPINGS: MappingConfig[] = [
+  {
+    source: [...MYNTRA_SALES_ORDER_ID_ALIASES],
+    target: 'orderID',
+    transform: asString,
+  },
+  { source: ['Invoice_Number', 'invoice_number'], target: 'invoiceNo', transform: asString },
+  { source: ['Packing_Date', 'packing_date'], target: 'invoiceDate', transform: asDate },
+];
+
 const MEESHO_TCS_SALES_MAPPINGS: MappingConfig[] = [
   { source: ['gstin', 'GST NO'], target: 'sellerGSTIN', transform: normalizeGstin },
   {
@@ -511,6 +602,58 @@ export class MappingService {
 
   mapAmazonRow(row: ParsedSheetRow): NormalizedImportRow {
     return this.mapRow(row, 'sales', AMAZON_MAPPINGS);
+  }
+
+  mapMyntraSalesRow(
+    salesRow: ParsedSheetRow,
+    mDirectRow?: ParsedSheetRow,
+    gstrRow?: ParsedSheetRow,
+    options?: {
+      isRtoReturn?: boolean;
+      isCustomerReturn?: boolean;
+      mDirectReturnsRow?: ParsedSheetRow;
+    },
+  ): NormalizedImportRow {
+    const base = gstrRow
+      ? this.mapRow(gstrRow, 'sales', MYNTRA_GSTR_MAPPINGS)
+      : ({ reportType: 'sales' as const, documentType: 'SALE' });
+    if (mDirectRow) {
+      const fromMdirect = this.mapRow(mDirectRow, 'sales', MYNTRA_MDIRECT_MAPPINGS);
+      if (fromMdirect.skuID) base.skuID = fromMdirect.skuID;
+    }
+    const fromSales = this.mapRow(salesRow, 'sales', MYNTRA_SALES_REVENUE_MAPPINGS);
+    if (fromSales.orderID) base.orderID = fromSales.orderID;
+    if (fromSales.invoiceNo) base.invoiceNo = fromSales.invoiceNo;
+    if (fromSales.invoiceDate) base.invoiceDate = fromSales.invoiceDate;
+    if (options?.isRtoReturn) {
+      base.documentType = MYNTRA_DOCUMENT_TYPE_RTO;
+      base.typeOfReturn = MYNTRA_DOCUMENT_TYPE_RTO;
+    } else if (options?.isCustomerReturn) {
+      base.documentType = MYNTRA_DOCUMENT_TYPE_CUSTOMER_RETURN;
+      base.typeOfReturn = MYNTRA_DOCUMENT_TYPE_CUSTOMER_RETURN;
+    } else if (!base.documentType) {
+      base.documentType = 'SALE';
+    }
+    if (options?.mDirectReturnsRow) {
+      return this.enrichMyntraFromReturns(base, options.mDirectReturnsRow);
+    }
+    return base;
+  }
+
+  enrichMyntraFromReturns(
+    mapped: NormalizedImportRow,
+    returnsRow: ParsedSheetRow,
+  ): NormalizedImportRow {
+    const fromReturns = this.mapRow(
+      returnsRow,
+      'sales',
+      MYNTRA_MDIRECT_RETURNS_MAPPINGS,
+    );
+    if (fromReturns.returnReason) mapped.returnReason = fromReturns.returnReason;
+    if (fromReturns.detailedReturnReason) {
+      mapped.detailedReturnReason = fromReturns.detailedReturnReason;
+    }
+    return mapped;
   }
 
   private mapRow(

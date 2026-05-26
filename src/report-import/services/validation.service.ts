@@ -104,8 +104,8 @@ export class ValidationService {
   validateGstinMatch(rows: ParsedSheetRow[], expectedGstin: string) {
     const distinct = new Set<string>();
     const aliasSet = new Set(
-      ['GST NO', 'Seller GSTIN', 'seller_gstin', 'gstin'].map((item) =>
-        normalizeHeader(item),
+      ['GST NO', 'Seller GSTIN', 'seller_gstin', 'tax_seller_gstin', 'gstin'].map(
+        (item) => normalizeHeader(item),
       ),
     );
     rows.forEach((row) => {
