@@ -8,6 +8,7 @@ import { Model, Types } from 'mongoose';
 import { CreateGstDto } from './dto/create-gst.dto';
 import { Gst, GstDocument } from './schemas/gst.schema';
 import { Seller, SellerDocument } from '../sellers/schemas/seller.schema';
+import { User, UserDocument } from '../users/schemas/user.schema';
 import {
   Marketplace,
   MarketplaceDocument,
@@ -19,15 +20,19 @@ export class GstsService {
     @InjectModel(Gst.name) private readonly gstModel: Model<GstDocument>,
     @InjectModel(Seller.name)
     private readonly sellerModel: Model<SellerDocument>,
+    @InjectModel(User.name)
+    private readonly userModel: Model<UserDocument>,
     @InjectModel(Marketplace.name)
     private readonly marketplaceModel: Model<MarketplaceDocument>,
   ) {}
 
   async create(dto: CreateGstDto) {
-    const seller = await this.sellerModel.findById(dto.sellerId);
+    const seller = await this.findSellerByIdentifier(dto.sellerId);
     if (!seller) {
       throw new NotFoundException('Seller not found');
     }
+    const sellerId = this.getSellerObjectIdString(seller);
+    const sellerIdAliases = this.getSellerIdAliases(seller, dto.sellerId);
 
     const gstNumber = dto.gstNumber.toUpperCase();
     const extractedPan = this.extractPanFromGst(gstNumber);
@@ -47,7 +52,7 @@ export class GstsService {
     }
 
     const sellerGsts = await this.gstModel
-      .find({ sellerId: dto.sellerId })
+      .find({ sellerId: { $in: sellerIdAliases } })
       .select('panNumber gstNumber')
       .lean()
       .exec();
@@ -106,7 +111,7 @@ export class GstsService {
     }
 
     const created = await this.gstModel.create({
-      sellerId: dto.sellerId,
+      sellerId,
       gstNumber,
       panNumber: extractedPan,
       businessName: businessName,
@@ -198,7 +203,12 @@ export class GstsService {
     const skip = Math.max(0, params.skip ?? 0);
     const filter: Record<string, unknown> = {};
     if (sellerId) {
-      filter.sellerId = sellerId;
+      const seller = await this.findSellerByIdentifier(sellerId);
+      if (seller) {
+        filter.sellerId = { $in: this.getSellerIdAliases(seller, sellerId) };
+      } else {
+        filter.sellerId = sellerId;
+      }
     }
     const data = await this.gstModel
       .find(filter)
@@ -216,8 +226,12 @@ export class GstsService {
         }
       | undefined;
     if (sellerId) {
+      const sellerForFilter = await this.findSellerByIdentifier(sellerId);
+      const sellerIdAliases = sellerForFilter
+        ? this.getSellerIdAliases(sellerForFilter, sellerId)
+        : [sellerId];
       const sellerGsts = await this.gstModel
-        .find({ sellerId })
+        .find({ sellerId: { $in: sellerIdAliases } })
         .select('panNumber gstNumber')
         .lean()
         .exec();
@@ -231,11 +245,13 @@ export class GstsService {
           sellerPanSet.add(pan);
         }
       });
-      const seller = await this.sellerModel
-        .findById(sellerId)
-        .select('gstSlots gstSlotsPurchased panProfiles')
-        .lean()
-        .exec();
+      const seller = sellerForFilter
+        ? await this.sellerModel
+            .findById(this.getSellerObjectIdString(sellerForFilter))
+            .select('gstSlots gstSlotsPurchased panProfiles')
+            .lean()
+            .exec()
+        : null;
       if (seller) {
         if (Array.isArray(seller.panProfiles)) {
           seller.panProfiles.forEach((item) => {
@@ -409,5 +425,65 @@ export class GstsService {
       throw new BadRequestException('GSTIN must match valid format');
     }
     return normalized.slice(2, 12);
+  }
+
+  private async findSellerByIdentifier(identifier: string) {
+    const value = String(identifier ?? '').trim();
+    if (!value) return null;
+    if (Types.ObjectId.isValid(value)) {
+      const sellerById = await this.sellerModel.findById(value).exec();
+      if (sellerById) return sellerById;
+    }
+    const sellerByPublicId = await this.sellerModel
+      .findOne({ publicId: value })
+      .exec();
+    if (sellerByPublicId) return sellerByPublicId;
+
+    // Seller can be authenticated through users collection (role=seller).
+    // In that case map user -> seller profile by email.
+    const user = await this.findSellerUserByIdentifier(value);
+    if (!user) return null;
+    const email = String(user.email ?? '').trim().toLowerCase();
+    if (!email) return null;
+    return this.sellerModel
+      .findOne({
+        $or: [{ email }, { username: email }],
+      })
+      .exec();
+  }
+
+  private async findSellerUserByIdentifier(identifier: string) {
+    const value = String(identifier ?? '').trim();
+    if (!value) return null;
+    if (Types.ObjectId.isValid(value)) {
+      const byId = await this.userModel
+        .findOne({ _id: value, role: 'seller' })
+        .exec();
+      if (byId) return byId;
+    }
+    return this.userModel
+      .findOne({
+        role: 'seller',
+        $or: [{ publicId: value }, { email: value }, { username: value }],
+      })
+      .exec();
+  }
+
+  private getSellerObjectIdString(seller: SellerDocument) {
+    const id = seller?._id as Types.ObjectId | string | undefined;
+    return typeof id === 'string' ? id : id?.toString?.() ?? '';
+  }
+
+  private getSellerIdAliases(seller: SellerDocument, requestedId?: string) {
+    const aliases = new Set<string>();
+    const objectId = this.getSellerObjectIdString(seller);
+    if (objectId) aliases.add(objectId);
+    if (typeof seller.publicId === 'string' && seller.publicId.trim()) {
+      aliases.add(seller.publicId.trim());
+    }
+    if (typeof requestedId === 'string' && requestedId.trim()) {
+      aliases.add(requestedId.trim());
+    }
+    return Array.from(aliases);
   }
 }
