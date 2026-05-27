@@ -4,6 +4,7 @@ import { GstsController } from './gsts.controller';
 import { GstsService } from './gsts.service';
 import { Gst, GstSchema } from './schemas/gst.schema';
 import { Seller, SellerSchema } from '../sellers/schemas/seller.schema';
+import { User, UserSchema } from '../users/schemas/user.schema';
 import {
   Marketplace,
   MarketplaceSchema,
@@ -14,6 +15,7 @@ import {
     MongooseModule.forFeature([
       { name: Gst.name, schema: GstSchema },
       { name: Seller.name, schema: SellerSchema },
+      { name: User.name, schema: UserSchema },
       { name: Marketplace.name, schema: MarketplaceSchema },
     ]),
   ],
