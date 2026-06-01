@@ -21,6 +21,7 @@ import { EmailModule } from './email/email.module';
 import { SalesActivityModule } from './sales-activity/sales-activity.module';
 import { ReportImportModule } from './report-import/report-import.module';
 import { HealthModule } from './health/health.module';
+import { PanSlotRequestsModule } from './pan-slot-requests/pan-slot-requests.module';
 import { setMongoStorageMode } from './config/mongo-connection';
 import {
   getMongoUriCandidates,
@@ -239,6 +240,7 @@ const DEFAULT_LOCAL_MONGODB_URI = 'mongodb://127.0.0.1:27017/sellerspl';
     SalesActivityModule,
     ReportImportModule,
     HealthModule,
+    PanSlotRequestsModule,
   ],
 })
 export class AppModule {}

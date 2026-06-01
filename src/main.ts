@@ -82,8 +82,8 @@ const DEFAULT_DEV_ORIGINS = [
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-  app.use(express.json({ limit: '50mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+  app.use(express.json({ limit: '10mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '10mb' }));
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -124,9 +124,6 @@ async function bootstrap() {
     if (allowAllOrigins) {
       return origin;
     }
-    if (!isProduction) {
-      return origin;
-    }
     const normalizedOrigin = normalizeOrigin(origin);
     if (isPrivateNetworkOrigin(normalizedOrigin)) {
       return origin;
@@ -138,9 +135,9 @@ async function bootstrap() {
       return origin;
     }
     Logger.warn(
-      `CORS: origin not in whitelist (${origin}); allowing to avoid browser preflight failure.`,
+      `CORS: origin not in whitelist (${origin}); denying.`,
     );
-    return origin;
+    return false;
   };
 
   app.enableCors({

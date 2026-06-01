@@ -19,6 +19,8 @@ import {
   MEESHO_ORDER_ID_ALIASES,
   NormalizedImportRow,
 } from './mapping.service';
+import { amazonImportMapping } from '../config/importMappings/amazon.mapping';
+import { flipkartImportMapping } from '../config/importMappings/flipkart.mapping';
 import { ValidationService } from './validation.service';
 
 @Injectable()
@@ -135,7 +137,7 @@ export class UploadService {
 
     if (isAmazon && parsedAmazonB2c) {
       const requiredAmazonHeaderGroups = [
-        ['Seller Gstin', 'Seller GSTIN', 'GST NO'],
+        [...amazonImportMapping.gstin.excelColumns],
         ['Order Id', 'Order ID'],
         ['Sku', 'SKU'],
         ['Hsn/sac', 'HSN Code'],
@@ -161,7 +163,12 @@ export class UploadService {
         requiredAmazonHeaderGroups,
         'Amazon MTR B2C Report',
       );
-      this.validation.validateGstinMatch(parsedAmazonB2c.rows, gst.gstNumber);
+      this.validation.validateGstinMatch(
+        parsedAmazonB2c.rows,
+        gst.gstNumber,
+        marketplaceIdentifier,
+        parsedAmazonB2c.headers,
+      );
 
       if (parsedAmazonB2b) {
         this.validation.validateRequiredHeaderGroups(
@@ -174,11 +181,16 @@ export class UploadService {
           [['Customer Bill To Gstid'], ['Buyer Name']],
           'Amazon MTR B2B Report',
         );
-        this.validation.validateGstinMatch(parsedAmazonB2b.rows, gst.gstNumber);
+        this.validation.validateGstinMatch(
+          parsedAmazonB2b.rows,
+          gst.gstNumber,
+          marketplaceIdentifier,
+          parsedAmazonB2b.headers,
+        );
       }
     } else if (parsedFlipkart) {
       const requiredSalesHeaderGroups = [
-        ['GST NO', 'Seller GSTIN'],
+        [...flipkartImportMapping.gstin.excelColumns],
         ['Order ID'],
         ['Invoice No', 'Buyer Invoice ID'],
         ['Buyer Invoice Date'],
@@ -191,7 +203,7 @@ export class UploadService {
         ['Document Type', 'Event Type'],
       ];
       const requiredCashbackHeaderGroups = [
-        ['GST NO', 'Seller GSTIN'],
+        [...flipkartImportMapping.gstin.excelColumns],
         ['Order ID'],
         [
           'Invoice No',
@@ -217,6 +229,12 @@ export class UploadService {
       this.validation.validateGstinMatch(
         [...parsedFlipkart.salesRows, ...parsedFlipkart.cashbackRows],
         gst.gstNumber,
+        marketplaceIdentifier,
+        [
+          ...parsedFlipkart.headers['Sales Report'],
+          ...parsedFlipkart.headers['Cash Back Report'],
+        ],
+        parsedFlipkart.gstinValues,
       );
     } else if (isMeesho && parsedMeesho) {
       const requiredTcsSalesHeaderGroups = [
@@ -268,6 +286,8 @@ export class UploadService {
       this.validation.validateGstinMatch(
         parsedMeesho.tcsSales.rows,
         gst.gstNumber,
+        marketplaceIdentifier,
+        parsedMeesho.tcsSales.headers,
       );
       if (!gst.state?.trim()) {
         throw new BadRequestException(
@@ -318,6 +338,8 @@ export class UploadService {
       this.validation.validateGstinMatch(
         parsedMyntra.gstrReportPacked.rows,
         gst.gstNumber,
+        marketplaceIdentifier,
+        parsedMyntra.gstrReportPacked.headers,
       );
       this.validation.validateRequiredHeaderGroups(
         parsedMyntra.gstrReportRto.headers,
@@ -333,12 +355,16 @@ export class UploadService {
         this.validation.validateGstinMatch(
           parsedMyntra.gstrReportRto.rows,
           gst.gstNumber,
+          marketplaceIdentifier,
+          parsedMyntra.gstrReportRto.headers,
         );
       }
       if (parsedMyntra.gstrReportRt.rows.length > 0) {
         this.validation.validateGstinMatch(
           parsedMyntra.gstrReportRt.rows,
           gst.gstNumber,
+          marketplaceIdentifier,
+          parsedMyntra.gstrReportRt.headers,
         );
       }
       this.validation.validateRequiredHeaderGroups(

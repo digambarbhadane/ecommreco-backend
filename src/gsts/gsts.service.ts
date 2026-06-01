@@ -26,7 +26,12 @@ export class GstsService {
     private readonly marketplaceModel: Model<MarketplaceDocument>,
   ) {}
 
-  async create(dto: CreateGstDto) {
+  async create(
+    dto: CreateGstDto,
+    options?: {
+      actorRole?: string;
+    },
+  ) {
     const seller = await this.findSellerByIdentifier(dto.sellerId);
     if (!seller) {
       throw new NotFoundException('Seller not found');
@@ -79,14 +84,23 @@ export class GstsService {
     }
 
     const isExistingPanForSeller = sellerPanSet.has(extractedPan);
-    const purchasedPanSlots = Math.max(
+    let purchasedPanSlots = Math.max(
       0,
       Number(seller.gstSlotsPurchased ?? seller.gstSlots ?? 0),
     );
     const usedPanSlots = sellerPanSet.size;
+    const isSuperAdmin = options?.actorRole === 'super_admin';
     if (!isExistingPanForSeller && usedPanSlots >= purchasedPanSlots) {
-      throw new BadRequestException(
-        'You have reached your GST limit. Please upgrade your plan to add a new PAN.',
+      if (!isSuperAdmin) {
+        throw new BadRequestException(
+          'You have reached your GST limit. Please upgrade your plan to add a new PAN.',
+        );
+      }
+      purchasedPanSlots += 1;
+      seller.gstSlotsPurchased = purchasedPanSlots;
+      seller.gstSlots = Math.max(
+        Number(seller.gstSlots ?? 0),
+        purchasedPanSlots,
       );
     }
 

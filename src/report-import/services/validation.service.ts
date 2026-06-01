@@ -19,7 +19,14 @@ import {
   ImportUpload,
   ImportUploadDocument,
 } from '../schemas/import-upload.schema';
-import { normalizeHeader, ParsedSheetRow } from './mapping.service';
+import { resolveMarketplaceImportMapping } from '../config/importMappings';
+import {
+  extractGstinsFromRows,
+  headerMatchesExcelColumn,
+  headersHaveGstColumn,
+  normalizeGstinValue,
+} from '../config/importMappings/gst-column.util';
+import { ParsedSheetRow } from './mapping.service';
 
 @Injectable()
 export class ValidationService {
@@ -84,10 +91,9 @@ export class ValidationService {
     requiredHeaderGroups: string[][],
     sheetName: string,
   ) {
-    const normalized = new Set(headers.map((item) => normalizeHeader(item)));
     const missing = requiredHeaderGroups.filter((aliases) => {
-      const hit = aliases.some((alias) =>
-        normalized.has(normalizeHeader(alias)),
+      const hit = headers.some((header) =>
+        aliases.some((alias) => headerMatchesExcelColumn(header, alias)),
       );
       return !hit;
     });
@@ -101,31 +107,62 @@ export class ValidationService {
     }
   }
 
-  validateGstinMatch(rows: ParsedSheetRow[], expectedGstin: string) {
-    const distinct = new Set<string>();
-    const aliasSet = new Set(
-      ['GST NO', 'Seller GSTIN', 'seller_gstin', 'tax_seller_gstin', 'gstin'].map(
-        (item) => normalizeHeader(item),
-      ),
-    );
-    rows.forEach((row) => {
-      const match = Object.entries(row).find(([key]) =>
-        aliasSet.has(normalizeHeader(key)),
-      );
-      const raw = match?.[1];
-      const value =
-        typeof raw === 'string' || typeof raw === 'number'
-          ? String(raw).trim().toUpperCase()
-          : '';
-      if (value) distinct.add(value);
+  validateGstinMatch(
+    rows: ParsedSheetRow[],
+    expectedGstin: string,
+    marketplaceIdentifier: string,
+    fileHeaders: string[] = [],
+    fallbackGstins: string[] = [],
+  ) {
+    const mapping = resolveMarketplaceImportMapping(marketplaceIdentifier);
+    const gstColumn = mapping.gstin.excelColumns[0];
+    const selectedGSTIN = normalizeGstinValue(expectedGstin) ?? '';
+
+    // eslint-disable-next-line no-console
+    console.log('Marketplace:', mapping.displayName);
+    // eslint-disable-next-line no-console
+    console.log('Selected GST:', selectedGSTIN);
+    // eslint-disable-next-line no-console
+    console.log('Mapped GST Column:', gstColumn);
+
+    const { values, foundColumn } = extractGstinsFromRows(rows, mapping);
+    fallbackGstins.forEach((raw) => {
+      const gstin = normalizeGstinValue(raw);
+      if (gstin) values.add(gstin);
     });
-    if (!distinct.size) {
-      throw new BadRequestException('GSTIN column is missing or empty in file');
+    // eslint-disable-next-line no-console
+    console.log(
+      '[GST_DEBUG_v2] rowValues=',
+      [...values].join('|') || '(none)',
+      'fallback=',
+      fallbackGstins.join('|') || '(none)',
+    );
+    const headerHasGstColumn = headersHaveGstColumn(
+      fileHeaders,
+      mapping.gstin.excelColumns,
+    );
+    const gstColumnFound =
+      foundColumn || headerHasGstColumn || fallbackGstins.length > 0;
+
+    // eslint-disable-next-line no-console
+    console.log(
+      'GST Found In File:',
+      values.size > 0 ? [...values].join(', ') : '(none)',
+    );
+
+    if (!gstColumnFound) {
+      throw new BadRequestException(
+        `GSTIN column not found in uploaded file.\n\nExpected column:\n${gstColumn}\n\nMarketplace:\n${mapping.displayName}`,
+      );
     }
-    if (
-      distinct.size > 1 ||
-      !distinct.has(expectedGstin.trim().toUpperCase())
-    ) {
+
+    if (!values.size) {
+      throw new BadRequestException(
+        `GSTIN column "${gstColumn}" was found in the file but contains no valid GSTIN values. Ensure the Seller GSTIN column is filled on the Sales Report and Cash Back Report sheets.`,
+      );
+    }
+
+    if (values.size > 1 || !values.has(selectedGSTIN)) {
       throw new BadRequestException(
         'GSTIN in file does not match selected GST profile',
       );

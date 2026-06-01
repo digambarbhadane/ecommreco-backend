@@ -28,7 +28,8 @@ export class Marketplace {
 }
 
 export const MarketplaceSchema = SchemaFactory.createForClass(Marketplace);
+// One platform can be linked once per seller per GST profile.
 MarketplaceSchema.index(
-  { sellerId: 1, platformMarketplaceId: 1 },
+  { sellerId: 1, platformMarketplaceId: 1, gstId: 1 },
   { unique: true },
 );

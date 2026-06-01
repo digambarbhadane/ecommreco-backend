@@ -292,10 +292,10 @@ export class LeadsController {
     });
   }
 
-  // Dev/testing: public notes listing without auth, uses the same search filters
-  // Do not expose in production environments
   @Get('notes-public')
-  @ApiOperation({ summary: 'List notes (public, dev only)', description: 'Development-only public endpoint without authentication. Do not expose in production.' })
+  @ApiOperation({ summary: 'List notes (dev only)', description: 'Development-only endpoint.' })
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('super_admin', 'sales_manager')
   listNotesPublic(
     @Query('page') page?: string,
     @Query('limit') limit?: string,
@@ -316,15 +316,10 @@ export class LeadsController {
     });
   }
 
-  // Dev/testing: public follow-ups listing without auth, uses the same search filters
-  // Do not expose in production environments
   @Get('follow-ups-public')
-  @ApiOperation({
-    summary: 'List follow-ups (public, dev only)',
-    description:
-      'Development-only public endpoint without authentication. Do not expose in production.',
-    security: [],
-  })
+  @ApiOperation({ summary: 'List follow-ups (dev only)', description: 'Development-only endpoint.' })
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('super_admin', 'sales_manager')
   listFollowUpsPublic(
     @Query('page') page?: string,
     @Query('limit') limit?: string,
