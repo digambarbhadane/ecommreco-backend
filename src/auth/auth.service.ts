@@ -615,7 +615,8 @@ export class AuthService implements OnModuleInit {
     ) {
       return bcrypt.compare(provided, stored);
     }
-    return stored === provided;
+    this.logger.warn('Stored password is not bcrypt format; rejecting login');
+    return false;
   }
 
   private buildIdentifierQuery(identifier: string) {
@@ -661,26 +662,20 @@ export class AuthService implements OnModuleInit {
 
   private assertSetupToken(params: { setupToken?: string }) {
     const expected = this.configService.get<string>('SUPER_ADMIN_SETUP_TOKEN');
-    const nodeEnv = this.configService.get<string>('NODE_ENV') ?? 'development';
-    if (nodeEnv === 'production') {
-      if (!expected || expected.length === 0) {
-        throw new UnauthorizedException({
-          success: false,
-          message: 'Bootstrap is not enabled',
-          errorCode: 'BOOTSTRAP_DISABLED',
-        });
-      }
-      if (!params.setupToken || params.setupToken !== expected) {
-        throw new UnauthorizedException({
-          success: false,
-          message: 'Invalid setup token',
-          errorCode: 'INVALID_SETUP_TOKEN',
-        });
-      }
-      return;
+    if (!expected || expected.length === 0) {
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Bootstrap is not enabled',
+        errorCode: 'BOOTSTRAP_DISABLED',
+      });
     }
-    void expected;
-    void params;
+    if (!params.setupToken || params.setupToken !== expected) {
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Invalid setup token',
+        errorCode: 'INVALID_SETUP_TOKEN',
+      });
+    }
   }
 
   private assertDatabaseConnected() {

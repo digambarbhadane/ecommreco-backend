@@ -1,4 +1,8 @@
 import { Injectable } from '@nestjs/common';
+import { amazonImportMapping } from '../config/importMappings/amazon.mapping';
+import { flipkartImportMapping } from '../config/importMappings/flipkart.mapping';
+import { headerMatchesExcelColumn } from '../config/importMappings/gst-column.util';
+import { normalizeHeader as normalizeHeaderUtil } from '../utils/header.util';
 
 export type ParsedSheetRow = {
   __sheetName: string;
@@ -100,11 +104,10 @@ export const getRowCell = (
   row: ParsedSheetRow,
   ...aliases: string[]
 ): unknown => {
-  const aliasSet = new Set(aliases.map((item) => normalizeHeader(item)));
-  const entry = Object.entries(row).find(
-    ([key]) =>
-      !key.startsWith('__') && aliasSet.has(normalizeHeader(key)),
-  );
+  const entry = Object.entries(row).find(([key]) => {
+    if (key.startsWith('__')) return false;
+    return aliases.some((alias) => headerMatchesExcelColumn(key, alias));
+  });
   return entry?.[1];
 };
 
@@ -114,16 +117,7 @@ type MappingConfig = {
   transform?: (value: unknown, fullRow: ParsedSheetRow) => unknown;
 };
 
-export const normalizeHeader = (value: string) =>
-  value
-    .trim()
-    .toLowerCase()
-    .replace(/[_-]+/g, ' ')
-    .replace(/\s*\/\s*/g, '/')
-    .replace(/\s+/g, ' ')
-    .replace(/\s*\([^)]*\)\s*/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+export const normalizeHeader = normalizeHeaderUtil;
 
 const asString = (value: unknown): string | undefined => {
   if (value === null || value === undefined) return undefined;
@@ -191,7 +185,7 @@ const asDate = (value: unknown): string | undefined => {
 
 const SALES_MAPPINGS: MappingConfig[] = [
   {
-    source: ['GST NO', 'Seller GSTIN'],
+    source: [...flipkartImportMapping.gstin.excelColumns],
     target: 'sellerGSTIN',
     transform: normalizeGstin,
   },
@@ -288,7 +282,7 @@ const SALES_MAPPINGS: MappingConfig[] = [
 
 const CASHBACK_MAPPINGS: MappingConfig[] = [
   {
-    source: ['GST NO', 'Seller GSTIN'],
+    source: [...flipkartImportMapping.gstin.excelColumns],
     target: 'sellerGSTIN',
     transform: normalizeGstin,
   },
@@ -350,7 +344,7 @@ const CASHBACK_MAPPINGS: MappingConfig[] = [
 
 const AMAZON_MAPPINGS: MappingConfig[] = [
   {
-    source: ['Seller Gstin', 'Seller GSTIN', 'GST NO'],
+    source: [...amazonImportMapping.gstin.excelColumns],
     target: 'sellerGSTIN',
     transform: normalizeGstin,
   },
@@ -668,13 +662,20 @@ export class MappingService {
       value,
     }));
     mappings.forEach((config) => {
-      const aliasList = config.source.map((item) => normalizeHeader(item));
+      const aliasList = config.source;
       const currentValue = aliasList
-        .map(
-          (alias) =>
-            normalizedRowEntries.find((entry) => entry.keyNorm === alias)
-              ?.value,
-        )
+        .map((alias) => {
+          const exact = normalizedRowEntries.find(
+            (entry) => entry.keyNorm === normalizeHeader(alias),
+          )?.value;
+          if (exact !== undefined && exact !== null && exact !== '') {
+            return exact;
+          }
+          const fuzzy = normalizedRowEntries.find((entry) =>
+            headerMatchesExcelColumn(entry.key, alias),
+          )?.value;
+          return fuzzy;
+        })
         .find((value) => value !== undefined && value !== null && value !== '');
       if (
         currentValue === undefined ||

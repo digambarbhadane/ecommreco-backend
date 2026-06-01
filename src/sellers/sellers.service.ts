@@ -434,8 +434,7 @@ export class SellersService {
     }
     const password =
       dto.password ??
-      Math.random().toString(36).slice(-8) +
-        Math.random().toString(36).slice(-2);
+      require('crypto').randomBytes(6).toString('hex');
     const hashedPassword = await bcrypt.hash(password, 10);
     seller.password = hashedPassword;
     seller.username = seller.email;

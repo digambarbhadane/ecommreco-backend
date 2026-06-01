@@ -50,6 +50,20 @@ export class Seller {
   @Prop({ default: 0 })
   gstSlotsUsed?: number;
 
+  /** PAN slots from base subscription plan */
+  @Prop()
+  allocatedPanSlots?: number;
+
+  /** Additional PAN slots purchased via add-on requests */
+  @Prop({ default: 0 })
+  purchasedPanSlots?: number;
+
+  @Prop()
+  usedPanSlots?: number;
+
+  @Prop()
+  totalPanSlots?: number;
+
   @Prop({
     type: [
       {

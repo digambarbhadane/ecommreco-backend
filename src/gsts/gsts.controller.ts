@@ -12,13 +12,19 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
+import { Request } from 'express';
 import { AuthGuard } from '@nestjs/passport';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { CreateGstDto } from './dto/create-gst.dto';
 import { GstsService } from './gsts.service';
+
+type RequestWithUser = Request & {
+  user?: { role?: string };
+};
 
 @ApiTags('GST')
 @ApiBearerAuth()
@@ -30,8 +36,8 @@ export class GstsController {
   @Post()
   @ApiOperation({ summary: 'Create GST entry', description: 'Add a single GST entry for a seller.' })
   @Roles('seller', 'super_admin')
-  create(@Body() dto: CreateGstDto) {
-    return this.gstsService.create(dto);
+  create(@Body() dto: CreateGstDto, @Req() req: RequestWithUser) {
+    return this.gstsService.create(dto, { actorRole: req.user?.role });
   }
 
   @Post('import')
