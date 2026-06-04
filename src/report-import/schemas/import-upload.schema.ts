@@ -40,6 +40,9 @@ export class ImportUpload {
 
   @Prop({ required: true, default: 'completed' })
   status: 'processing' | 'completed' | 'failed';
+
+  @Prop()
+  errorMessage?: string;
 }
 
 export const ImportUploadSchema = SchemaFactory.createForClass(ImportUpload);

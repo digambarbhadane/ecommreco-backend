@@ -4,7 +4,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
+import { parseObjectId } from '../../common/mongo-id.util';
 import * as crypto from 'crypto';
 import { Gst, GstDocument } from '../../gsts/schemas/gst.schema';
 import {
@@ -19,14 +20,21 @@ import {
   ImportUpload,
   ImportUploadDocument,
 } from '../schemas/import-upload.schema';
-import { resolveMarketplaceImportMapping } from '../config/importMappings';
+import {
+  MarketplaceImportMapping,
+  resolveMarketplaceImportMapping,
+} from '../config/importMappings';
 import {
   extractGstinsFromRows,
   headerMatchesExcelColumn,
   headersHaveGstColumn,
-  normalizeGstinValue,
+  parseGstinFromCell,
 } from '../config/importMappings/gst-column.util';
 import { ParsedSheetRow } from './mapping.service';
+import {
+  buildMyntraValidationMessage,
+  MyntraReportValidationInput,
+} from '../utils/myntra-import.validation';
 
 @Injectable()
 export class ValidationService {
@@ -45,7 +53,10 @@ export class ValidationService {
     gstId: string;
     marketplaceId: string;
   }) {
-    const gst = await this.gstModel.findById(payload.gstId).lean().exec();
+    const gst = await this.gstModel
+      .findById(parseObjectId(payload.gstId, 'GST id'))
+      .lean()
+      .exec();
     if (
       !gst ||
       String(gst.sellerId) !== String(payload.sellerId).trim()
@@ -53,7 +64,7 @@ export class ValidationService {
       throw new NotFoundException('Selected GST profile not found');
     }
     const marketplace = await this.marketplaceModel
-      .findById(payload.marketplaceId)
+      .findById(parseObjectId(payload.marketplaceId, 'marketplace id'))
       .lean()
       .exec();
     if (
@@ -70,10 +81,14 @@ export class ValidationService {
     let platformName = '';
     let platformSlug = '';
     if (marketplace.platformMarketplaceId) {
-      const platform = await this.platformMarketplaceModel
-        .findById(marketplace.platformMarketplaceId)
-        .lean()
-        .exec();
+      const platform = Types.ObjectId.isValid(
+        String(marketplace.platformMarketplaceId),
+      )
+        ? await this.platformMarketplaceModel
+            .findById(marketplace.platformMarketplaceId)
+            .lean()
+            .exec()
+        : null;
       platformName = String(platform?.name ?? '').trim().toLowerCase();
       platformSlug = String(platform?.slug ?? '').trim().toLowerCase();
     }
@@ -107,16 +122,29 @@ export class ValidationService {
     }
   }
 
+  validateMyntraImportBundle(
+    reports: MyntraReportValidationInput[],
+    expectedGstin: string,
+  ) {
+    const message = buildMyntraValidationMessage(reports, expectedGstin);
+    if (message) {
+      throw new BadRequestException(message);
+    }
+  }
+
   validateGstinMatch(
     rows: ParsedSheetRow[],
     expectedGstin: string,
     marketplaceIdentifier: string,
     fileHeaders: string[] = [],
     fallbackGstins: string[] = [],
+    mappingOverride?: MarketplaceImportMapping,
   ) {
-    const mapping = resolveMarketplaceImportMapping(marketplaceIdentifier);
+    const mapping =
+      mappingOverride ??
+      resolveMarketplaceImportMapping(marketplaceIdentifier);
     const gstColumn = mapping.gstin.excelColumns[0];
-    const selectedGSTIN = normalizeGstinValue(expectedGstin) ?? '';
+    const selectedGSTIN = parseGstinFromCell(expectedGstin) ?? '';
 
     // eslint-disable-next-line no-console
     console.log('Marketplace:', mapping.displayName);
@@ -127,7 +155,7 @@ export class ValidationService {
 
     const { values, foundColumn } = extractGstinsFromRows(rows, mapping);
     fallbackGstins.forEach((raw) => {
-      const gstin = normalizeGstinValue(raw);
+      const gstin = parseGstinFromCell(raw);
       if (gstin) values.add(gstin);
     });
     // eslint-disable-next-line no-console
@@ -157,8 +185,18 @@ export class ValidationService {
     }
 
     if (!values.size) {
+      const fillHint =
+        mapping.key === 'flipkart'
+          ? 'Ensure the Seller GSTIN column is filled on the Sales Report and Cash Back Report sheets.'
+          : mapping.key === 'meesho'
+            ? 'Ensure the gstin column is filled in TCS Sales Report.'
+            : mapping.key === 'myntra'
+              ? 'Ensure seller_gstin (or tax_seller_gstin) is filled in GSTR Report Packed.'
+              : mapping.key === 'amazon'
+                ? 'Ensure the Seller Gstin column is filled in your MTR report.'
+                : 'Check that the GSTIN column is filled in your report.';
       throw new BadRequestException(
-        `GSTIN column "${gstColumn}" was found in the file but contains no valid GSTIN values. Ensure the Seller GSTIN column is filled on the Sales Report and Cash Back Report sheets.`,
+        `GSTIN column "${gstColumn}" was found in the file but contains no valid GSTIN values. ${fillHint}`,
       );
     }
 
@@ -181,26 +219,25 @@ export class ValidationService {
     minInvoiceDate?: string;
     maxInvoiceDate?: string;
     totalRecords: number;
+    excludeUploadId?: string;
   }) {
+    const baseFilter = this.successfulUploadFilter(payload, payload.excludeUploadId);
+
     const byHash = await this.uploadModel
       .findOne({
-        sellerId: payload.sellerId,
-        gstin: payload.gstin,
-        marketplace: payload.marketplace,
+        ...baseFilter,
         fileHash: payload.fileHash,
       })
       .lean()
       .exec();
     if (byHash) {
-      throw new BadRequestException('File already uploaded');
+      throw this.duplicateUploadException(byHash);
     }
 
     if (payload.minInvoiceDate && payload.maxInvoiceDate) {
       const byFingerprint = await this.uploadModel
         .findOne({
-          sellerId: payload.sellerId,
-          gstin: payload.gstin,
-          marketplace: payload.marketplace,
+          ...baseFilter,
           minInvoiceDate: payload.minInvoiceDate,
           maxInvoiceDate: payload.maxInvoiceDate,
           totalRecords: payload.totalRecords,
@@ -208,7 +245,7 @@ export class ValidationService {
         .lean()
         .exec();
       if (byFingerprint) {
-        throw new BadRequestException('File already uploaded');
+        throw this.duplicateUploadException(byFingerprint);
       }
     }
   }
@@ -218,6 +255,7 @@ export class ValidationService {
     gstin: string;
     marketplace: string;
     fileHashes: string[];
+    excludeUploadId?: string;
   }) {
     const uniqueHashes = Array.from(
       new Set(payload.fileHashes.filter((hash) => typeof hash === 'string' && hash.length > 0)),
@@ -228,9 +266,7 @@ export class ValidationService {
       value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const existing = await this.uploadModel
       .findOne({
-        sellerId: payload.sellerId,
-        gstin: payload.gstin,
-        marketplace: payload.marketplace,
+        ...this.successfulUploadFilter(payload, payload.excludeUploadId),
         $or: uniqueHashes.flatMap((hash) => [
           { fileHash: hash },
           {
@@ -244,7 +280,42 @@ export class ValidationService {
       .exec();
 
     if (existing) {
-      throw new BadRequestException('File already uploaded');
+      throw this.duplicateUploadException(existing);
     }
+  }
+
+  /** Only block when a prior import completed with saved rows. */
+  private successfulUploadFilter(
+    payload: { sellerId: string; gstin: string; marketplace: string },
+    excludeUploadId?: string,
+  ): Record<string, unknown> {
+    const filter: Record<string, unknown> = {
+      sellerId: payload.sellerId,
+      gstin: payload.gstin,
+      marketplace: payload.marketplace,
+      status: 'completed',
+      totalRecords: { $gt: 0 },
+    };
+    if (excludeUploadId && Types.ObjectId.isValid(excludeUploadId)) {
+      filter._id = { $ne: new Types.ObjectId(excludeUploadId) };
+    }
+    return filter;
+  }
+
+  private duplicateUploadException(existing: {
+    _id?: unknown;
+    totalRecords?: number;
+    createdAt?: Date;
+  }) {
+    const when =
+      existing.createdAt instanceof Date
+        ? existing.createdAt.toISOString().slice(0, 10)
+        : 'a previous date';
+    const count = Number(existing.totalRecords ?? 0);
+    return new BadRequestException(
+      count > 0
+        ? `These report files were already imported successfully (${count} records on ${when}). Open Imported Data to view them, or upload different files.`
+        : 'File already uploaded',
+    );
   }
 }

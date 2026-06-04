@@ -5,13 +5,16 @@ import {
   headerMatchesExcelColumn,
   headersHaveGstColumn,
   normalizeGstinValue,
+  parseGstinFromCell,
 } from '../../src/report-import/config/importMappings/gst-column.util';
 import { ParsedSheetRow } from '../../src/report-import/services/mapping.service';
 
 describe('gst-column.util', () => {
   it('normalizes GSTIN values', () => {
-    expect(normalizeGstinValue(' 29abcde1234f1z5 ')).toBe('29ABCDE1234F1Z5');
-    expect(normalizeGstinValue('29 ab cd e1 234f1z5')).toBe('29ABCDE1234F1Z5');
+    expect(parseGstinFromCell(' 07aaxfb7609k1zs ')).toBe('07AAXFB7609K1ZS');
+    expect(parseGstinFromCell('07 AAX FB 7609 K1ZS')).toBe('07AAXFB7609K1ZS');
+    expect(parseGstinFromCell("'07AAXFB7609K1ZS")).toBe('07AAXFB7609K1ZS');
+    expect(normalizeGstinValue('07AAXFB7609K1ZS')).toBe('07AAXFB7609K1ZS');
   });
 
   it('matches headers case-insensitively with spacing', () => {
@@ -21,6 +24,16 @@ describe('gst-column.util', () => {
       true,
     );
     expect(headerMatchesExcelColumn('Seller Gstin', 'Seller Gstin')).toBe(true);
+    expect(headerMatchesExcelColumn('Seller GSTIN', 'GSTIN')).toBe(true);
+  });
+
+  it('does not match a shorter header when the alias is more specific', () => {
+    expect(
+      headerMatchesExcelColumn('Return Reason', 'Detailed Return Reason'),
+    ).toBe(false);
+    expect(
+      headerMatchesExcelColumn('Detailed Return Reason', 'Detailed Return Reason'),
+    ).toBe(true);
   });
 
   it('extracts Flipkart GSTIN from Seller GSTIN column', () => {

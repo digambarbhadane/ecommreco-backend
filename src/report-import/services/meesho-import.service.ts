@@ -41,13 +41,21 @@ export class MeeshoImportService {
     returnReportFile: { buffer: Buffer; originalname: string };
   }) {
     return {
-      tcsSales: this.parser.parseMeeshoWorkbook(files.tcsSalesFile.buffer),
+      tcsSales: this.parser.parseMeeshoWorkbook(
+        files.tcsSalesFile.buffer,
+        'tcsSales',
+      ),
       tcsSalesReturn: this.parser.parseMeeshoWorkbook(
         files.tcsSalesReturnFile.buffer,
+        'tcsSalesReturn',
       ),
-      orderReport: this.parser.parseMeeshoWorkbook(files.orderReportFile.buffer),
+      orderReport: this.parser.parseMeeshoWorkbook(
+        files.orderReportFile.buffer,
+        'orderReport',
+      ),
       returnReport: this.parser.parseMeeshoWorkbook(
         files.returnReportFile.buffer,
+        'returnReport',
       ),
     };
   }
@@ -89,7 +97,7 @@ export class MeeshoImportService {
 
     parsed.tcsSales.rows.forEach((salesRow) => {
       try {
-        const orderIdRaw = getRowCell(salesRow, 'sub_order_num', 'Order ID');
+        const orderIdRaw = getRowCell(salesRow, ...MEESHO_ORDER_ID_ALIASES);
         const orderId =
           typeof orderIdRaw === 'string' || typeof orderIdRaw === 'number'
             ? String(orderIdRaw).trim()

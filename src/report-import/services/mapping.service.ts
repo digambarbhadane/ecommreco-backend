@@ -58,27 +58,51 @@ export const MYNTRA_SALES_ORDER_ID_ALIASES = [
   'sale_order_code',
 ] as const;
 
-/** GSTR Report Packed — join key on order_id */
-export const MYNTRA_GSTR_ORDER_ID_ALIASES = ['order_id'] as const;
+/** GSTR Report Packed — primary join on order_id; also index alternate keys when present */
+export const MYNTRA_GSTR_ORDER_ID_ALIASES = [
+  'order_id',
+  'order_release_id',
+  'sale_order_code',
+  'Sale_Order_Code',
+  'shipment_id',
+] as const;
 
-/** MDirect Orders Report — join key on order_release_id */
-export const MYNTRA_MDIRECT_ORDER_ID_ALIASES = ['order_release_id'] as const;
+/** MDirect Orders Report — join on order_release_id (matches Sale_Order_Code) */
+export const MYNTRA_MDIRECT_ORDER_ID_ALIASES = [
+  'order_release_id',
+  'order_id',
+  'sale_order_code',
+  'Sale_Order_Code',
+] as const;
 
-/** GSTR Report RTO — join key on order_id */
-export const MYNTRA_GSTR_RTO_ORDER_ID_ALIASES = ['order_id'] as const;
+/** GSTR Report RTO — match return rows to Sale_Order_Code when possible */
+export const MYNTRA_GSTR_RTO_ORDER_ID_ALIASES = [
+  'order_id',
+  'shipment_id',
+  'order_release_id',
+  'sale_order_code',
+] as const;
 
 /** GSTR Report RT — join key on shipment_id (matches Sale_Order_Code) */
-export const MYNTRA_GSTR_RT_ORDER_ID_ALIASES = ['shipment_id'] as const;
+export const MYNTRA_GSTR_RT_ORDER_ID_ALIASES = [
+  'shipment_id',
+  'Shipment ID',
+  'order_id',
+  'Order ID',
+] as const;
 
 /** @deprecated Use MYNTRA_GSTR_RTO_ORDER_ID_ALIASES or MYNTRA_GSTR_RT_ORDER_ID_ALIASES */
 export const MYNTRA_GSTR_RETURN_ORDER_ID_ALIASES = [
   ...MYNTRA_GSTR_RTO_ORDER_ID_ALIASES,
 ] as const;
 
-/** MDirect Returns Report — join key */
+/** MDirect Returns Report — join key (order_id only; not order_release_id) */
 export const MYNTRA_MDIRECT_RETURNS_ORDER_ID_ALIASES = [
-  'order_release_id',
   'order_id',
+  'Order ID',
+  'Order Id',
+  'Order Number',
+  'Store Order Id',
 ] as const;
 
 export const MYNTRA_DOCUMENT_TYPE_RTO = 'RTO Return';
@@ -104,11 +128,16 @@ export const getRowCell = (
   row: ParsedSheetRow,
   ...aliases: string[]
 ): unknown => {
-  const entry = Object.entries(row).find(([key]) => {
-    if (key.startsWith('__')) return false;
-    return aliases.some((alias) => headerMatchesExcelColumn(key, alias));
-  });
-  return entry?.[1];
+  const metaKeys = new Set(['__sheetName', '__rowNumber']);
+  for (const alias of aliases) {
+    for (const [key, value] of Object.entries(row)) {
+      if (metaKeys.has(key)) continue;
+      if (headerMatchesExcelColumn(key, alias)) {
+        return value;
+      }
+    }
+  }
+  return undefined;
 };
 
 type MappingConfig = {
@@ -416,27 +445,72 @@ const AMAZON_MAPPINGS: MappingConfig[] = [
   },
 ];
 
+// ─── exported types for fast header-map path ─────────────────────────────────
+
+export type HeaderMapEntry = {
+  target: keyof NormalizedImportRow;
+  transform?: (value: unknown, row: ParsedSheetRow) => unknown;
+};
+
+/** Maps each actual sheet-column label → the first MappingConfig that matches it.
+ *  Built once per file; used instead of per-row O(headers × aliases) scan. */
+export type ColumnHeaderMap = Map<string, HeaderMapEntry>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 /** GSTR Report Packed Excel headers → database fields */
 const MYNTRA_GSTR_MAPPINGS: MappingConfig[] = [
-  { source: ['seller_gstin'], target: 'sellerGSTIN', transform: normalizeGstin },
   {
-    source: [...MYNTRA_GSTR_ORDER_ID_ALIASES, ...MYNTRA_SALES_ORDER_ID_ALIASES],
+    source: ['seller_gstin', 'GST NO', 'GSTIN', 'Seller Gstin'],
+    target: 'sellerGSTIN',
+    transform: normalizeGstin,
+  },
+  {
+    source: [...MYNTRA_GSTR_ORDER_ID_ALIASES, ...MYNTRA_SALES_ORDER_ID_ALIASES, 'Order ID'],
     target: 'orderID',
     transform: asString,
   },
-  { source: ['payment_method'], target: 'paymentMode', transform: asString },
-  { source: ['seller_type'], target: 'fulfilmentType', transform: asString },
-  { source: ['quantity'], target: 'quantity', transform: asNumber },
-  { source: ['seller_price'], target: 'invoiceAmount', transform: asNumber },
-  { source: ['base_value'], target: 'taxableAmount', transform: asNumber },
-  { source: ['igst_rate'], target: 'igstRate', transform: asNumber },
-  { source: ['igst_amt'], target: 'igstAmount', transform: asNumber },
-  { source: ['cgst_rate'], target: 'cgstRate', transform: asNumber },
-  { source: ['cgst_amt'], target: 'cgstAmount', transform: asNumber },
-  { source: ['sgst_rate'], target: 'sgstRate', transform: asNumber },
-  { source: ['sgst_amt'], target: 'sgstAmount', transform: asNumber },
   {
-    source: ['customer_delivery_state_code'],
+    source: ['payment_method', 'Payment Mode', 'Payment Method'],
+    target: 'paymentMode',
+    transform: asString,
+  },
+  {
+    source: ['seller_type', 'Fulfilment Type', 'Fulfillment Type', 'Fulfilment Channel'],
+    target: 'fulfilmentType',
+    transform: asString,
+  },
+  { source: ['quantity', 'Quantity'], target: 'quantity', transform: asNumber },
+  {
+    source: ['seller_price', 'Invoice Amount'],
+    target: 'invoiceAmount',
+    transform: asNumber,
+  },
+  {
+    source: ['base_value', 'Taxable Amount', 'Taxable Value'],
+    target: 'taxableAmount',
+    transform: asNumber,
+  },
+  { source: ['igst_rate', 'IGST Rate', 'Igst Rate'], target: 'igstRate', transform: asNumber },
+  {
+    source: ['igst_amt', 'IGST Amount', 'Igst Tax', 'Igst Amount'],
+    target: 'igstAmount',
+    transform: asNumber,
+  },
+  { source: ['cgst_rate', 'CGST Rate', 'Cgst Rate'], target: 'cgstRate', transform: asNumber },
+  {
+    source: ['cgst_amt', 'CGST Amount', 'Cgst Tax', 'Cgst Amount'],
+    target: 'cgstAmount',
+    transform: asNumber,
+  },
+  { source: ['sgst_rate', 'SGST Rate', 'Sgst Rate'], target: 'sgstRate', transform: asNumber },
+  {
+    source: ['sgst_amt', 'SGST Amount', 'Sgst Tax', 'Sgst Amount'],
+    target: 'sgstAmount',
+    transform: asNumber,
+  },
+  {
+    source: ['customer_delivery_state_code', 'State Name', 'Ship To State'],
     target: 'stateName',
     transform: asString,
   },
@@ -444,14 +518,22 @@ const MYNTRA_GSTR_MAPPINGS: MappingConfig[] = [
 
 /** MDirect Orders Report Excel headers → database fields */
 const MYNTRA_MDIRECT_MAPPINGS: MappingConfig[] = [
-  { source: ['seller_sku_code'], target: 'skuID', transform: asString },
+  {
+    source: ['seller_sku_code', 'SKU ID', 'SKU', 'Sku'],
+    target: 'skuID',
+    transform: asString,
+  },
 ];
 
 /** MDirect Returns Report Excel headers → database fields */
 const MYNTRA_MDIRECT_RETURNS_MAPPINGS: MappingConfig[] = [
-  { source: ['return_mode'], target: 'returnReason', transform: asString },
   {
-    source: ['return_reason'],
+    source: ['return_mode', 'Return Reason', 'Return Mode'],
+    target: 'returnReason',
+    transform: asString,
+  },
+  {
+    source: ['return_reason', 'Detailed Return Reason', 'Return Reason Detail'],
     target: 'detailedReturnReason',
     transform: asString,
   },
@@ -460,12 +542,20 @@ const MYNTRA_MDIRECT_RETURNS_MAPPINGS: MappingConfig[] = [
 /** Sales Revenue Packed B2C Excel headers → database fields */
 const MYNTRA_SALES_REVENUE_MAPPINGS: MappingConfig[] = [
   {
-    source: [...MYNTRA_SALES_ORDER_ID_ALIASES],
+    source: [...MYNTRA_SALES_ORDER_ID_ALIASES, 'Order ID', 'Order Id'],
     target: 'orderID',
     transform: asString,
   },
-  { source: ['Invoice_Number', 'invoice_number'], target: 'invoiceNo', transform: asString },
-  { source: ['Packing_Date', 'packing_date'], target: 'invoiceDate', transform: asDate },
+  {
+    source: ['Invoice_Number', 'invoice_number', 'Invoice No', 'Invoice Number'],
+    target: 'invoiceNo',
+    transform: asString,
+  },
+  {
+    source: ['Packing_Date', 'packing_date', 'Invoice Date'],
+    target: 'invoiceDate',
+    transform: asDate,
+  },
 ];
 
 const MEESHO_TCS_SALES_MAPPINGS: MappingConfig[] = [
@@ -503,6 +593,19 @@ const MEESHO_TCS_SALES_MAPPINGS: MappingConfig[] = [
 
 @Injectable()
 export class MappingService {
+  private readonly myntraGstrRowCache = new WeakMap<
+    ParsedSheetRow,
+    NormalizedImportRow
+  >();
+  private readonly myntraMdirectRowCache = new WeakMap<
+    ParsedSheetRow,
+    Pick<NormalizedImportRow, 'skuID'>
+  >();
+  private readonly myntraReturnsRowCache = new WeakMap<
+    ParsedSheetRow,
+    Pick<NormalizedImportRow, 'returnReason' | 'detailedReturnReason'>
+  >();
+
   mapMeeshoTcsSalesRow(
     row: ParsedSheetRow,
     sellerState?: string,
@@ -545,9 +648,16 @@ export class MappingService {
     orderRow?: ParsedSheetRow,
   ): NormalizedImportRow {
     if (!orderRow) return mapped;
-    const sku = asString(getRowCell(orderRow, 'SKU', 'SKU ID'));
+    const sku = asString(
+      getRowCell(orderRow, 'SKU', 'SKU ID', 'sku'),
+    );
     const documentType = asString(
-      getRowCell(orderRow, 'Reason for Credit Entry', 'Document Type'),
+      getRowCell(
+        orderRow,
+        'Reason for Credit Entry',
+        'Document Type',
+        'document type',
+      ),
     );
     if (sku) mapped.skuID = sku;
     if (documentType) mapped.documentType = documentType;
@@ -608,12 +718,12 @@ export class MappingService {
       mDirectReturnsRow?: ParsedSheetRow;
     },
   ): NormalizedImportRow {
-    const base = gstrRow
-      ? this.mapRow(gstrRow, 'sales', MYNTRA_GSTR_MAPPINGS)
-      : ({ reportType: 'sales' as const, documentType: 'SALE' });
+    const base: NormalizedImportRow = gstrRow
+      ? { ...this.getCachedMyntraGstrRow(gstrRow) }
+      : { reportType: 'sales', documentType: 'SALE' };
     if (mDirectRow) {
-      const fromMdirect = this.mapRow(mDirectRow, 'sales', MYNTRA_MDIRECT_MAPPINGS);
-      if (fromMdirect.skuID) base.skuID = fromMdirect.skuID;
+      const skuID = this.getCachedMyntraMdirectSku(mDirectRow);
+      if (skuID) base.skuID = skuID;
     }
     const fromSales = this.mapRow(salesRow, 'sales', MYNTRA_SALES_REVENUE_MAPPINGS);
     if (fromSales.orderID) base.orderID = fromSales.orderID;
@@ -629,26 +739,124 @@ export class MappingService {
       base.documentType = 'SALE';
     }
     if (options?.mDirectReturnsRow) {
-      return this.enrichMyntraFromReturns(base, options.mDirectReturnsRow);
+      const cached = this.getCachedMyntraReturnsFields(options.mDirectReturnsRow);
+      if (cached.returnReason) base.returnReason = cached.returnReason;
+      if (cached.detailedReturnReason) {
+        base.detailedReturnReason = cached.detailedReturnReason;
+      }
     }
     return base;
   }
 
-  enrichMyntraFromReturns(
-    mapped: NormalizedImportRow,
-    returnsRow: ParsedSheetRow,
-  ): NormalizedImportRow {
+  private getCachedMyntraGstrRow(gstrRow: ParsedSheetRow): NormalizedImportRow {
+    const cached = this.myntraGstrRowCache.get(gstrRow);
+    if (cached) return cached;
+    const mapped = this.mapRow(gstrRow, 'sales', MYNTRA_GSTR_MAPPINGS);
+    if (!mapped.documentType) mapped.documentType = 'SALE';
+    this.myntraGstrRowCache.set(gstrRow, mapped);
+    return mapped;
+  }
+
+  private getCachedMyntraMdirectSku(mDirectRow: ParsedSheetRow): string | undefined {
+    const cached = this.myntraMdirectRowCache.get(mDirectRow);
+    if (cached) return cached.skuID;
+    const fromMdirect = this.mapRow(mDirectRow, 'sales', MYNTRA_MDIRECT_MAPPINGS);
+    this.myntraMdirectRowCache.set(mDirectRow, { skuID: fromMdirect.skuID });
+    return fromMdirect.skuID;
+  }
+
+  private getCachedMyntraReturnsFields(returnsRow: ParsedSheetRow): Pick<
+    NormalizedImportRow,
+    'returnReason' | 'detailedReturnReason'
+  > {
+    const cached = this.myntraReturnsRowCache.get(returnsRow);
+    if (cached) return cached;
     const fromReturns = this.mapRow(
       returnsRow,
       'sales',
       MYNTRA_MDIRECT_RETURNS_MAPPINGS,
     );
-    if (fromReturns.returnReason) mapped.returnReason = fromReturns.returnReason;
-    if (fromReturns.detailedReturnReason) {
-      mapped.detailedReturnReason = fromReturns.detailedReturnReason;
+    const fields = {
+      returnReason: fromReturns.returnReason,
+      detailedReturnReason: fromReturns.detailedReturnReason,
+    };
+    this.myntraReturnsRowCache.set(returnsRow, fields);
+    return fields;
+  }
+
+  // ─── Fast path: build a per-file lookup map once, then map each row in O(cols) ──
+
+  /**
+   * Build a header→config map from the actual column labels present in a sheet.
+   * Call once per file; pass the result to mapRowFast() for each data row.
+   * This replaces the per-row O(headers × aliases × mappings) scan with a one-time
+   * O(headers × aliases) setup and per-row O(headers) lookup.
+   */
+  buildHeaderMap(headers: string[], mappings: MappingConfig[]): ColumnHeaderMap {
+    const map: ColumnHeaderMap = new Map();
+    for (const header of headers) {
+      if (header === '__sheetName' || header === '__rowNumber') continue;
+      const hNorm = normalizeHeader(header);
+      if (!hNorm) continue;
+      for (const config of mappings) {
+        let matched = false;
+        for (const alias of config.source) {
+          const aNorm = normalizeHeader(alias);
+          if (aNorm && (hNorm === aNorm || hNorm.includes(aNorm))) {
+            matched = true;
+            break;
+          }
+        }
+        if (matched) {
+          map.set(header, { target: config.target, transform: config.transform });
+          break; // first winning config per header
+        }
+      }
+    }
+    return map;
+  }
+
+  /** Map a single data row using a pre-built ColumnHeaderMap — O(cols) per row. */
+  mapRowFast(
+    row: ParsedSheetRow,
+    reportType: 'sales' | 'cashback',
+    headerMap: ColumnHeaderMap,
+  ): NormalizedImportRow {
+    const mapped: NormalizedImportRow = { reportType, documentType: '' };
+    for (const [key, value] of Object.entries(row)) {
+      if (key === '__sheetName' || key === '__rowNumber') continue;
+      const config = headerMap.get(key);
+      if (!config || value === null || value === undefined || value === '') continue;
+      const xformed = config.transform ? config.transform(value, row) : value;
+      if (xformed !== undefined && xformed !== null && xformed !== '') {
+        (mapped as Record<string, unknown>)[config.target] = xformed;
+      }
+    }
+    if (!mapped.documentType) {
+      mapped.documentType = reportType === 'sales' ? 'SALE' : 'CASHBACK';
     }
     return mapped;
   }
+
+  // Convenience builders for the 4 Myntra file types
+
+  buildMyntraGstrHeaderMap(headers: string[]): ColumnHeaderMap {
+    return this.buildHeaderMap(headers, MYNTRA_GSTR_MAPPINGS);
+  }
+
+  buildMyntraMdirectHeaderMap(headers: string[]): ColumnHeaderMap {
+    return this.buildHeaderMap(headers, MYNTRA_MDIRECT_MAPPINGS);
+  }
+
+  buildMyntraSalesHeaderMap(headers: string[]): ColumnHeaderMap {
+    return this.buildHeaderMap(headers, MYNTRA_SALES_REVENUE_MAPPINGS);
+  }
+
+  buildMyntraMdirectReturnsHeaderMap(headers: string[]): ColumnHeaderMap {
+    return this.buildHeaderMap(headers, MYNTRA_MDIRECT_RETURNS_MAPPINGS);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
 
   private mapRow(
     row: ParsedSheetRow,
