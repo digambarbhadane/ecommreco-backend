@@ -29,6 +29,15 @@ export class Seller {
   @Prop()
   businessType?: string;
 
+  @Prop()
+  tradeName?: string;
+
+  @Prop()
+  registrationDate?: string;
+
+  @Prop()
+  gstStatus?: string;
+
   @Prop({ required: true })
   gstNumber: string;
 

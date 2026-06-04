@@ -9,6 +9,7 @@ import {
   PlatformMarketplace,
   PlatformMarketplaceSchema,
 } from '../platform-marketplaces/schemas/platform-marketplace.schema';
+import { Seller, SellerSchema } from '../sellers/schemas/seller.schema';
 import { ReportImportController } from './report-import.controller';
 import { ReportImportService } from './report-import.service';
 import {
@@ -26,11 +27,13 @@ import { MeeshoImportService } from './services/meesho-import.service';
 import { MyntraImportService } from './services/myntra-import.service';
 import { UploadService } from './services/upload.service';
 import { ValidationService } from './services/validation.service';
+import { ImportSessionService } from './services/import-session.service';
 
 @Module({
   imports: [
     MongooseModule.forFeature([
       { name: Gst.name, schema: GstSchema },
+      { name: Seller.name, schema: SellerSchema },
       { name: Marketplace.name, schema: MarketplaceSchema },
       { name: PlatformMarketplace.name, schema: PlatformMarketplaceSchema },
       { name: ImportUpload.name, schema: ImportUploadSchema },
@@ -47,6 +50,7 @@ import { ValidationService } from './services/validation.service';
     MeeshoImportService,
     MyntraImportService,
     UploadService,
+    ImportSessionService,
   ],
 })
 export class ReportImportModule {}

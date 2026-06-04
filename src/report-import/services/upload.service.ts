@@ -1,4 +1,10 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
+import { parseObjectId } from '../../common/mongo-id.util';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { UploadReportDto } from '../dto/upload-report.dto';
@@ -21,10 +27,46 @@ import {
 } from './mapping.service';
 import { amazonImportMapping } from '../config/importMappings/amazon.mapping';
 import { flipkartImportMapping } from '../config/importMappings/flipkart.mapping';
+import { meeshoImportMapping } from '../config/importMappings/meesho.mapping';
 import { ValidationService } from './validation.service';
+import {
+  formatMyntraEmptyImport,
+  formatMyntraJoinIssues,
+  MYNTRA_GSTR_PACKED_HEADERS,
+  MYNTRA_GSTR_RTO_HEADERS,
+  MYNTRA_GSTR_RT_HEADERS,
+  MYNTRA_MDIRECT_ORDERS_HEADERS,
+  MYNTRA_MDIRECT_RETURNS_HEADERS,
+  MYNTRA_SALES_REVENUE_HEADERS,
+} from '../utils/myntra-import.validation';
+import { insertImportRowsInBatches } from './upload-row.util';
+
+type UploadContext = Awaited<
+  ReturnType<ValidationService['validateOwnership']>
+>;
+
+type UploadedFileInput = { buffer: Buffer; originalname: string };
+
+type MarketplaceFilesInput = {
+  file?: UploadedFileInput;
+  mtrB2bFile?: UploadedFileInput;
+  mtrB2cFile?: UploadedFileInput;
+  tcsSalesFile?: UploadedFileInput;
+  tcsSalesReturnFile?: UploadedFileInput;
+  orderReportFile?: UploadedFileInput;
+  returnReportFile?: UploadedFileInput;
+  gstrReportPackedFile?: UploadedFileInput;
+  mDirectOrdersReportFile?: UploadedFileInput;
+  salesRevenuePackedB2cFile?: UploadedFileInput;
+  gstrReportRtoFile?: UploadedFileInput;
+  gstrReportRtFile?: UploadedFileInput;
+  mDirectReturnsReportFile?: UploadedFileInput;
+};
 
 @Injectable()
 export class UploadService {
+  private readonly logger = new Logger(UploadService.name);
+
   constructor(
     private readonly parser: FileParserService,
     private readonly meeshoImport: MeeshoImportService,
@@ -39,29 +81,364 @@ export class UploadService {
     private readonly rowErrorModel: Model<ImportRowErrorDocument>,
   ) {}
 
-  async uploadFlipkart(
+  async getUploadStatus(uploadId: string, sellerId: string) {
+    const upload = await this.uploadModel
+      .findById(parseObjectId(uploadId, 'upload id'))
+      .lean()
+      .exec();
+    if (!upload || String(upload.sellerId) !== String(sellerId).trim()) {
+      throw new NotFoundException('Import upload not found');
+    }
+    const savedSoFar = upload.totalRecords ?? 0;
+    return {
+      success: upload.status !== 'failed',
+      uploadId,
+      status: upload.status,
+      count: savedSoFar,
+      totalRecords: upload.totalRecords,
+      fileName: upload.fileName,
+      errorMessage: upload.errorMessage,
+      message:
+        upload.status === 'processing'
+          ? savedSoFar > 0
+            ? `Import in progress… ${savedSoFar} row(s) saved so far.`
+            : 'Parsing and matching Myntra reports — large files may take a few minutes.'
+          : upload.status === 'failed'
+            ? upload.errorMessage ?? 'Import failed'
+            : `Import completed with ${savedSoFar} record(s).`,
+    };
+  }
+
+  async uploadMarketplaceReport(
+    expectedMarketplace: 'flipkart' | 'amazon' | 'meesho' | 'myntra',
     files: {
-      file?: { buffer: Buffer; originalname: string };
-      mtrB2bFile?: { buffer: Buffer; originalname: string };
-      mtrB2cFile?: { buffer: Buffer; originalname: string };
-      tcsSalesFile?: { buffer: Buffer; originalname: string };
-      tcsSalesReturnFile?: { buffer: Buffer; originalname: string };
-      orderReportFile?: { buffer: Buffer; originalname: string };
-      returnReportFile?: { buffer: Buffer; originalname: string };
-      gstrReportPackedFile?: { buffer: Buffer; originalname: string };
-      mDirectOrdersReportFile?: { buffer: Buffer; originalname: string };
-      salesRevenuePackedB2cFile?: { buffer: Buffer; originalname: string };
-      gstrReportRtoFile?: { buffer: Buffer; originalname: string };
-      gstrReportRtFile?: { buffer: Buffer; originalname: string };
-      mDirectReturnsReportFile?: { buffer: Buffer; originalname: string };
+      file?: UploadedFileInput;
+      mtrB2bFile?: UploadedFileInput;
+      mtrB2cFile?: UploadedFileInput;
+      tcsSalesFile?: UploadedFileInput;
+      tcsSalesReturnFile?: UploadedFileInput;
+      orderReportFile?: UploadedFileInput;
+      returnReportFile?: UploadedFileInput;
+      gstrReportPackedFile?: UploadedFileInput;
+      mDirectOrdersReportFile?: UploadedFileInput;
+      salesRevenuePackedB2cFile?: UploadedFileInput;
+      gstrReportRtoFile?: UploadedFileInput;
+      gstrReportRtFile?: UploadedFileInput;
+      mDirectReturnsReportFile?: UploadedFileInput;
     },
     dto: UploadReportDto,
   ) {
-    const { gst, marketplace, marketplaceIdentifier } =
-      await this.validation.validateOwnership(dto);
+    const ctx = await this.validation.validateOwnership(dto);
+    const { marketplaceIdentifier } = ctx;
+    if (!marketplaceIdentifier.includes(expectedMarketplace)) {
+      throw new BadRequestException(
+        `Selected marketplace does not match ${expectedMarketplace} upload. Use the correct marketplace or upload endpoint.`,
+      );
+    }
+
     const isAmazon = marketplaceIdentifier.includes('amazon');
     const isMeesho = marketplaceIdentifier.includes('meesho');
     const isMyntra = marketplaceIdentifier.includes('myntra');
+
+    if (isAmazon || isMeesho || isMyntra) {
+      return this.startInMemoryBackgroundImport(
+        expectedMarketplace,
+        files,
+        dto,
+        ctx,
+        { isAmazon, isMeesho, isMyntra },
+      );
+    }
+
+    return this.processImport(
+      expectedMarketplace,
+      files,
+      dto,
+      ctx,
+      null,
+    );
+  }
+
+  /** Respond immediately; parse/validate/insert from in-memory buffers (no disk). */
+  private async startInMemoryBackgroundImport(
+    expectedMarketplace: 'flipkart' | 'amazon' | 'meesho' | 'myntra',
+    files: MarketplaceFilesInput,
+    dto: UploadReportDto,
+    ctx: UploadContext,
+    flags: { isAmazon: boolean; isMeesho: boolean; isMyntra: boolean },
+  ) {
+    this.assertRequiredFiles(flags, files);
+
+    const marketplaceId =
+      ctx.marketplace._id?.toString?.() ?? dto.marketplaceId;
+    const label = expectedMarketplace.charAt(0).toUpperCase() + expectedMarketplace.slice(1);
+
+    const upload = await this.uploadModel.create({
+      sellerId: dto.sellerId,
+      gstId: dto.gstId,
+      gstin: ctx.gst.gstNumber,
+      marketplace: marketplaceId,
+      fileName: `${label} import (processing)`,
+      fileHash: `processing:${Date.now()}`,
+      totalRecords: 0,
+      salesRecords: 0,
+      cashbackRecords: 0,
+      status: 'processing',
+    });
+    const uploadId = upload._id?.toString?.() ?? '';
+    const fileSnapshot = this.cloneFileBuffers(files);
+
+    setImmediate(() => {
+      void this.runInMemoryBackgroundJob(
+        uploadId,
+        expectedMarketplace,
+        fileSnapshot,
+        dto,
+        ctx,
+        flags,
+      );
+    });
+
+    return {
+      success: true,
+      status: 'processing' as const,
+      uploadId,
+      count: 0,
+      message:
+        'Import started. Parsing and saving rows in the background — stay on this page to see progress.',
+    };
+  }
+
+  private async runInMemoryBackgroundJob(
+    uploadId: string,
+    expectedMarketplace: 'flipkart' | 'amazon' | 'meesho' | 'myntra',
+    files: MarketplaceFilesInput,
+    dto: UploadReportDto,
+    ctx: UploadContext,
+    flags: { isAmazon: boolean; isMeesho: boolean; isMyntra: boolean },
+  ) {
+    try {
+      const marketplaceId =
+        ctx.marketplace._id?.toString?.() ?? dto.marketplaceId;
+      const { fileHashes, fileName } = this.buildFileHashBundle(
+        files,
+        flags.isAmazon,
+        flags.isMeesho,
+        flags.isMyntra,
+      );
+
+      await this.validation.ensureNoDuplicateFileHashes({
+        sellerId: dto.sellerId,
+        gstin: ctx.gst.gstNumber,
+        marketplace: marketplaceId,
+        fileHashes,
+        excludeUploadId: uploadId,
+      });
+
+      await this.uploadModel.findByIdAndUpdate(uploadId, {
+        $set: { fileName },
+      });
+
+      await this.processImport(
+        expectedMarketplace,
+        files,
+        dto,
+        ctx,
+        uploadId,
+      );
+    } catch (err) {
+      this.logger.error(
+        `Background import failed (${expectedMarketplace}, upload ${uploadId})`,
+        err instanceof Error ? err.stack : String(err),
+      );
+      await this.markUploadFailed(uploadId, err);
+    }
+  }
+
+  private cloneFile(file?: UploadedFileInput): UploadedFileInput | undefined {
+    if (!file) return undefined;
+    return {
+      buffer: Buffer.from(file.buffer),
+      originalname: file.originalname,
+    };
+  }
+
+  private cloneFileBuffers(files: MarketplaceFilesInput): MarketplaceFilesInput {
+    return {
+      file: this.cloneFile(files.file),
+      mtrB2bFile: this.cloneFile(files.mtrB2bFile),
+      mtrB2cFile: this.cloneFile(files.mtrB2cFile),
+      tcsSalesFile: this.cloneFile(files.tcsSalesFile),
+      tcsSalesReturnFile: this.cloneFile(files.tcsSalesReturnFile),
+      orderReportFile: this.cloneFile(files.orderReportFile),
+      returnReportFile: this.cloneFile(files.returnReportFile),
+      gstrReportPackedFile: this.cloneFile(files.gstrReportPackedFile),
+      mDirectOrdersReportFile: this.cloneFile(files.mDirectOrdersReportFile),
+      salesRevenuePackedB2cFile: this.cloneFile(files.salesRevenuePackedB2cFile),
+      gstrReportRtoFile: this.cloneFile(files.gstrReportRtoFile),
+      gstrReportRtFile: this.cloneFile(files.gstrReportRtFile),
+      mDirectReturnsReportFile: this.cloneFile(files.mDirectReturnsReportFile),
+    };
+  }
+
+  private async markUploadFailed(uploadId: string, err: unknown) {
+    const errorMessage = this.extractErrorMessage(err);
+    await this.uploadModel.findByIdAndUpdate(uploadId, {
+      $set: { status: 'failed', errorMessage },
+    });
+  }
+
+  private extractErrorMessage(err: unknown): string {
+    if (err instanceof BadRequestException) {
+      const response = err.getResponse();
+      if (typeof response === 'string') return response;
+      if (response && typeof response === 'object' && 'message' in response) {
+        const message = (response as { message: string | string[] }).message;
+        return Array.isArray(message) ? message.join('\n') : String(message);
+      }
+    }
+    return err instanceof Error ? err.message : 'Import failed';
+  }
+
+  private assertRequiredFiles(
+    flags: { isAmazon: boolean; isMeesho: boolean; isMyntra: boolean },
+    files: MarketplaceFilesInput,
+  ) {
+    const { isAmazon, isMeesho, isMyntra } = flags;
+    if (isAmazon) {
+      if (!files.mtrB2cFile) {
+        throw new BadRequestException('Amazon upload requires MTR B2C Report file');
+      }
+    } else if (isMeesho) {
+      if (
+        !files.tcsSalesFile ||
+        !files.tcsSalesReturnFile ||
+        !files.orderReportFile ||
+        !files.returnReportFile
+      ) {
+        throw new BadRequestException(
+          'Meesho upload requires all files: TCS Sales, TCS Sales Return, Order Report, Return Report',
+        );
+      }
+    } else if (isMyntra) {
+      if (
+        !files.gstrReportPackedFile ||
+        !files.salesRevenuePackedB2cFile ||
+        !files.gstrReportRtoFile ||
+        !files.gstrReportRtFile
+      ) {
+        throw new BadRequestException(
+          'Myntra upload requires: GSTR Report Packed, Sales Revenue Packed B2C, GSTR Report RTO, and GSTR Report RT. MDirect Orders and MDirect Returns are optional.',
+        );
+      }
+    } else if (!files.file) {
+      throw new BadRequestException('Flipkart upload requires report file');
+    }
+  }
+
+  private buildFileHashBundle(
+    files: MarketplaceFilesInput,
+    isAmazon: boolean,
+    isMeesho: boolean,
+    isMyntra: boolean,
+  ) {
+    const singleFileHash = files.file
+      ? this.validation.computeFileHash(files.file.buffer)
+      : '';
+    const b2bFileHash = files.mtrB2bFile
+      ? this.validation.computeFileHash(files.mtrB2bFile.buffer)
+      : '';
+    const b2cFileHash = files.mtrB2cFile
+      ? this.validation.computeFileHash(files.mtrB2cFile.buffer)
+      : '';
+    const tcsSalesFileHash = files.tcsSalesFile
+      ? this.validation.computeFileHash(files.tcsSalesFile.buffer)
+      : '';
+    const tcsSalesReturnFileHash = files.tcsSalesReturnFile
+      ? this.validation.computeFileHash(files.tcsSalesReturnFile.buffer)
+      : '';
+    const orderReportFileHash = files.orderReportFile
+      ? this.validation.computeFileHash(files.orderReportFile.buffer)
+      : '';
+    const returnReportFileHash = files.returnReportFile
+      ? this.validation.computeFileHash(files.returnReportFile.buffer)
+      : '';
+    const gstrReportPackedFileHash = files.gstrReportPackedFile
+      ? this.validation.computeFileHash(files.gstrReportPackedFile.buffer)
+      : '';
+    const mDirectOrdersReportFileHash = files.mDirectOrdersReportFile
+      ? this.validation.computeFileHash(files.mDirectOrdersReportFile.buffer)
+      : '';
+    const salesRevenuePackedB2cFileHash = files.salesRevenuePackedB2cFile
+      ? this.validation.computeFileHash(files.salesRevenuePackedB2cFile.buffer)
+      : '';
+    const gstrReportRtoFileHash = files.gstrReportRtoFile
+      ? this.validation.computeFileHash(files.gstrReportRtoFile.buffer)
+      : '';
+    const gstrReportRtFileHash = files.gstrReportRtFile
+      ? this.validation.computeFileHash(files.gstrReportRtFile.buffer)
+      : '';
+    const mDirectReturnsReportFileHash = files.mDirectReturnsReportFile
+      ? this.validation.computeFileHash(files.mDirectReturnsReportFile.buffer)
+      : '';
+
+    const fileHash = isAmazon
+      ? `amazon|b2c:${b2cFileHash}|b2b:${b2bFileHash || 'none'}`
+      : isMeesho
+        ? `meesho|tcsSales:${tcsSalesFileHash}|tcsSalesReturn:${tcsSalesReturnFileHash}|order:${orderReportFileHash}|return:${returnReportFileHash}`
+        : isMyntra
+          ? `myntra|gstr:${gstrReportPackedFileHash}|mdirect:${mDirectOrdersReportFileHash}|sales:${salesRevenuePackedB2cFileHash}|rto:${gstrReportRtoFileHash}|rt:${gstrReportRtFileHash}|returns:${mDirectReturnsReportFileHash}`
+          : `single:${singleFileHash}`;
+
+    const fileHashes = isAmazon
+      ? [b2cFileHash, b2bFileHash].filter(Boolean)
+      : isMeesho
+        ? [
+            tcsSalesFileHash,
+            tcsSalesReturnFileHash,
+            orderReportFileHash,
+            returnReportFileHash,
+          ].filter(Boolean)
+        : isMyntra
+          ? [
+              gstrReportPackedFileHash,
+              mDirectOrdersReportFileHash,
+              salesRevenuePackedB2cFileHash,
+              gstrReportRtoFileHash,
+              gstrReportRtFileHash,
+              mDirectReturnsReportFileHash,
+            ].filter(Boolean)
+          : [singleFileHash].filter(Boolean);
+
+    const fileName = isAmazon
+      ? `${files.mtrB2bFile?.originalname ?? 'MTR-B2B'} + ${files.mtrB2cFile?.originalname ?? 'MTR-B2C'}`
+      : isMeesho
+        ? `${files.tcsSalesFile?.originalname ?? 'TCS-Sales'} + ${files.tcsSalesReturnFile?.originalname ?? 'TCS-Sales-Return'} + ${files.orderReportFile?.originalname ?? 'Order-Report'} + ${files.returnReportFile?.originalname ?? 'Return-Report'}`
+        : isMyntra
+          ? `${files.gstrReportPackedFile?.originalname ?? 'GSTR-Packed'} + ${files.mDirectOrdersReportFile?.originalname ?? 'MDirect-Orders'} + ${files.salesRevenuePackedB2cFile?.originalname ?? 'Sales-Revenue-B2C'} + ${files.gstrReportRtoFile?.originalname ?? 'GSTR-RTO'} + ${files.gstrReportRtFile?.originalname ?? 'GSTR-RT'} + ${files.mDirectReturnsReportFile?.originalname ?? 'MDirect-Returns'}`
+          : (files.file?.originalname ?? 'report.xlsx');
+
+    return { fileHash, fileHashes, fileName };
+  }
+
+  async processImport(
+    expectedMarketplace: 'flipkart' | 'amazon' | 'meesho' | 'myntra',
+    files: MarketplaceFilesInput,
+    dto: UploadReportDto,
+    ctx: UploadContext,
+    existingUploadId: string | null,
+  ) {
+    const { gst, marketplace, marketplaceIdentifier } = ctx;
+    const isAmazon = marketplaceIdentifier.includes('amazon');
+    const isMeesho = marketplaceIdentifier.includes('meesho');
+    const isMyntra = marketplaceIdentifier.includes('myntra');
+    if (!existingUploadId) {
+      this.assertRequiredFiles(
+        { isAmazon, isMeesho, isMyntra },
+        files,
+      );
+    }
+
     const parsedFlipkart =
       !isAmazon && !isMeesho && !isMyntra && files.file
         ? this.parser.parseFlipkartWorkbook(files.file.buffer)
@@ -85,15 +462,14 @@ export class UploadService {
             returnReportFile: files.returnReportFile,
           })
         : null;
+    // parseFiles is async — yields the event loop between each of the 6 XLSX.read() calls
     const parsedMyntra =
       isMyntra &&
       files.gstrReportPackedFile &&
-      files.mDirectOrdersReportFile &&
       files.salesRevenuePackedB2cFile &&
       files.gstrReportRtoFile &&
-      files.gstrReportRtFile &&
-      files.mDirectReturnsReportFile
-        ? this.myntraImport.parseFiles({
+      files.gstrReportRtFile
+        ? await this.myntraImport.parseFiles({
             gstrReportPackedFile: files.gstrReportPackedFile,
             mDirectOrdersReportFile: files.mDirectOrdersReportFile,
             salesRevenuePackedB2cFile: files.salesRevenuePackedB2cFile,
@@ -102,38 +478,6 @@ export class UploadService {
             mDirectReturnsReportFile: files.mDirectReturnsReportFile,
           })
         : null;
-
-    if (isAmazon) {
-      if (!files.mtrB2cFile) {
-        throw new BadRequestException('Amazon upload requires MTR B2C Report file');
-      }
-    } else if (isMeesho) {
-      if (
-        !files.tcsSalesFile ||
-        !files.tcsSalesReturnFile ||
-        !files.orderReportFile ||
-        !files.returnReportFile
-      ) {
-        throw new BadRequestException(
-          'Meesho upload requires all files: TCS Sales, TCS Sales Return, Order Report, Return Report',
-        );
-      }
-    } else if (isMyntra) {
-      if (
-        !files.gstrReportPackedFile ||
-        !files.mDirectOrdersReportFile ||
-        !files.salesRevenuePackedB2cFile ||
-        !files.gstrReportRtoFile ||
-        !files.gstrReportRtFile ||
-        !files.mDirectReturnsReportFile
-      ) {
-        throw new BadRequestException(
-          'Myntra upload requires all files: GSTR Report Packed, MDirect Orders Report, Sales Revenue Packed B2C, GSTR Report RTO, GSTR Report RT, MDirect Returns Report',
-        );
-      }
-    } else if (!files.file) {
-      throw new BadRequestException('Flipkart upload requires report file');
-    }
 
     if (isAmazon && parsedAmazonB2c) {
       const requiredAmazonHeaderGroups = [
@@ -168,6 +512,8 @@ export class UploadService {
         gst.gstNumber,
         marketplaceIdentifier,
         parsedAmazonB2c.headers,
+        [],
+        amazonImportMapping,
       );
 
       if (parsedAmazonB2b) {
@@ -186,6 +532,8 @@ export class UploadService {
           gst.gstNumber,
           marketplaceIdentifier,
           parsedAmazonB2b.headers,
+          [],
+          amazonImportMapping,
         );
       }
     } else if (parsedFlipkart) {
@@ -235,6 +583,7 @@ export class UploadService {
           ...parsedFlipkart.headers['Cash Back Report'],
         ],
         parsedFlipkart.gstinValues,
+        flipkartImportMapping,
       );
     } else if (isMeesho && parsedMeesho) {
       const requiredTcsSalesHeaderGroups = [
@@ -257,9 +606,9 @@ export class UploadService {
       this.validation.validateRequiredHeaderGroups(
         parsedMeesho.orderReport.headers,
         [
-          [...MEESHO_ORDER_ID_ALIASES],
+          ['Sub Order No', ...MEESHO_ORDER_ID_ALIASES],
           ['SKU', 'SKU ID'],
-          ['Reason for Credit Entry'],
+          ['Reason for Credit Entry', 'Document Type'],
         ],
         'Order Report',
       );
@@ -288,142 +637,73 @@ export class UploadService {
         gst.gstNumber,
         marketplaceIdentifier,
         parsedMeesho.tcsSales.headers,
+        [],
+        meeshoImportMapping,
       );
-      if (!gst.state?.trim()) {
-        throw new BadRequestException(
-          'Seller GST profile state is required for Meesho CGST/SGST calculation',
-        );
-      }
+      // Seller state optional: when missing, CGST/SGST stay blank (inter-state / IGST only).
     } else if (isMyntra && parsedMyntra) {
-      const requiredGstrHeaderGroups = [
-        ['seller_gstin'],
-        ['order_id'],
-        ['payment_method'],
-        ['seller_type'],
-        ['quantity'],
-        ['seller_price'],
-        ['base_value'],
-        ['igst_rate'],
-        ['igst_amt'],
-        ['cgst_rate'],
-        ['cgst_amt'],
-        ['sgst_rate'],
-        ['sgst_amt'],
-        ['customer_delivery_state_code'],
+      // eslint-disable-next-line no-console
+      console.log('[MYNTRA_VALIDATE] checking headers, row counts, and GSTIN…');
+      const myntraValidationReports = [
+        {
+          reportLabel: 'GSTR Report Packed',
+          fileName: files.gstrReportPackedFile?.originalname ?? '',
+          headers: parsedMyntra.gstrReportPacked.headers,
+          rows: parsedMyntra.gstrReportPacked.rows,
+          requiredHeaderGroups: MYNTRA_GSTR_PACKED_HEADERS,
+          checkGstin: true,
+        },
+        {
+          reportLabel: 'Sales Revenue Packed B2C',
+          fileName: files.salesRevenuePackedB2cFile?.originalname ?? '',
+          headers: parsedMyntra.salesRevenueB2c.headers,
+          rows: parsedMyntra.salesRevenueB2c.rows,
+          requiredHeaderGroups: MYNTRA_SALES_REVENUE_HEADERS,
+        },
+        {
+          reportLabel: 'GSTR Report RTO',
+          fileName: files.gstrReportRtoFile?.originalname ?? '',
+          headers: parsedMyntra.gstrReportRto.headers,
+          rows: parsedMyntra.gstrReportRto.rows,
+          requiredHeaderGroups: MYNTRA_GSTR_RTO_HEADERS,
+        },
+        {
+          reportLabel: 'GSTR Report RT',
+          fileName: files.gstrReportRtFile?.originalname ?? '',
+          headers: parsedMyntra.gstrReportRt.headers,
+          rows: parsedMyntra.gstrReportRt.rows,
+          requiredHeaderGroups: MYNTRA_GSTR_RT_HEADERS,
+        },
       ];
-      const requiredMDirectHeaderGroups = [
-        ['order_release_id'],
-        ['seller_sku_code'],
-      ];
-      const requiredSalesRevenueHeaderGroups = [
-        ['Sale_Order_Code', 'sale_order_code'],
-        ['Invoice_Number', 'invoice_number'],
-        ['Packing_Date', 'packing_date'],
-      ];
-      this.validation.validateRequiredHeaderGroups(
-        parsedMyntra.gstrReportPacked.headers,
-        requiredGstrHeaderGroups,
-        'GSTR Report Packed',
-      );
-      this.validation.validateRequiredHeaderGroups(
-        parsedMyntra.mDirectOrders.headers,
-        requiredMDirectHeaderGroups,
-        'MDirect Orders Report',
-      );
-      this.validation.validateRequiredHeaderGroups(
-        parsedMyntra.salesRevenueB2c.headers,
-        requiredSalesRevenueHeaderGroups,
-        'Sales Revenue Packed B2C',
-      );
-      this.validation.validateGstinMatch(
-        parsedMyntra.gstrReportPacked.rows,
-        gst.gstNumber,
-        marketplaceIdentifier,
-        parsedMyntra.gstrReportPacked.headers,
-      );
-      this.validation.validateRequiredHeaderGroups(
-        parsedMyntra.gstrReportRto.headers,
-        [['tax_seller_gstin'], ['order_id']],
-        'GSTR Report RTO',
-      );
-      this.validation.validateRequiredHeaderGroups(
-        parsedMyntra.gstrReportRt.headers,
-        [['tax_seller_gstin'], ['shipment_id']],
-        'GSTR Report RT',
-      );
-      if (parsedMyntra.gstrReportRto.rows.length > 0) {
-        this.validation.validateGstinMatch(
-          parsedMyntra.gstrReportRto.rows,
-          gst.gstNumber,
-          marketplaceIdentifier,
-          parsedMyntra.gstrReportRto.headers,
-        );
+      if (files.mDirectOrdersReportFile) {
+        myntraValidationReports.splice(1, 0, {
+          reportLabel: 'MDirect Orders Report',
+          fileName: files.mDirectOrdersReportFile.originalname,
+          headers: parsedMyntra.mDirectOrders.headers,
+          rows: parsedMyntra.mDirectOrders.rows,
+          requiredHeaderGroups: MYNTRA_MDIRECT_ORDERS_HEADERS,
+        });
       }
-      if (parsedMyntra.gstrReportRt.rows.length > 0) {
-        this.validation.validateGstinMatch(
-          parsedMyntra.gstrReportRt.rows,
-          gst.gstNumber,
-          marketplaceIdentifier,
-          parsedMyntra.gstrReportRt.headers,
-        );
+      if (files.mDirectReturnsReportFile) {
+        myntraValidationReports.push({
+          reportLabel: 'MDirect Returns Report',
+          fileName: files.mDirectReturnsReportFile.originalname,
+          headers: parsedMyntra.mDirectReturns.headers,
+          rows: parsedMyntra.mDirectReturns.rows,
+          requiredHeaderGroups: MYNTRA_MDIRECT_RETURNS_HEADERS,
+        });
       }
-      this.validation.validateRequiredHeaderGroups(
-        parsedMyntra.mDirectReturns.headers,
-        [
-          ['order_release_id', 'order_id'],
-          ['return_mode'],
-          ['return_reason'],
-        ],
-        'MDirect Returns Report',
-      );
+      this.validation.validateMyntraImportBundle(myntraValidationReports, gst.gstNumber);
+      // eslint-disable-next-line no-console
+      console.log('[MYNTRA_VALIDATE] passed');
     }
 
-    const singleFileHash = files.file
-      ? this.validation.computeFileHash(files.file.buffer)
-      : '';
-    const b2bFileHash = files.mtrB2bFile
-      ? this.validation.computeFileHash(files.mtrB2bFile.buffer)
-      : '';
-    const b2cFileHash = files.mtrB2cFile
-      ? this.validation.computeFileHash(files.mtrB2cFile.buffer)
-      : '';
-    const tcsSalesFileHash = files.tcsSalesFile
-      ? this.validation.computeFileHash(files.tcsSalesFile.buffer)
-      : '';
-    const tcsSalesReturnFileHash = files.tcsSalesReturnFile
-      ? this.validation.computeFileHash(files.tcsSalesReturnFile.buffer)
-      : '';
-    const orderReportFileHash = files.orderReportFile
-      ? this.validation.computeFileHash(files.orderReportFile.buffer)
-      : '';
-    const returnReportFileHash = files.returnReportFile
-      ? this.validation.computeFileHash(files.returnReportFile.buffer)
-      : '';
-    const gstrReportPackedFileHash = files.gstrReportPackedFile
-      ? this.validation.computeFileHash(files.gstrReportPackedFile.buffer)
-      : '';
-    const mDirectOrdersReportFileHash = files.mDirectOrdersReportFile
-      ? this.validation.computeFileHash(files.mDirectOrdersReportFile.buffer)
-      : '';
-    const salesRevenuePackedB2cFileHash = files.salesRevenuePackedB2cFile
-      ? this.validation.computeFileHash(files.salesRevenuePackedB2cFile.buffer)
-      : '';
-    const gstrReportRtoFileHash = files.gstrReportRtoFile
-      ? this.validation.computeFileHash(files.gstrReportRtoFile.buffer)
-      : '';
-    const gstrReportRtFileHash = files.gstrReportRtFile
-      ? this.validation.computeFileHash(files.gstrReportRtFile.buffer)
-      : '';
-    const mDirectReturnsReportFileHash = files.mDirectReturnsReportFile
-      ? this.validation.computeFileHash(files.mDirectReturnsReportFile.buffer)
-      : '';
-    const fileHash = isAmazon
-      ? `amazon|b2c:${b2cFileHash}|b2b:${b2bFileHash || 'none'}`
-      : isMeesho
-        ? `meesho|tcsSales:${tcsSalesFileHash}|tcsSalesReturn:${tcsSalesReturnFileHash}|order:${orderReportFileHash}|return:${returnReportFileHash}`
-        : isMyntra
-          ? `myntra|gstr:${gstrReportPackedFileHash}|mdirect:${mDirectOrdersReportFileHash}|sales:${salesRevenuePackedB2cFileHash}|rto:${gstrReportRtoFileHash}|rt:${gstrReportRtFileHash}|returns:${mDirectReturnsReportFileHash}`
-      : `single:${singleFileHash}`;
+    const { fileHash, fileHashes, fileName } = this.buildFileHashBundle(
+      files,
+      isAmazon,
+      isMeesho,
+      isMyntra,
+    );
     const normalizedRows: Array<
       NormalizedImportRow & {
         __sheetName: string;
@@ -453,6 +733,10 @@ export class UploadService {
         }
       });
     } else if (isMeesho && parsedMeesho) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[MEESHO_BUILD] tcsSales=${parsedMeesho.tcsSales.rows.length} tcsReturn=${parsedMeesho.tcsSalesReturn.rows.length} order=${parsedMeesho.orderReport.rows.length} return=${parsedMeesho.returnReport.rows.length}`,
+      );
       const meeshoResult = this.meeshoImport.buildNormalizedRows(
         parsedMeesho,
         gst.state,
@@ -460,7 +744,24 @@ export class UploadService {
       normalizedRows.push(...meeshoResult.rows);
       rowErrors.push(...meeshoResult.errors);
     } else if (isMyntra && parsedMyntra) {
-      const myntraResult = this.myntraImport.buildNormalizedRows(parsedMyntra);
+      if (existingUploadId) {
+        await this.uploadModel.findByIdAndUpdate(existingUploadId, {
+          $set: { totalRecords: 0 },
+        });
+      }
+      // buildNormalizedRows is async — yields every 2000 rows so status-check requests can be served
+      const myntraResult = await this.myntraImport.buildNormalizedRows(parsedMyntra);
+      if (myntraResult.joinIssues && myntraResult.rows.length === 0) {
+        throw new BadRequestException(
+          formatMyntraJoinIssues(myntraResult.joinIssues),
+        );
+      }
+      if (myntraResult.joinIssues && myntraResult.rows.length > 0) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[MYNTRA_BUILD] partial import: built=${myntraResult.rows.length} joinSkipped=${myntraResult.joinIssues.missingInGstr + myntraResult.joinIssues.missingInMdirect + myntraResult.joinIssues.missingOrderIdInSales}`,
+        );
+      }
       normalizedRows.push(...myntraResult.rows);
       rowErrors.push(...myntraResult.errors);
     } else if (parsedFlipkart) {
@@ -507,6 +808,18 @@ export class UploadService {
     const minInvoiceDate = invoiceDates[0];
     const maxInvoiceDate = invoiceDates[invoiceDates.length - 1];
     if (normalizedRows.length === 0) {
+      if (isMyntra && parsedMyntra) {
+        throw new BadRequestException(
+          formatMyntraEmptyImport({
+            'GSTR Report Packed': parsedMyntra.gstrReportPacked.rows.length,
+            'MDirect Orders Report': parsedMyntra.mDirectOrders.rows.length,
+            'Sales Revenue Packed B2C': parsedMyntra.salesRevenueB2c.rows.length,
+            'GSTR Report RTO': parsedMyntra.gstrReportRto.rows.length,
+            'GSTR Report RT': parsedMyntra.gstrReportRt.rows.length,
+            'MDirect Returns Report': parsedMyntra.mDirectReturns.rows.length,
+          }),
+        );
+      }
       const hint = rowErrors.length
         ? `${rowErrors.length} row(s) failed validation/mapping.`
         : 'No data rows found in uploaded file(s). Check sheet names and required columns.';
@@ -519,25 +832,8 @@ export class UploadService {
       sellerId: dto.sellerId,
       gstin: gst.gstNumber,
       marketplace: marketplaceId,
-      fileHashes: isAmazon
-        ? [b2cFileHash, b2bFileHash].filter(Boolean)
-        : isMeesho
-          ? [
-              tcsSalesFileHash,
-              tcsSalesReturnFileHash,
-              orderReportFileHash,
-              returnReportFileHash,
-            ].filter(Boolean)
-          : isMyntra
-            ? [
-                gstrReportPackedFileHash,
-                mDirectOrdersReportFileHash,
-                salesRevenuePackedB2cFileHash,
-                gstrReportRtoFileHash,
-                gstrReportRtFileHash,
-                mDirectReturnsReportFileHash,
-              ].filter(Boolean)
-        : [singleFileHash].filter(Boolean),
+      fileHashes,
+      excludeUploadId: existingUploadId ?? undefined,
     });
     await this.validation.ensureNotDuplicate({
       sellerId: dto.sellerId,
@@ -547,76 +843,46 @@ export class UploadService {
       minInvoiceDate,
       maxInvoiceDate,
       totalRecords: normalizedRows.length,
+      excludeUploadId: existingUploadId ?? undefined,
     });
 
-    const upload = await this.uploadModel.create({
-      sellerId: dto.sellerId,
-      gstId: dto.gstId,
-      gstin: gst.gstNumber,
-      marketplace: marketplaceId,
-      fileName: isAmazon
-        ? `${files.mtrB2bFile?.originalname ?? 'MTR-B2B'} + ${files.mtrB2cFile?.originalname ?? 'MTR-B2C'}`
-        : isMeesho
-          ? `${files.tcsSalesFile?.originalname ?? 'TCS-Sales'} + ${files.tcsSalesReturnFile?.originalname ?? 'TCS-Sales-Return'} + ${files.orderReportFile?.originalname ?? 'Order-Report'} + ${files.returnReportFile?.originalname ?? 'Return-Report'}`
-          : isMyntra
-            ? `${files.gstrReportPackedFile?.originalname ?? 'GSTR-Packed'} + ${files.mDirectOrdersReportFile?.originalname ?? 'MDirect-Orders'} + ${files.salesRevenuePackedB2cFile?.originalname ?? 'Sales-Revenue-B2C'} + ${files.gstrReportRtoFile?.originalname ?? 'GSTR-RTO'} + ${files.gstrReportRtFile?.originalname ?? 'GSTR-RT'} + ${files.mDirectReturnsReportFile?.originalname ?? 'MDirect-Returns'}`
-        : (files.file?.originalname ?? 'report.xlsx'),
-      fileHash,
-      totalRecords: normalizedRows.length,
-      minInvoiceDate,
-      maxInvoiceDate,
-      salesRecords: normalizedRows.filter((row) => row.reportType === 'sales')
-        .length,
-      cashbackRecords: normalizedRows.filter(
-        (row) => row.reportType === 'cashback',
-      ).length,
-      status: 'processing',
-    });
-
-    const uploadId = upload._id?.toString?.() ?? '';
-    const BATCH_SIZE = 1000;
-    for (let i = 0; i < normalizedRows.length; i += BATCH_SIZE) {
-      const batch = normalizedRows.slice(i, i + BATCH_SIZE);
-      await this.rowModel.insertMany(
-        batch.map((row) => ({
-          uploadId,
-          sellerId: dto.sellerId,
-          gstin: gst.gstNumber,
-          marketplace: marketplaceId,
-          reportType: row.reportType,
-          documentType: row.documentType,
-          voucherType: row.voucherType,
-          orderID: row.orderID,
-          skuID: row.skuID,
-          hsnCode: row.hsnCode,
-          paymentMode: row.paymentMode,
-          fulfilmentType: row.fulfilmentType,
-          quantity: row.quantity,
-          invoiceAmount: row.invoiceAmount,
-          taxableAmount: row.taxableAmount,
-          igstRate: row.igstRate,
-          igstAmount: row.igstAmount,
-          cgstRate: row.cgstRate,
-          cgstAmount: row.cgstAmount,
-          sgstRate: row.sgstRate,
-          sgstAmount: row.sgstAmount,
-          invoiceNo: row.invoiceNo,
-          buyerInvoiceDate: row.buyerInvoiceDate,
-          invoiceDate: row.invoiceDate,
-          pincode: row.pincode,
-          stateName: row.stateName,
-          customerGstNo: row.customerGstNo,
-          buyerName: row.buyerName,
-          returnInvoiceDate: row.returnInvoiceDate,
-          typeOfReturn: row.typeOfReturn,
-          subType: row.subType,
-          returnQty: row.returnQty,
-          returnReason: row.returnReason,
-          detailedReturnReason: row.detailedReturnReason,
-        })),
-        { ordered: false },
-      );
+    let uploadId = existingUploadId ?? '';
+    if (!uploadId) {
+      const upload = await this.uploadModel.create({
+        sellerId: dto.sellerId,
+        gstId: dto.gstId,
+        gstin: gst.gstNumber,
+        marketplace: marketplaceId,
+        fileName,
+        fileHash,
+        totalRecords: normalizedRows.length,
+        minInvoiceDate,
+        maxInvoiceDate,
+        salesRecords: normalizedRows.filter((row) => row.reportType === 'sales')
+          .length,
+        cashbackRecords: normalizedRows.filter(
+          (row) => row.reportType === 'cashback',
+        ).length,
+        status: 'processing',
+      });
+      uploadId = upload._id?.toString?.() ?? '';
     }
+
+    await insertImportRowsInBatches(
+      this.rowModel,
+      normalizedRows,
+      {
+        uploadId,
+        sellerId: dto.sellerId,
+        gstin: gst.gstNumber,
+        marketplace: marketplaceId,
+      },
+      async (savedCount) => {
+        await this.uploadModel.findByIdAndUpdate(uploadId, {
+          $set: { totalRecords: savedCount },
+        });
+      },
+    );
 
     if (rowErrors.length) {
       await this.rowErrorModel.insertMany(
@@ -624,12 +890,30 @@ export class UploadService {
       );
     }
 
+    const salesRecords = normalizedRows.filter(
+      (row) => row.reportType === 'sales',
+    ).length;
+    const cashbackRecords = normalizedRows.filter(
+      (row) => row.reportType === 'cashback',
+    ).length;
+
     await this.uploadModel.findByIdAndUpdate(uploadId, {
-      $set: { status: 'completed' },
+      $set: {
+        status: 'completed',
+        totalRecords: normalizedRows.length,
+        minInvoiceDate,
+        maxInvoiceDate,
+        salesRecords,
+        cashbackRecords,
+        fileHash,
+        fileName,
+      },
+      $unset: { errorMessage: 1 },
     });
 
     return {
       success: true,
+      status: 'completed' as const,
       message: 'File uploaded successfully',
       uploadId,
       count: normalizedRows.length,

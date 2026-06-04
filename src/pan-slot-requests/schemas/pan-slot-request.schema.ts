@@ -52,7 +52,7 @@ export class PanSlotRequest {
   @Prop({ required: true, min: 1 })
   requestedPanSlots: number;
 
-  @Prop({ required: true, enum: PAN_SLOT_DURATION_TYPES })
+  @Prop({ type: String, required: true, enum: PAN_SLOT_DURATION_TYPES })
   durationType: PanSlotDurationType;
 
   @Prop({ required: true, min: 1 })
@@ -62,6 +62,7 @@ export class PanSlotRequest {
   remarks?: string;
 
   @Prop({
+    type: String,
     required: true,
     enum: PAN_SLOT_REQUEST_STATUSES,
     default: 'PENDING',

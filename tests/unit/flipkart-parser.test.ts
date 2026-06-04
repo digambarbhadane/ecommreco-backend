@@ -62,6 +62,32 @@ describe('FileParserService Flipkart', () => {
     expect(parsed.gstinValues).toContain('07AAXFB7609K1ZS');
   });
 
+  it('reads GSTIN when column is not the first column (sparse row fix)', () => {
+    const salesData = [
+      ['', 'Seller GSTIN', 'Order ID'],
+      ['', '07AAXFB7609K1ZS', 'ORD-1'],
+      ['', '07AAXFB7609K1ZS', 'ORD-2'],
+    ];
+    const cashbackData = [
+      ['', 'Seller GSTIN', 'Order ID'],
+      ['', '07AAXFB7609K1ZS', 'ORD-3'],
+    ];
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.aoa_to_sheet(salesData),
+      'Sales Report',
+    );
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.aoa_to_sheet(cashbackData),
+      'Cash Back Report',
+    );
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+    const parsed = parser.parseFlipkartWorkbook(buffer);
+    expect(parsed.gstinValues).toContain('07AAXFB7609K1ZS');
+  });
+
   it('parses Seller GSTIN from Sales and Cash Back sheets', () => {
     const buffer = buildFlipkartWorkbook();
     const parsed = parser.parseFlipkartWorkbook(buffer);

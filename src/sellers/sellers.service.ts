@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import * as bcrypt from 'bcrypt';
 import { NotificationsService } from '../notifications/notifications.service';
 import { GenerateCredentialsDto } from './dto/generate-credentials.dto';
@@ -61,7 +61,30 @@ export class SellersService {
       delete sanitized.credentialsSentAt;
     }
 
+    const id = sanitized._id;
+    if (id !== undefined && id !== null) {
+      sanitized.id =
+        typeof id === 'string'
+          ? id
+          : typeof (id as { toString?: () => string }).toString === 'function'
+            ? (id as { toString: () => string }).toString()
+            : String(id);
+    }
     return sanitized;
+  }
+
+  private async findSellerByIdentifier(identifier: string) {
+    const value = String(identifier ?? '').trim();
+    if (!value) return null;
+    if (Types.ObjectId.isValid(value)) {
+      const sellerById = await this.sellerModel.findById(value).exec();
+      if (sellerById) return sellerById;
+    }
+    const sellerByPublicId = await this.sellerModel
+      .findOne({ publicId: value })
+      .exec();
+    if (sellerByPublicId) return sellerByPublicId;
+    return null;
   }
 
   async register(dto: RegisterSellerDto) {
@@ -223,7 +246,7 @@ export class SellersService {
   }
 
   async getSeller(sellerId: string, role: ViewerRole, user?: RequestUser) {
-    const seller = await this.sellerModel.findById(sellerId).exec();
+    const seller = await this.findSellerByIdentifier(sellerId);
     if (!seller) {
       throw new NotFoundException({
         success: false,

@@ -12,13 +12,15 @@ import {
   Controller,
   Get,
   Header,
+  Param,
   Post,
   Query,
+  UploadedFile,
   UploadedFiles,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
-import { FileFieldsInterceptor } from '@nestjs/platform-express';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { AuthGuard } from '@nestjs/passport';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
@@ -26,6 +28,12 @@ import { ListImportedRowsDto } from './dto/list-imported-rows.dto';
 import { UploadReportDto } from './dto/upload-report.dto';
 import { ReportImportService } from './report-import.service';
 import { UploadService } from './services/upload.service';
+import { ImportSessionService } from './services/import-session.service';
+import {
+  MarketplaceUploadKey,
+  ReportUploadMultipart,
+} from './marketplace-upload.routes';
+import type { UploadedReportFiles } from './marketplace-upload.routes';
 
 @ApiTags('Report-Import')
 @ApiBearerAuth()
@@ -35,7 +43,69 @@ export class ReportImportController {
   constructor(
     private readonly uploadService: UploadService,
     private readonly reportImportService: ReportImportService,
+    private readonly importSessionService: ImportSessionService,
   ) {}
+
+  @Post('import-session')
+  @ApiOperation({
+    summary: 'Start multi-file import session',
+    description:
+      'Create a session, upload each Excel file separately, then commit. Avoids single huge upload timeouts.',
+  })
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  createImportSession(
+    @Query('marketplace') marketplace: string,
+    @Body() dto: UploadReportDto,
+  ) {
+    const key = (marketplace ?? '').trim().toLowerCase() as MarketplaceUploadKey;
+    if (!['flipkart', 'amazon', 'meesho', 'myntra'].includes(key)) {
+      throw new BadRequestException('marketplace query is required');
+    }
+    return this.importSessionService.createSession(key, dto);
+  }
+
+  @Post('import-session/:sessionId/file')
+  @ApiOperation({ summary: 'Add one report file to import session' })
+  @ApiConsumes('multipart/form-data')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: 100 * 1024 * 1024 },
+    }),
+  )
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  addImportSessionFile(
+    @Param('sessionId') sessionId: string,
+    @Body('slot') slot: string,
+    @Body('sellerId') sellerId: string,
+    @UploadedFile() file?: { buffer: Buffer; originalname: string },
+  ) {
+    if (!file?.buffer) {
+      throw new BadRequestException('file is required');
+    }
+    if (!slot?.trim()) {
+      throw new BadRequestException('slot is required');
+    }
+    if (!sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
+    return this.importSessionService.addFile(sessionId, sellerId.trim(), slot.trim(), {
+      buffer: file.buffer,
+      originalname: file.originalname,
+    });
+  }
+
+  @Post('import-session/:sessionId/commit')
+  @ApiOperation({
+    summary: 'Commit import session',
+    description: 'Parse Excel data in memory and save rows to the database.',
+  })
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  commitImportSession(
+    @Param('sessionId') sessionId: string,
+    @Body() dto: UploadReportDto,
+  ) {
+    return this.importSessionService.commit(sessionId, dto);
+  }
 
   @Get('config')
   @ApiOperation({ summary: 'Get import config', description: 'Returns required sheets and columns for a marketplace import.' })
@@ -105,15 +175,14 @@ export class ReportImportController {
         data: {
           marketplace: 'myntra',
           processingNote:
-            'Upload all 6 files together. Rows are built from Sales Revenue Packed B2C and enriched by order id. GSTR RTO marks RTO Return; GSTR RT marks Customer Return.',
+            'Upload the 4 required reports together (MDirect Orders and Returns are optional). Rows are built from Sales Revenue Packed B2C and enriched by order id. GSTR RTO marks RTO Return; GSTR RT marks Customer Return.',
           requiredSheets: [
             'GSTR Report Packed',
-            'MDirect Orders Report',
             'Sales Revenue Packed B2C (primary)',
             'GSTR Report RTO',
             'GSTR Report RT',
-            'MDirect Returns Report',
           ],
+          optionalSheets: ['MDirect Orders Report', 'MDirect Returns Report'],
           requiredColumns: {
             'GSTR Report Packed': [
               'seller_gstin',
@@ -131,7 +200,7 @@ export class ReportImportController {
               'sgst_amt',
               'customer_delivery_state_code',
             ],
-            'MDirect Orders Report': ['order_release_id', 'seller_sku_code'],
+            'MDirect Orders Report (optional)': ['order_release_id', 'seller_sku_code'],
             'Sales Revenue Packed B2C': [
               'Sale_Order_Code',
               'Invoice_Number',
@@ -139,11 +208,7 @@ export class ReportImportController {
             ],
             'GSTR Report RTO': ['tax_seller_gstin', 'order_id'],
             'GSTR Report RT': ['tax_seller_gstin', 'shipment_id'],
-            'MDirect Returns Report': [
-              'order_release_id / order_id',
-              'return_mode',
-              'return_reason',
-            ],
+            'MDirect Returns Report (optional)': ['order_id'],
           },
         },
       };
@@ -239,57 +304,64 @@ export class ReportImportController {
 
   @Post('flipkart/upload')
   @ApiOperation({
-    summary: 'Upload marketplace report',
-    description: 'Upload Excel/CSV reports for Flipkart, Amazon, Meesho, or Myntra. Supports multiple file fields including Myntra gstrReportPackedFile, mDirectOrdersReportFile, salesRevenuePackedB2cFile, gstrReportRtoFile, gstrReportRtFile, mDirectReturnsReportFile. At least one file is required.',
+    summary: 'Upload Flipkart Sales Report',
+    description:
+      'Upload Flipkart workbook (Sales Report + Cash Back Report sheets) via the `file` field.',
   })
-  @Roles('seller', 'super_admin', 'accounts_manager')
-  @ApiConsumes('multipart/form-data')
-  @UseInterceptors(
-    FileFieldsInterceptor(
-      [
-        { name: 'file', maxCount: 1 },
-        { name: 'mtrB2bFile', maxCount: 1 },
-        { name: 'mtrB2cFile', maxCount: 1 },
-        { name: 'tcsSalesFile', maxCount: 1 },
-        { name: 'tcsSalesReturnFile', maxCount: 1 },
-        { name: 'orderReportFile', maxCount: 1 },
-        { name: 'returnReportFile', maxCount: 1 },
-        { name: 'gstrReportPackedFile', maxCount: 1 },
-        { name: 'mDirectOrdersReportFile', maxCount: 1 },
-        { name: 'salesRevenuePackedB2cFile', maxCount: 1 },
-        { name: 'gstrReportRtoFile', maxCount: 1 },
-        { name: 'gstrReportRtFile', maxCount: 1 },
-        { name: 'mDirectReturnsReportFile', maxCount: 1 },
-      ],
-      {
-        limits: { fileSize: 50 * 1024 * 1024 },
-      },
-    ),
-  )
+  @ReportUploadMultipart()
   uploadFlipkart(
-    @UploadedFiles()
-    files: {
-      file?: Array<{ buffer: Buffer; originalname: string }>;
-      mtrB2bFile?: Array<{ buffer: Buffer; originalname: string }>;
-      mtrB2cFile?: Array<{ buffer: Buffer; originalname: string }>;
-      tcsSalesFile?: Array<{ buffer: Buffer; originalname: string }>;
-      tcsSalesReturnFile?: Array<{ buffer: Buffer; originalname: string }>;
-      orderReportFile?: Array<{ buffer: Buffer; originalname: string }>;
-      returnReportFile?: Array<{ buffer: Buffer; originalname: string }>;
-      gstrReportPackedFile?: Array<{ buffer: Buffer; originalname: string }>;
-      mDirectOrdersReportFile?: Array<{ buffer: Buffer; originalname: string }>;
-      salesRevenuePackedB2cFile?: Array<{
-        buffer: Buffer;
-        originalname: string;
-      }>;
-      gstrReportRtoFile?: Array<{ buffer: Buffer; originalname: string }>;
-      gstrReportRtFile?: Array<{ buffer: Buffer; originalname: string }>;
-      mDirectReturnsReportFile?: Array<{
-        buffer: Buffer;
-        originalname: string;
-      }>;
-    },
+    @UploadedFiles() files: UploadedReportFiles,
     @Body() dto: UploadReportDto,
+  ) {
+    return this.dispatchMarketplaceUpload('flipkart', files, dto);
+  }
+
+  @Post('amazon/upload')
+  @ApiOperation({
+    summary: 'Upload Amazon MTR reports',
+    description:
+      'Upload Amazon MTR B2C (required) and optional B2B via `mtrB2cFile` / `mtrB2bFile`.',
+  })
+  @ReportUploadMultipart()
+  uploadAmazon(
+    @UploadedFiles() files: UploadedReportFiles,
+    @Body() dto: UploadReportDto,
+  ) {
+    return this.dispatchMarketplaceUpload('amazon', files, dto);
+  }
+
+  @Post('meesho/upload')
+  @ApiOperation({
+    summary: 'Upload Meesho reports',
+    description:
+      'Upload all four Meesho files: tcsSalesFile, tcsSalesReturnFile, orderReportFile, returnReportFile.',
+  })
+  @ReportUploadMultipart()
+  uploadMeesho(
+    @UploadedFiles() files: UploadedReportFiles,
+    @Body() dto: UploadReportDto,
+  ) {
+    return this.dispatchMarketplaceUpload('meesho', files, dto);
+  }
+
+  @Post('myntra/upload')
+  @ApiOperation({
+    summary: 'Upload Myntra reports',
+    description:
+      'Upload Myntra reports: gstrReportPackedFile, salesRevenuePackedB2cFile, gstrReportRtoFile, gstrReportRtFile (required). mDirectOrdersReportFile and mDirectReturnsReportFile are optional.',
+  })
+  @ReportUploadMultipart()
+  uploadMyntra(
+    @UploadedFiles() files: UploadedReportFiles,
+    @Body() dto: UploadReportDto,
+  ) {
+    return this.dispatchMarketplaceUpload('myntra', files, dto);
+  }
+
+  private dispatchMarketplaceUpload(
+    marketplace: MarketplaceUploadKey,
+    files: UploadedReportFiles,
+    dto: UploadReportDto,
   ) {
     const singleFile = files?.file?.[0];
     const mtrB2bFile = files?.mtrB2bFile?.[0];
@@ -321,7 +393,8 @@ export class ReportImportController {
     ) {
       throw new BadRequestException('At least one file is required');
     }
-    return this.uploadService.uploadFlipkart(
+    return this.uploadService.uploadMarketplaceReport(
+      marketplace,
       {
         file: singleFile,
         mtrB2bFile,
@@ -348,6 +421,59 @@ export class ReportImportController {
     return this.reportImportService.listImportedRows(query);
   }
 
+  @Get('platform-analytics')
+  @ApiOperation({
+    summary: 'Platform analytics',
+    description:
+      'Aggregated GMV, marketplace mix, seller performance, and category metrics across imported report data.',
+  })
+  @Roles('super_admin')
+  platformAnalytics(
+    @Query('fromDate') fromDate?: string,
+    @Query('toDate') toDate?: string,
+  ) {
+    return this.reportImportService.getPlatformAnalytics({ fromDate, toDate });
+  }
+
+  @Get('dashboard')
+  @ApiOperation({
+    summary: 'Seller dashboard stats',
+    description:
+      'Aggregated imported-row metrics for the seller dashboard (counts, amounts, trends, recent uploads).',
+  })
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  dashboard(@Query() query: ListImportedRowsDto) {
+    if (!query.sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
+    return this.reportImportService.getSellerDashboardStats({
+      sellerId: query.sellerId.trim(),
+      gstin: query.gstin,
+      fromDate: query.fromDate,
+      toDate: query.toDate,
+    });
+  }
+
+  @Get('profit-loss')
+  @ApiOperation({
+    summary: 'Seller profit & loss stats',
+    description:
+      'P&L metrics from imported rows: revenue (sales), return loss, fees/tax, net profit, by marketplace and month.',
+  })
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  profitLoss(@Query() query: ListImportedRowsDto) {
+    if (!query.sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
+    return this.reportImportService.getSellerProfitLossStats({
+      sellerId: query.sellerId.trim(),
+      gstin: query.gstin,
+      marketplace: query.marketplace,
+      fromDate: query.fromDate,
+      toDate: query.toDate,
+    });
+  }
+
   @Get('summary')
   @ApiOperation({ summary: 'Get import summary', description: 'Returns document type summary for imported reports.' })
   @Roles('seller', 'super_admin', 'accounts_manager')
@@ -370,6 +496,22 @@ export class ReportImportController {
   @Roles('seller', 'super_admin', 'accounts_manager')
   uploads(@Query('sellerId') sellerId?: string) {
     return this.reportImportService.listUploads(sellerId);
+  }
+
+  @Get('uploads/:uploadId/status')
+  @ApiOperation({
+    summary: 'Get import upload status',
+    description: 'Poll after Myntra/Meesho/Amazon upload while status is processing.',
+  })
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  uploadStatus(
+    @Param('uploadId') uploadId: string,
+    @Query('sellerId') sellerId: string,
+  ) {
+    if (!sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
+    return this.uploadService.getUploadStatus(uploadId, sellerId.trim());
   }
 
   @Get('errors-csv')

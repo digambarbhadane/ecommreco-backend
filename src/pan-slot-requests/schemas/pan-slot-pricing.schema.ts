@@ -7,7 +7,7 @@ export type PanSlotPricingDocument = PanSlotPricing & Document;
 
 @Schema({ timestamps: true, collection: 'pan_slot_pricing' })
 export class PanSlotPricing {
-  @Prop({ required: true, unique: true, enum: PAN_SLOT_DURATION_TYPES })
+  @Prop({ type: String, required: true, unique: true, enum: PAN_SLOT_DURATION_TYPES })
   durationType: PanSlotDurationType;
 
   @Prop({ required: true })

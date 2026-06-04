@@ -9,6 +9,12 @@ export const meeshoImportMapping: MarketplaceImportMapping = {
   },
   orderId: {
     databaseField: 'orderID',
-    excelColumns: ['sub_order_num', 'sub order num', 'order number'],
+    excelColumns: [
+      'sub_order_num',
+      'sub order num',
+      'Sub Order No',
+      'Order ID',
+      'order number',
+    ],
   },
 };

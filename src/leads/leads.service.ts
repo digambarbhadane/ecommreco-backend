@@ -1065,7 +1065,7 @@ export class LeadsService {
       ],
       notes: [
         {
-          content: `Lead created by seller ${dto.fullName}. Source: ${source}`,
+          content: `Lead created by seller ${dto.fullName}. Source: ${source}. Services: ${dto.servicesNeeded}`,
           addedBy: dto.fullName,
           createdAt: new Date(),
         },
