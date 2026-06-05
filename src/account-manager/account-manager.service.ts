@@ -68,6 +68,8 @@ export class AccountManagerService {
   async findAllConversionLeads(user?: RequestUser) {
     const { role, email } = this.assertAccountManagerAccess(user);
 
+    await this.repairStuckConversionLeads();
+
     const baseAnd: Array<Record<string, unknown>> = [
       { leadStatus: 'converted' },
       {
@@ -78,7 +80,12 @@ export class AccountManagerService {
         ],
       },
       { 'paymentDetails.status': 'completed' },
-      { conversionRequestedAt: { $exists: true } },
+      {
+        $or: [
+          { conversionRequestedAt: { $exists: true, $ne: null } },
+          { convertedAt: { $exists: true, $ne: null } },
+        ],
+      },
     ];
 
     if (role === 'accounts_manager' && email) {
@@ -141,11 +148,9 @@ export class AccountManagerService {
     if (lead.paymentDetails?.status !== 'completed') {
       throw new BadRequestException('Payment is not completed');
     }
-    if (
-      !(lead as unknown as { conversionRequestedAt?: Date })
-        .conversionRequestedAt
-    ) {
-      throw new BadRequestException('Conversion request not found');
+    this.repairConversionLeadFields(lead);
+    if (lead.isModified()) {
+      await lead.save();
     }
 
     if (role === 'accounts_manager') {
@@ -183,12 +188,7 @@ export class AccountManagerService {
     if (lead.paymentDetails?.status !== 'completed') {
       throw new BadRequestException('Payment is not completed');
     }
-    if (
-      !(lead as unknown as { conversionRequestedAt?: Date })
-        .conversionRequestedAt
-    ) {
-      throw new BadRequestException('Conversion request not found');
-    }
+    this.repairConversionLeadFields(lead);
 
     if (role === 'accounts_manager') {
       if (
@@ -203,14 +203,26 @@ export class AccountManagerService {
       }
     }
 
+    const normalizedEmail = dto.email.trim().toLowerCase();
+    const resolvedGstNumber =
+      (typeof dto.gstNumber === 'string' && dto.gstNumber.trim()
+        ? dto.gstNumber.trim().toUpperCase()
+        : '') ||
+      (typeof lead.gstNumber === 'string' && lead.gstNumber.trim()
+        ? lead.gstNumber.trim().toUpperCase()
+        : '') ||
+      'PENDING';
+
+    const conflictConditions: Array<Record<string, unknown>> = [
+      { email: normalizedEmail },
+      { contactNumber: dto.contactNumber },
+    ];
+    if (resolvedGstNumber !== 'PENDING') {
+      conflictConditions.push({ gstNumber: resolvedGstNumber });
+    }
+
     const conflict = await this.sellerModel
-      .findOne({
-        $or: [
-          { email: dto.email.toLowerCase() },
-          { contactNumber: dto.contactNumber },
-          { gstNumber: dto.gstNumber },
-        ],
-      })
+      .findOne({ $or: conflictConditions })
       .lean()
       .exec();
     if (conflict) {
@@ -227,8 +239,8 @@ export class AccountManagerService {
 
     lead.fullName = dto.fullName;
     lead.contactNumber = dto.contactNumber;
-    lead.email = dto.email.toLowerCase();
-    lead.gstNumber = dto.gstNumber;
+    lead.email = normalizedEmail;
+    lead.gstNumber = resolvedGstNumber;
     if (dto.businessType) lead.businessType = dto.businessType;
     lead.subscriptionConfig = {
       gstSlots,
@@ -237,6 +249,7 @@ export class AccountManagerService {
       updatedAt: new Date(),
       updatedBy: user?.email || 'accounts_manager',
     };
+    await lead.save();
 
     const paymentCompletedAt = lead.paymentDetails?.paymentDate
       ? new Date(lead.paymentDetails.paymentDate)
@@ -264,13 +277,10 @@ export class AccountManagerService {
       paymentCompletedBy:
         (lead as unknown as { conversionRequestedBy?: string })
           .conversionRequestedBy || 'sales_manager',
-      paymentStatus: 'payment_verified',
+      paymentStatus: 'payment_completed',
       paymentDate: paymentCompletedAt,
       paymentAmount: amount,
-      onboardingStatus: 'payment_verified',
-      paymentVerifiedAt: new Date(),
-      paymentVerifiedBy: user?.email || 'account_manager',
-      verificationNotes: dto.verificationNotes ?? '',
+      onboardingStatus: 'payment_completed',
       salesManager: lead.assignedSalesManager || '',
       businessType: lead.businessType || '',
       leadSource: lead.source || '',
@@ -291,6 +301,7 @@ export class AccountManagerService {
       paymentLinkGeneratedBy: lead.paymentDetails?.generatedBy || '',
       assignedAccountsManager: lead.assignedAccountsManager || email || '',
       salesNotes: '',
+      verificationNotes: dto.verificationNotes ?? '',
     });
 
     const sellerId = String((seller as unknown as { _id: unknown })._id);
@@ -300,7 +311,7 @@ export class AccountManagerService {
     await this.notificationsService.createNotification({
       event: 'seller_created',
       recipientRole: 'super_admin',
-      message: `Seller created for lead ${lead.fullName} by ${user?.email || 'Account Manager'}.`,
+      message: `Seller created for lead ${lead.fullName} by ${user?.email || 'Account Manager'}. Credentials can be generated after account setup.`,
     });
 
     const created = await this.sellerModel.findById(sellerId).lean().exec();
@@ -603,6 +614,62 @@ export class AccountManagerService {
     }
 
     return seller;
+  }
+
+  private repairConversionLeadFields(lead: LeadDocument) {
+    const now = new Date();
+    if (!lead.conversionRequestedAt) {
+      lead.conversionRequestedAt =
+        lead.convertedAt ??
+        (lead.paymentDetails?.paymentDate
+          ? new Date(lead.paymentDetails.paymentDate)
+          : now);
+    }
+    if (!lead.convertedAt) {
+      lead.convertedAt = lead.conversionRequestedAt;
+    }
+    const paymentDetails = lead.paymentDetails ?? {
+      link: 'manual-conversion',
+      status: 'completed' as const,
+      generatedBy: 'system',
+      generatedAt: now,
+    };
+    if (paymentDetails.status !== 'completed') {
+      paymentDetails.status = 'completed';
+    }
+    if (!paymentDetails.paymentDate) {
+      paymentDetails.paymentDate = lead.conversionRequestedAt ?? now;
+    }
+    lead.paymentDetails = paymentDetails;
+  }
+
+  private async repairStuckConversionLeads() {
+    const stuckLeads = await this.leadModel
+      .find({
+        leadStatus: 'converted',
+        $and: [
+          {
+            $or: [
+              { sellerId: { $exists: false } },
+              { sellerId: null },
+              { sellerId: '' },
+            ],
+          },
+          {
+            $or: [
+              { 'paymentDetails.status': { $ne: 'completed' } },
+              { conversionRequestedAt: { $exists: false } },
+              { conversionRequestedAt: null },
+            ],
+          },
+        ],
+      })
+      .exec();
+
+    for (const lead of stuckLeads) {
+      this.repairConversionLeadFields(lead);
+      await lead.save();
+    }
   }
 
   private async sendCredentialsEmail(

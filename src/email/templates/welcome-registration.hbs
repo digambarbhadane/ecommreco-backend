@@ -1,0 +1,100 @@
+<div style="margin:0;padding:0;background:#f1f5f9;font-family:Arial,Helvetica,sans-serif;color:#0f172a">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f1f5f9;padding:24px 12px">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid #e2e8f0">
+          <tr>
+            <td style="background:#003c54;padding:28px 32px">
+              <p style="margin:0;font-size:22px;font-weight:700;color:#ffffff;letter-spacing:0.2px">EcommReco</p>
+              <p style="margin:8px 0 0;font-size:14px;color:#cbd5e1">Ecommerce accounting &amp; reconciliation platform</p>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:32px">
+              <p style="margin:0 0 12px;font-size:18px;font-weight:700;color:#0f172a">
+                Welcome, {{fullName}}!
+              </p>
+              <p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#334155">
+                Thank you for registering with <strong>EcommReco</strong>. We have received your details and our team will connect with you within <strong>24 hours</strong> to understand your business needs and guide you through the next steps.
+              </p>
+
+              <div style="margin:20px 0;padding:16px 18px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px">
+                <p style="margin:0 0 10px;font-size:13px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.4px">
+                  Your registration summary
+                </p>
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="font-size:14px;line-height:1.5">
+                  <tr>
+                    <td style="padding:6px 0;color:#64748b;width:38%">Email</td>
+                    <td style="padding:6px 0;font-weight:600">{{email}}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:6px 0;color:#64748b">Phone</td>
+                    <td style="padding:6px 0;font-weight:600">{{contactNumber}}</td>
+                  </tr>
+                  {{#if servicesLabel}}
+                    <tr>
+                      <td style="padding:6px 0;color:#64748b">Services</td>
+                      <td style="padding:6px 0;font-weight:600">{{servicesLabel}}</td>
+                    </tr>
+                  {{/if}}
+                  {{#if marketplacesLabel}}
+                    <tr>
+                      <td style="padding:6px 0;color:#64748b">Marketplaces</td>
+                      <td style="padding:6px 0;font-weight:600">{{marketplacesLabel}}</td>
+                    </tr>
+                  {{/if}}
+                  {{#if ordersPerMonth}}
+                    <tr>
+                      <td style="padding:6px 0;color:#64748b">Monthly orders</td>
+                      <td style="padding:6px 0;font-weight:600">{{ordersPerMonth}}</td>
+                    </tr>
+                  {{/if}}
+                </table>
+              </div>
+
+              <p style="margin:0 0 10px;font-size:15px;font-weight:700;color:#0f172a">
+                What EcommReco helps you with
+              </p>
+              <ul style="margin:0 0 18px;padding-left:20px;font-size:14px;line-height:1.7;color:#334155">
+                <li>Centralised ecommerce accounting across Amazon, Flipkart, Meesho, Myntra, Shopify and more</li>
+                <li>Automated marketplace reconciliation and GST-ready reporting</li>
+                <li>Multi-GST and multi-marketplace management in one dashboard</li>
+                <li>Import marketplace reports and track revenue, returns, and settlements with clarity</li>
+              </ul>
+
+              <p style="margin:0 0 20px;font-size:14px;line-height:1.6;color:#475569">
+                In the meantime, if you have urgent questions, reply to this email or write to us at
+                <a href="mailto:{{supportEmail}}" style="color:#003c54;font-weight:600">{{supportEmail}}</a>.
+              </p>
+
+              {{#if websiteUrl}}
+                <p style="margin:0">
+                  <a
+                    href="{{websiteUrl}}"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style="display:inline-block;background:#003c54;color:#ffffff;text-decoration:none;padding:12px 18px;border-radius:8px;font-size:14px;font-weight:700"
+                  >
+                    Visit EcommReco
+                  </a>
+                </p>
+              {{/if}}
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:18px 32px;background:#f8fafc;border-top:1px solid #e2e8f0">
+              <p style="margin:0;font-size:12px;line-height:1.6;color:#64748b">
+                This is an automated message from EcommReco. Please do not share sensitive credentials over email.
+              </p>
+              <p style="margin:8px 0 0;font-size:12px;color:#94a3b8">
+                &copy; {{year}} EcommReco. All rights reserved.
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</div>
