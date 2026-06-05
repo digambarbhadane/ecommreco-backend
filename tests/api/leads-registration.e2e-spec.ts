@@ -9,6 +9,7 @@ const validLeadPayload = () => {
   email: `lead-${suffix}@example.com`,
   contactNumber: `98765${suffix.slice(0, 5)}`,
   marketplaces: ['flipkart'],
+  servicesNeeded: 'both',
   ordersPerMonth: '0-1000',
   termsAccepted: true,
   source: 'website',

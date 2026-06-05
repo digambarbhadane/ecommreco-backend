@@ -113,12 +113,42 @@ export class LeadsController {
       body.metadata && typeof body.metadata === 'object'
         ? (body.metadata as Record<string, any>)
         : undefined;
+    const marketplaces = Array.isArray(body.marketplaces)
+      ? body.marketplaces
+          .filter((item): item is string => typeof item === 'string')
+          .map((item) => item.trim().toLowerCase())
+          .filter(Boolean)
+      : undefined;
+    const servicesNeeded =
+      typeof body.servicesNeeded === 'string' &&
+      ['ecommerce_accounting', 'reconciliation', 'both'].includes(
+        body.servicesNeeded.trim().toLowerCase(),
+      )
+        ? (body.servicesNeeded.trim().toLowerCase() as
+            | 'ecommerce_accounting'
+            | 'reconciliation'
+            | 'both')
+        : undefined;
+    const ordersPerMonth =
+      typeof body.ordersPerMonth === 'string' &&
+      ['0-1000', '1000-2000', '2000-3000', '3000+'].includes(
+        body.ordersPerMonth.trim(),
+      )
+        ? (body.ordersPerMonth.trim() as
+            | '0-1000'
+            | '1000-2000'
+            | '2000-3000'
+            | '3000+')
+        : undefined;
 
     const dto: CreateManualLeadDto = {
       contactNumber,
       ...(fullName ? { fullName } : {}),
       ...(email ? { email } : {}),
       ...(gstNumber ? { gstNumber } : {}),
+      ...(marketplaces?.length ? { marketplaces } : {}),
+      ...(servicesNeeded ? { servicesNeeded } : {}),
+      ...(ordersPerMonth ? { ordersPerMonth } : {}),
       ...(source ? { source } : {}),
       ...(assignedSalesManagerId ? { assignedSalesManagerId } : {}),
       ...(assignedSalesManagerEmail ? { assignedSalesManagerEmail } : {}),

@@ -154,10 +154,22 @@ export class SellersService {
         ],
       });
     } else if (role === 'training_and_support_manager') {
-      const viewStatus =
-        requestedStatus === 'active' ? 'active' : 'training_pending';
-      and.push({ onboardingStatus: viewStatus });
-      if (viewStatus === 'training_pending') {
+      const completedView =
+        requestedStatus === 'active' || requestedStatus === 'training_completed';
+      if (completedView) {
+        and.push({
+          $or: [
+            { onboardingStatus: 'training_completed' },
+            {
+              onboardingStatus: 'active',
+              trainingCompletedAt: { $exists: true, $ne: null },
+            },
+          ],
+        });
+      } else {
+        and.push({ onboardingStatus: 'training_pending' });
+      }
+      if (!completedView) {
         and.push({
           $or: [
             { assignedTrainingSupportManager: email },
@@ -208,7 +220,8 @@ export class SellersService {
     if (
       role === 'training_and_support_manager' &&
       email &&
-      requestedStatus !== 'active'
+      requestedStatus !== 'active' &&
+      requestedStatus !== 'training_completed'
     ) {
       const toAssign = data
         .filter((s) => !s.assignedTrainingSupportManager)
@@ -572,7 +585,9 @@ export class SellersService {
         message: 'Seller is not ready for training completion',
       });
     }
-    seller.onboardingStatus = 'active';
+    seller.onboardingStatus = 'training_completed';
+    seller.accountStatus = 'active';
+    seller.trainingStatus = 'completed';
     seller.trainingCompletedAt = new Date();
     seller.trainingCompletedBy = user?.email || 'admin';
     await seller.save();

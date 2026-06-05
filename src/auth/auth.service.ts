@@ -46,6 +46,13 @@ const blockedSellerLoginStatuses = new Set([
   'payment_pending',
 ]);
 
+/** Login allowed only after super admin approves credentials. */
+const allowedSellerLoginStatuses = new Set([
+  'training_pending',
+  'training_completed',
+  'active',
+]);
+
 const disabledAdminStatuses = new Set(['blocked', 'rejected']);
 
 @Injectable()
@@ -115,6 +122,24 @@ export class AuthService implements OnModuleInit {
             message: 'Account is pending approval',
             errorCode: 'ACCOUNT_PENDING',
           });
+        }
+        if (adminUser.role === 'seller') {
+          const sellerForLogin =
+            seller ??
+            (await this.sellerModel
+              .findOne({ email: adminUser.email })
+              .lean()
+              .exec());
+          const loginCheck = this.evaluateSellerLogin(
+            sellerForLogin ?? { onboardingStatus: 'payment_pending' },
+          );
+          if (!loginCheck.allowed) {
+            throw new UnauthorizedException({
+              success: false,
+              message: loginCheck.message,
+              errorCode: loginCheck.errorCode,
+            });
+          }
         }
         const user: AuthUser = {
           id: adminUser._id.toString(),
@@ -650,6 +675,15 @@ export class AuthService implements OnModuleInit {
         message:
           'Account is not ready for login yet. Complete payment and credential setup first.',
         errorCode: 'SELLER_NOT_APPROVED',
+      };
+    }
+
+    if (!allowedSellerLoginStatuses.has(status)) {
+      return {
+        allowed: false,
+        message:
+          'Your account is pending super admin approval. You can log in after credentials are approved.',
+        errorCode: 'SELLER_PENDING_APPROVAL',
       };
     }
 
