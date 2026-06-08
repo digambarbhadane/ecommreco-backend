@@ -10,6 +10,7 @@ import {
   PlatformMarketplaceSchema,
 } from '../platform-marketplaces/schemas/platform-marketplace.schema';
 import { Seller, SellerSchema } from '../sellers/schemas/seller.schema';
+import { User, UserSchema } from '../users/schemas/user.schema';
 import { ReportImportController } from './report-import.controller';
 import { ReportImportService } from './report-import.service';
 import {
@@ -34,6 +35,7 @@ import { ImportSessionService } from './services/import-session.service';
     MongooseModule.forFeature([
       { name: Gst.name, schema: GstSchema },
       { name: Seller.name, schema: SellerSchema },
+      { name: User.name, schema: UserSchema },
       { name: Marketplace.name, schema: MarketplaceSchema },
       { name: PlatformMarketplace.name, schema: PlatformMarketplaceSchema },
       { name: ImportUpload.name, schema: ImportUploadSchema },

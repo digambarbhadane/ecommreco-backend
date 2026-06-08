@@ -45,6 +45,7 @@ export class UsersController {
     @Query('limit') limit?: string,
     @Query('skip') skip?: string,
     @Query('search') search?: string,
+    @Query('role') role?: string,
   ) {
     const parsedLimit = typeof limit === 'string' ? Number(limit) : undefined;
     const parsedSkip = typeof skip === 'string' ? Number(skip) : undefined;
@@ -52,6 +53,7 @@ export class UsersController {
       limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
       skip: Number.isFinite(parsedSkip) ? parsedSkip : undefined,
       search,
+      role,
     });
   }
 

@@ -1,5 +1,6 @@
 import { flipkartImportMapping } from '../../src/report-import/config/importMappings/flipkart.mapping';
 import { amazonImportMapping } from '../../src/report-import/config/importMappings/amazon.mapping';
+import { meeshoImportMapping } from '../../src/report-import/config/importMappings/meesho.mapping';
 import {
   extractGstinsFromRows,
   headerMatchesExcelColumn,
@@ -34,6 +35,38 @@ describe('gst-column.util', () => {
     expect(
       headerMatchesExcelColumn('Detailed Return Reason', 'Detailed Return Reason'),
     ).toBe(true);
+  });
+
+  it('does not treat CGST/SGST/IGST NO columns as GST NO', () => {
+    expect(headerMatchesExcelColumn('CGST NO', 'GST NO')).toBe(false);
+    expect(headerMatchesExcelColumn('SGST NO', 'GST NO')).toBe(false);
+    expect(headerMatchesExcelColumn('IGST NO', 'GST NO')).toBe(false);
+    expect(headerMatchesExcelColumn('GST NO', 'GST NO')).toBe(true);
+    expect(headerMatchesExcelColumn('GST NO = Seller GSTIN', 'GST NO')).toBe(
+      true,
+    );
+  });
+
+  it('reads GSTIN from a single primary column when multiple aliases match', () => {
+    const rows: ParsedSheetRow[] = [
+      {
+        __sheetName: 'TCS Sales',
+        __rowNumber: 2,
+        gstin: '27AAAAA0000A1Z5',
+        'GST NO': '29BBBBB0000B1Z5',
+      },
+      {
+        __sheetName: 'TCS Sales',
+        __rowNumber: 3,
+        gstin: '27AAAAA0000A1Z5',
+        'GST NO': '29BBBBB0000B1Z5',
+      },
+    ];
+    const { values } = extractGstinsFromRows(rows, meeshoImportMapping, [
+      'gstin',
+      'GST NO',
+    ]);
+    expect([...values]).toEqual(['27AAAAA0000A1Z5']);
   });
 
   it('extracts Flipkart GSTIN from Seller GSTIN column', () => {

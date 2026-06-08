@@ -8,8 +8,10 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import * as bcrypt from 'bcrypt';
 import * as nodemailer from 'nodemailer';
+import { randomBytes } from 'crypto';
 import { Seller, SellerDocument } from '../sellers/schemas/seller.schema';
 import { Lead, LeadDocument } from '../leads/schemas/lead.schema';
+import { User, UserDocument } from '../users/schemas/user.schema';
 import { generatePublicId } from '../common/public-id';
 import { NotificationsService } from '../notifications/notifications.service';
 import { VerifyPaymentDto } from './dto/verify-payment.dto';
@@ -41,6 +43,7 @@ export class AccountManagerService {
   constructor(
     @InjectModel(Seller.name) private sellerModel: Model<SellerDocument>,
     @InjectModel(Lead.name) private leadModel: Model<LeadDocument>,
+    @InjectModel(User.name) private userModel: Model<UserDocument>,
     private readonly notificationsService: NotificationsService,
   ) {}
 
@@ -52,6 +55,101 @@ export class AccountManagerService {
       throw new ForbiddenException('Access denied');
     }
     return { role, email };
+  }
+
+  private formatSellerResponse(seller: SellerDocument | Record<string, unknown>) {
+    const raw =
+      typeof (seller as SellerDocument).toObject === 'function'
+        ? (seller as SellerDocument).toObject()
+        : { ...seller };
+    const { password, ...rest } = raw as Record<string, unknown> & {
+      password?: string;
+      _id?: Types.ObjectId;
+    };
+    void password;
+    const id =
+      rest._id instanceof Types.ObjectId
+        ? rest._id.toString()
+        : typeof rest._id === 'string'
+          ? rest._id
+          : undefined;
+    return {
+      success: true,
+      data: {
+        ...rest,
+        id: id ?? rest.id,
+      },
+    };
+  }
+
+  private async findSellerByIdentifier(identifier: string) {
+    const value = String(identifier ?? '').trim();
+    if (!value) return null;
+    if (Types.ObjectId.isValid(value) && value.length === 24) {
+      const sellerById = await this.sellerModel.findById(value).exec();
+      if (sellerById) return sellerById;
+    }
+    const sellerByPublicId = await this.sellerModel
+      .findOne({ publicId: value })
+      .exec();
+    if (sellerByPublicId) return sellerByPublicId;
+    return this.sellerModel.findOne({ leadId: value }).exec();
+  }
+
+  private async syncSellerUserAccount(
+    seller: SellerDocument,
+    options?: {
+      password?: string;
+      username?: string;
+      actorEmail?: string;
+    },
+  ) {
+    const email = seller.email.trim().toLowerCase();
+    const existing = await this.userModel.findOne({ email }).exec();
+    if (existing && existing.role !== 'seller') {
+      throw new BadRequestException(
+        'A user with this email already exists with a different role',
+      );
+    }
+
+    const companyName = seller.firmName || seller.tradeName || '';
+    const update: Record<string, unknown> = {
+      fullName: seller.fullName,
+      email,
+      username: options?.username || seller.username || email,
+      mobile: seller.contactNumber,
+      companyName,
+      role: 'seller',
+      status: 'approved',
+      profileCompleted: true,
+    };
+
+    if (options?.password) {
+      update.password = await bcrypt.hash(options.password, 10);
+      update.mustChangePassword = true;
+      update.credentialsGeneratedAt = new Date();
+      update.credentialsGeneratedBy = options.actorEmail || 'account_manager';
+    }
+
+    if (existing) {
+      await this.userModel
+        .updateOne({ _id: existing._id }, { $set: update })
+        .exec();
+      return existing._id.toString();
+    }
+
+    const created = await this.userModel.create({
+      publicId: generatePublicId('user', email),
+      ...update,
+      password:
+        typeof update.password === 'string'
+          ? update.password
+          : await bcrypt.hash(randomBytes(12).toString('hex'), 10),
+      mustChangePassword: true,
+      credentialsGeneratedAt: options?.password ? new Date() : undefined,
+      credentialsGeneratedBy: options?.actorEmail,
+    });
+    return created._id.toString();
   }
 
   private buildLeadIdentityFilter(id: string) {
@@ -308,14 +406,21 @@ export class AccountManagerService {
     lead.sellerId = sellerId;
     await lead.save();
 
+    await this.syncSellerUserAccount(seller, {
+      actorEmail: user?.email || 'account_manager',
+    });
+
     await this.notificationsService.createNotification({
       event: 'seller_created',
       recipientRole: 'super_admin',
       message: `Seller created for lead ${lead.fullName} by ${user?.email || 'Account Manager'}. Credentials can be generated after account setup.`,
     });
 
-    const created = await this.sellerModel.findById(sellerId).lean().exec();
-    return { success: true, data: created };
+    const created = await this.sellerModel.findById(sellerId).exec();
+    if (!created) {
+      throw new NotFoundException('Seller not found after creation');
+    }
+    return this.formatSellerResponse(created);
   }
 
   async findAllPaymentCompletedSellers(user?: RequestUser) {
@@ -423,7 +528,13 @@ export class AccountManagerService {
       }
     }
 
-    return sellers;
+    return sellers.map((seller) => {
+      const id = seller._id.toString();
+      return {
+        ...seller,
+        id,
+      };
+    });
   }
 
   async findOne(id: string, user?: RequestUser) {
@@ -450,7 +561,15 @@ export class AccountManagerService {
       }
     }
 
-    return seller;
+    try {
+      await this.syncSellerUserAccount(seller, {
+        actorEmail: user?.email || 'account_manager',
+      });
+    } catch {
+      // Non-fatal: seller details should still load even if user sync fails.
+    }
+
+    return this.formatSellerResponse(seller);
   }
 
   async verifyPayment(dto: VerifyPaymentDto, user?: RequestUser) {
@@ -483,13 +602,17 @@ export class AccountManagerService {
     seller.accountCreatedBy = user?.email || 'account_manager';
     const saved = await seller.save();
 
+    await this.syncSellerUserAccount(saved, {
+      actorEmail: user?.email || 'account_manager',
+    });
+
     await this.notificationsService.createNotification({
       event: 'account_created',
       recipientRole: 'super_admin',
       message: `Account created for ${seller.fullName} (Seller ID: ${seller._id.toString()}, Email: ${seller.email}, GST: ${seller.gstNumber || '—'}, GST Slots: ${typeof seller.gstSlots === 'number' ? seller.gstSlots : '—'}, Duration: ${typeof seller.durationYears === 'number' ? seller.durationYears : typeof seller.subscriptionDuration === 'number' ? seller.subscriptionDuration : '—'} year(s), Amount: ${typeof seller.amount === 'number' ? seller.amount : typeof seller.paymentAmount === 'number' ? seller.paymentAmount : '—'}).`,
     });
 
-    return saved;
+    return this.formatSellerResponse(saved);
   }
 
   async generateCredentials(dto: GenerateCredentialsDto, user?: RequestUser) {
@@ -523,6 +646,12 @@ export class AccountManagerService {
 
     await seller.save();
 
+    await this.syncSellerUserAccount(seller, {
+      password,
+      username,
+      actorEmail: user?.email || 'account_manager',
+    });
+
     await this.notificationsService.createNotification({
       event: 'credentials_generated',
       recipientRole: 'super_admin',
@@ -530,9 +659,11 @@ export class AccountManagerService {
     });
 
     return {
+      success: true,
       username,
       password,
       message: 'Credentials generated and sent for approval',
+      data: this.formatSellerResponse(seller).data,
     };
   }
 
@@ -569,7 +700,7 @@ export class AccountManagerService {
     sellerId: string,
     user?: RequestUser,
   ) {
-    const seller = await this.sellerModel.findById(sellerId).exec();
+    const seller = await this.findSellerByIdentifier(sellerId);
     if (!seller) {
       throw new NotFoundException('Seller not found');
     }

@@ -125,35 +125,13 @@ export class ProfileService {
     }
 
     if (role === 'seller') {
-      const seller = await this.sellerModel
-        .findById(id)
-        .select('-password')
-        .lean()
-        .exec();
+      const { seller, sellerUser } = await this.resolveSellerForProfile(user);
       if (seller) {
         return {
           success: true,
-          data: {
-            _id: seller._id.toString(),
-            fullName: seller.fullName,
-            email: seller.email,
-            role: 'seller',
-            companyName: seller.firmName || seller.gstNumber,
-            mobile: seller.contactNumber,
-            address: seller.address || '',
-            bio: seller.bio || '',
-            profileCompleted: true,
-            gstNumber: seller.gstNumber,
-            businessType: seller.businessType || '',
-          },
+          data: this.mapSellerProfile(seller),
         };
       }
-
-      const sellerUser = await this.userModel
-        .findOne({ _id: id, role: 'seller' })
-        .select('-password')
-        .lean()
-        .exec();
 
       if (!sellerUser) {
         throw new NotFoundException({
