@@ -86,10 +86,19 @@ export class UploadService {
       .findById(parseObjectId(uploadId, 'upload id'))
       .lean()
       .exec();
-    if (!upload || String(upload.sellerId) !== String(sellerId).trim()) {
+    if (
+      !upload ||
+      !(await this.validation.sellerOwnsRecord(String(upload.sellerId), sellerId))
+    ) {
       throw new NotFoundException('Import upload not found');
     }
     const savedSoFar = upload.totalRecords ?? 0;
+    const fileLabel = String(upload.fileName ?? '').toLowerCase();
+    const processingHint = fileLabel.includes('myntra')
+      ? 'Parsing and matching Myntra reports — large files may take a few minutes.'
+      : fileLabel.includes('amazon')
+        ? 'Parsing Amazon MTR reports — this may take a few minutes.'
+        : 'Parsing report files and saving rows…';
     return {
       success: upload.status !== 'failed',
       uploadId,
@@ -102,7 +111,7 @@ export class UploadService {
         upload.status === 'processing'
           ? savedSoFar > 0
             ? `Import in progress… ${savedSoFar} row(s) saved so far.`
-            : 'Parsing and matching Myntra reports — large files may take a few minutes.'
+            : processingHint
           : upload.status === 'failed'
             ? upload.errorMessage ?? 'Import failed'
             : `Import completed with ${savedSoFar} record(s).`,
@@ -140,13 +149,14 @@ export class UploadService {
     const isMeesho = marketplaceIdentifier.includes('meesho');
     const isMyntra = marketplaceIdentifier.includes('myntra');
 
-    if (isAmazon || isMeesho || isMyntra) {
+    // Meesho completes in-request (typical file sizes). Amazon/Myntra run async with status polling.
+    if (isAmazon || isMyntra) {
       return this.startInMemoryBackgroundImport(
         expectedMarketplace,
         files,
         dto,
         ctx,
-        { isAmazon, isMeesho, isMyntra },
+        { isAmazon, isMeesho: false, isMyntra },
       );
     }
 
@@ -174,7 +184,7 @@ export class UploadService {
     const label = expectedMarketplace.charAt(0).toUpperCase() + expectedMarketplace.slice(1);
 
     const upload = await this.uploadModel.create({
-      sellerId: dto.sellerId,
+      sellerId: ctx.canonicalSellerId || dto.sellerId,
       gstId: dto.gstId,
       gstin: ctx.gst.gstNumber,
       marketplace: marketplaceId,
@@ -228,7 +238,7 @@ export class UploadService {
       );
 
       await this.validation.ensureNoDuplicateFileHashes({
-        sellerId: dto.sellerId,
+        sellerId: ctx.canonicalSellerId || dto.sellerId,
         gstin: ctx.gst.gstNumber,
         marketplace: marketplaceId,
         fileHashes,
@@ -429,6 +439,7 @@ export class UploadService {
     existingUploadId: string | null,
   ) {
     const { gst, marketplace, marketplaceIdentifier } = ctx;
+    const sellerId = ctx.canonicalSellerId || dto.sellerId;
     const isAmazon = marketplaceIdentifier.includes('amazon');
     const isMeesho = marketplaceIdentifier.includes('meesho');
     const isMyntra = marketplaceIdentifier.includes('myntra');
@@ -632,13 +643,34 @@ export class UploadService {
         ],
         'Return Report',
       );
-      this.validation.validateGstinMatch(
-        parsedMeesho.tcsSales.rows,
+      this.validation.validateMeeshoGstinBundle(
+        [
+          {
+            reportLabel: 'TCS Sales Report',
+            fileName: files.tcsSalesFile?.originalname ?? '',
+            headers: parsedMeesho.tcsSales.headers,
+            rows: parsedMeesho.tcsSales.rows,
+          },
+          {
+            reportLabel: 'TCS Sales Return Report',
+            fileName: files.tcsSalesReturnFile?.originalname ?? '',
+            headers: parsedMeesho.tcsSalesReturn.headers,
+            rows: parsedMeesho.tcsSalesReturn.rows,
+          },
+          {
+            reportLabel: 'Order Report',
+            fileName: files.orderReportFile?.originalname ?? '',
+            headers: parsedMeesho.orderReport.headers,
+            rows: parsedMeesho.orderReport.rows,
+          },
+          {
+            reportLabel: 'Return Report',
+            fileName: files.returnReportFile?.originalname ?? '',
+            headers: parsedMeesho.returnReport.headers,
+            rows: parsedMeesho.returnReport.rows,
+          },
+        ],
         gst.gstNumber,
-        marketplaceIdentifier,
-        parsedMeesho.tcsSales.headers,
-        [],
-        meeshoImportMapping,
       );
       // Seller state optional: when missing, CGST/SGST stay blank (inter-state / IGST only).
     } else if (isMyntra && parsedMyntra) {
@@ -829,14 +861,14 @@ export class UploadService {
     }
     const marketplaceId = marketplace._id?.toString?.() ?? dto.marketplaceId;
     await this.validation.ensureNoDuplicateFileHashes({
-      sellerId: dto.sellerId,
+      sellerId,
       gstin: gst.gstNumber,
       marketplace: marketplaceId,
       fileHashes,
       excludeUploadId: existingUploadId ?? undefined,
     });
     await this.validation.ensureNotDuplicate({
-      sellerId: dto.sellerId,
+      sellerId,
       gstin: gst.gstNumber,
       marketplace: marketplaceId,
       fileHash,
@@ -849,7 +881,7 @@ export class UploadService {
     let uploadId = existingUploadId ?? '';
     if (!uploadId) {
       const upload = await this.uploadModel.create({
-        sellerId: dto.sellerId,
+        sellerId,
         gstId: dto.gstId,
         gstin: gst.gstNumber,
         marketplace: marketplaceId,
@@ -873,7 +905,7 @@ export class UploadService {
       normalizedRows,
       {
         uploadId,
-        sellerId: dto.sellerId,
+        sellerId,
         gstin: gst.gstNumber,
         marketplace: marketplaceId,
       },

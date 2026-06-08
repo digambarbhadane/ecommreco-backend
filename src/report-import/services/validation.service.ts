@@ -8,6 +8,8 @@ import { Model, Types } from 'mongoose';
 import { parseObjectId } from '../../common/mongo-id.util';
 import * as crypto from 'crypto';
 import { Gst, GstDocument } from '../../gsts/schemas/gst.schema';
+import { Seller, SellerDocument } from '../../sellers/schemas/seller.schema';
+import { User, UserDocument } from '../../users/schemas/user.schema';
 import {
   Marketplace,
   MarketplaceDocument,
@@ -25,12 +27,14 @@ import {
   resolveMarketplaceImportMapping,
 } from '../config/importMappings';
 import {
-  extractGstinsFromRows,
+  collectGstinValidationProblems,
   headerMatchesExcelColumn,
-  headersHaveGstColumn,
-  parseGstinFromCell,
 } from '../config/importMappings/gst-column.util';
 import { ParsedSheetRow } from './mapping.service';
+import {
+  buildMeeshoGstinValidationMessage,
+  MeeshoReportValidationInput,
+} from '../utils/meesho-import.validation';
 import {
   buildMyntraValidationMessage,
   MyntraReportValidationInput,
@@ -40,6 +44,8 @@ import {
 export class ValidationService {
   constructor(
     @InjectModel(Gst.name) private readonly gstModel: Model<GstDocument>,
+    @InjectModel(Seller.name) private readonly sellerModel: Model<SellerDocument>,
+    @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
     @InjectModel(Marketplace.name)
     private readonly marketplaceModel: Model<MarketplaceDocument>,
     @InjectModel(PlatformMarketplace.name)
@@ -53,27 +59,34 @@ export class ValidationService {
     gstId: string;
     marketplaceId: string;
   }) {
-    const gst = await this.gstModel
-      .findById(parseObjectId(payload.gstId, 'GST id'))
-      .lean()
-      .exec();
-    if (
-      !gst ||
-      String(gst.sellerId) !== String(payload.sellerId).trim()
-    ) {
+    const seller = await this.findSellerByIdentifier(payload.sellerId);
+    if (!seller) {
+      throw new NotFoundException('Seller not found');
+    }
+    const sellerIdAliases = this.getSellerIdAliases(seller, payload.sellerId);
+    const requestedGstId = String(payload.gstId ?? '').trim();
+
+    let gst = await this.findGstForSeller(requestedGstId, sellerIdAliases);
+    if (!gst) {
       throw new NotFoundException('Selected GST profile not found');
     }
+    const resolvedGstId = String(gst._id);
+
     const marketplace = await this.marketplaceModel
       .findById(parseObjectId(payload.marketplaceId, 'marketplace id'))
       .lean()
       .exec();
     if (
       !marketplace ||
-      String(marketplace.sellerId) !== String(payload.sellerId).trim()
+      !sellerIdAliases.includes(String(marketplace.sellerId))
     ) {
       throw new NotFoundException('Selected marketplace not found');
     }
-    if (marketplace.gstId !== payload.gstId) {
+    const marketplaceGstId = String(marketplace.gstId ?? '').trim();
+    if (
+      marketplaceGstId !== resolvedGstId &&
+      marketplaceGstId !== requestedGstId
+    ) {
       throw new BadRequestException(
         'Selected marketplace is not linked to selected GST',
       );
@@ -98,7 +111,30 @@ export class ValidationService {
       .trim()
       .toLowerCase();
 
-    return { gst, marketplace, marketplaceIdentifier };
+    return {
+      gst,
+      marketplace,
+      marketplaceIdentifier,
+      canonicalSellerId: this.getSellerObjectIdString(seller),
+      sellerIdAliases,
+    };
+  }
+
+  async resolveSellerIdAliases(identifier: string): Promise<string[]> {
+    const seller = await this.findSellerByIdentifier(identifier);
+    if (!seller) {
+      const trimmed = String(identifier ?? '').trim();
+      return trimmed ? [trimmed] : [];
+    }
+    return this.getSellerIdAliases(seller, identifier);
+  }
+
+  async sellerOwnsRecord(
+    recordSellerId: string,
+    requestedSellerId: string,
+  ): Promise<boolean> {
+    const aliases = await this.resolveSellerIdAliases(requestedSellerId);
+    return aliases.includes(String(recordSellerId));
   }
 
   validateRequiredHeaderGroups(
@@ -139,71 +175,44 @@ export class ValidationService {
     fileHeaders: string[] = [],
     fallbackGstins: string[] = [],
     mappingOverride?: MarketplaceImportMapping,
+    context?: { reportLabel?: string; fileName?: string },
   ) {
     const mapping =
       mappingOverride ??
       resolveMarketplaceImportMapping(marketplaceIdentifier);
-    const gstColumn = mapping.gstin.excelColumns[0];
-    const selectedGSTIN = parseGstinFromCell(expectedGstin) ?? '';
-
-    // eslint-disable-next-line no-console
-    console.log('Marketplace:', mapping.displayName);
-    // eslint-disable-next-line no-console
-    console.log('Selected GST:', selectedGSTIN);
-    // eslint-disable-next-line no-console
-    console.log('Mapped GST Column:', gstColumn);
-
-    const { values, foundColumn } = extractGstinsFromRows(rows, mapping);
-    fallbackGstins.forEach((raw) => {
-      const gstin = parseGstinFromCell(raw);
-      if (gstin) values.add(gstin);
-    });
-    // eslint-disable-next-line no-console
-    console.log(
-      '[GST_DEBUG_v2] rowValues=',
-      [...values].join('|') || '(none)',
-      'fallback=',
-      fallbackGstins.join('|') || '(none)',
-    );
-    const headerHasGstColumn = headersHaveGstColumn(
+    const problems = collectGstinValidationProblems({
+      rows,
+      expectedGstin,
+      mapping,
       fileHeaders,
-      mapping.gstin.excelColumns,
+      fallbackGstins,
+    });
+    if (!problems.length) return;
+
+    const prefix =
+      context?.fileName || context?.reportLabel
+        ? [
+            context.reportLabel ? `Report: ${context.reportLabel}` : '',
+            context.fileName ? `File: ${context.fileName}` : '',
+          ]
+            .filter(Boolean)
+            .join('\n')
+        : `Marketplace: ${mapping.displayName}`;
+
+    throw new BadRequestException(
+      [`GSTIN validation failed.`, prefix, '', ...problems.map((p) => `• ${p}`)].join(
+        '\n',
+      ),
     );
-    const gstColumnFound =
-      foundColumn || headerHasGstColumn || fallbackGstins.length > 0;
+  }
 
-    // eslint-disable-next-line no-console
-    console.log(
-      'GST Found In File:',
-      values.size > 0 ? [...values].join(', ') : '(none)',
-    );
-
-    if (!gstColumnFound) {
-      throw new BadRequestException(
-        `GSTIN column not found in uploaded file.\n\nExpected column:\n${gstColumn}\n\nMarketplace:\n${mapping.displayName}`,
-      );
-    }
-
-    if (!values.size) {
-      const fillHint =
-        mapping.key === 'flipkart'
-          ? 'Ensure the Seller GSTIN column is filled on the Sales Report and Cash Back Report sheets.'
-          : mapping.key === 'meesho'
-            ? 'Ensure the gstin column is filled in TCS Sales Report.'
-            : mapping.key === 'myntra'
-              ? 'Ensure seller_gstin (or tax_seller_gstin) is filled in GSTR Report Packed.'
-              : mapping.key === 'amazon'
-                ? 'Ensure the Seller Gstin column is filled in your MTR report.'
-                : 'Check that the GSTIN column is filled in your report.';
-      throw new BadRequestException(
-        `GSTIN column "${gstColumn}" was found in the file but contains no valid GSTIN values. ${fillHint}`,
-      );
-    }
-
-    if (values.size > 1 || !values.has(selectedGSTIN)) {
-      throw new BadRequestException(
-        'GSTIN in file does not match selected GST profile',
-      );
+  validateMeeshoGstinBundle(
+    reports: MeeshoReportValidationInput[],
+    expectedGstin: string,
+  ) {
+    const message = buildMeeshoGstinValidationMessage(reports, expectedGstin);
+    if (message) {
+      throw new BadRequestException(message);
     }
   }
 
@@ -300,6 +309,87 @@ export class ValidationService {
       filter._id = { $ne: new Types.ObjectId(excludeUploadId) };
     }
     return filter;
+  }
+
+  private async findGstForSeller(
+    gstId: string,
+    sellerIdAliases: string[],
+  ) {
+    const value = String(gstId ?? '').trim();
+    if (!value) return null;
+
+    if (Types.ObjectId.isValid(value)) {
+      const byId = await this.gstModel.findById(value).lean().exec();
+      if (byId && sellerIdAliases.includes(String(byId.sellerId))) {
+        return byId;
+      }
+    }
+
+    return this.gstModel
+      .findOne({
+        sellerId: { $in: sellerIdAliases },
+        gstNumber: value.toUpperCase(),
+      })
+      .lean()
+      .exec();
+  }
+
+  private async findSellerByIdentifier(identifier: string) {
+    const value = String(identifier ?? '').trim();
+    if (!value) return null;
+    if (Types.ObjectId.isValid(value)) {
+      const sellerById = await this.sellerModel.findById(value).exec();
+      if (sellerById) return sellerById;
+    }
+    const sellerByPublicId = await this.sellerModel
+      .findOne({ publicId: value })
+      .exec();
+    if (sellerByPublicId) return sellerByPublicId;
+
+    const user = await this.findSellerUserByIdentifier(value);
+    if (!user) return null;
+    const email = String(user.email ?? '').trim().toLowerCase();
+    if (!email) return null;
+    return this.sellerModel
+      .findOne({
+        $or: [{ email }, { username: email }],
+      })
+      .exec();
+  }
+
+  private async findSellerUserByIdentifier(identifier: string) {
+    const value = String(identifier ?? '').trim();
+    if (!value) return null;
+    if (Types.ObjectId.isValid(value)) {
+      const byId = await this.userModel
+        .findOne({ _id: value, role: 'seller' })
+        .exec();
+      if (byId) return byId;
+    }
+    return this.userModel
+      .findOne({
+        role: 'seller',
+        $or: [{ publicId: value }, { email: value }, { username: value }],
+      })
+      .exec();
+  }
+
+  private getSellerObjectIdString(seller: SellerDocument) {
+    const id = seller?._id as Types.ObjectId | string | undefined;
+    return typeof id === 'string' ? id : id?.toString?.() ?? '';
+  }
+
+  private getSellerIdAliases(seller: SellerDocument, requestedId?: string) {
+    const aliases = new Set<string>();
+    const objectId = this.getSellerObjectIdString(seller);
+    if (objectId) aliases.add(objectId);
+    if (typeof seller.publicId === 'string' && seller.publicId.trim()) {
+      aliases.add(seller.publicId.trim());
+    }
+    if (typeof requestedId === 'string' && requestedId.trim()) {
+      aliases.add(requestedId.trim());
+    }
+    return Array.from(aliases);
   }
 
   private duplicateUploadException(existing: {

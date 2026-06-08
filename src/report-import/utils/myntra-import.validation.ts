@@ -1,9 +1,8 @@
 import { myntraImportMapping } from '../config/importMappings/myntra.mapping';
 import {
-  extractGstinsFromRows,
+  collectGstinValidationProblems,
   headerMatchesExcelColumn,
   headersHaveGstColumn,
-  parseGstinFromCell,
 } from '../config/importMappings/gst-column.util';
 import { ParsedSheetRow } from '../services/mapping.service';
 
@@ -52,50 +51,13 @@ export const findMissingHeaderGroups = (
 const collectGstinProblems = (
   report: MyntraReportValidationInput,
   expectedGstin: string,
-): string[] => {
-  const problems: string[] = [];
-  const selectedGSTIN = parseGstinFromCell(expectedGstin) ?? '';
-  const expectedColumns = myntraImportMapping.gstin.excelColumns;
-
-  const { values, foundColumn } = extractGstinsFromRows(
-    report.rows,
-    myntraImportMapping,
-  );
-  const headerHasGstColumn = headersHaveGstColumn(
-    report.headers,
-    expectedColumns,
-  );
-  const gstColumnFound = foundColumn || headerHasGstColumn;
-
-  if (!gstColumnFound) {
-    problems.push(
-      `GSTIN column not found. Expected ${formatExpected(expectedColumns)}.`,
-    );
-    return problems;
-  }
-
-  if (!values.size) {
-    problems.push(
-      `GSTIN column found but no valid GSTIN values in data rows (${report.rows.length} row(s)). Fill ${formatExpected(expectedColumns)}.`,
-    );
-    return problems;
-  }
-
-  if (values.size > 1) {
-    problems.push(
-      `Multiple GSTINs in file: ${[...values].join(', ')}. Only one GSTIN per report is allowed.`,
-    );
-  }
-
-  if (!values.has(selectedGSTIN)) {
-    const found = [...values].join(', ') || '(none)';
-    problems.push(
-      `GSTIN does not match selected GST profile. Profile: "${selectedGSTIN || expectedGstin}". Found in file: ${found}.`,
-    );
-  }
-
-  return problems;
-};
+): string[] =>
+  collectGstinValidationProblems({
+    rows: report.rows,
+    expectedGstin,
+    mapping: myntraImportMapping,
+    fileHeaders: report.headers,
+  });
 
 const formatReportBlock = (
   index: number,

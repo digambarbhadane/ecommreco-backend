@@ -17,6 +17,7 @@ import {
   PlatformMarketplace,
   PlatformMarketplaceDocument,
 } from '../platform-marketplaces/schemas/platform-marketplace.schema';
+import { ValidationService } from './services/validation.service';
 
 @Injectable()
 export class ReportImportService {
@@ -33,6 +34,7 @@ export class ReportImportService {
     private readonly gstModel: Model<GstDocument>,
     @InjectModel(PlatformMarketplace.name)
     private readonly platformMarketplaceModel: Model<PlatformMarketplaceDocument>,
+    private readonly validationService: ValidationService,
   ) {}
 
   async listImportedRows(query: ListImportedRowsDto) {
@@ -950,7 +952,13 @@ export class ReportImportService {
   }
 
   async listUploads(sellerId?: string) {
-    const filter = sellerId ? { sellerId } : {};
+    const filter = sellerId
+      ? {
+          sellerId: {
+            $in: await this.validationService.resolveSellerIdAliases(sellerId),
+          },
+        }
+      : {};
     const data = await this.uploadModel
       .find(filter)
       .sort({ createdAt: -1 })
