@@ -1,4 +1,16 @@
+import { meeshoPaymentFieldMappings } from '../config/importMappings/meesho-payment.mapping';
 import { NormalizedImportRow } from './mapping.service';
+
+const pickMeeshoPaymentFields = (row: NormalizedImportRow) => {
+  const payment: Record<string, unknown> = {};
+  for (const { target } of meeshoPaymentFieldMappings) {
+    const value = row[target];
+    if (value !== undefined) {
+      payment[target] = value;
+    }
+  }
+  return payment;
+};
 
 const INSERT_BATCH_SIZE = 5000;
 
@@ -51,6 +63,7 @@ export const toImportRowDocuments = (
     returnQty: row.returnQty,
     returnReason: row.returnReason,
     detailedReturnReason: row.detailedReturnReason,
+    ...pickMeeshoPaymentFields(row),
   }));
 
 export async function insertImportRowsInBatches(

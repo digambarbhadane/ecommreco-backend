@@ -35,28 +35,34 @@ export class MeeshoImportService {
   ) {}
 
   parseFiles(files: {
-    tcsSalesFile: { buffer: Buffer; originalname: string };
-    tcsSalesReturnFile: { buffer: Buffer; originalname: string };
-    orderReportFile: { buffer: Buffer; originalname: string };
-    returnReportFile: { buffer: Buffer; originalname: string };
+    tcsSalesFile?: { buffer: Buffer; originalname: string };
+    tcsSalesReturnFile?: { buffer: Buffer; originalname: string };
+    orderReportFile?: { buffer: Buffer; originalname: string };
+    returnReportFile?: { buffer: Buffer; originalname: string };
   }) {
+    const empty: ParsedMeeshoFile = { rows: [], headers: [] };
     return {
-      tcsSales: this.parser.parseMeeshoWorkbook(
-        files.tcsSalesFile.buffer,
-        'tcsSales',
-      ),
-      tcsSalesReturn: this.parser.parseMeeshoWorkbook(
-        files.tcsSalesReturnFile.buffer,
-        'tcsSalesReturn',
-      ),
-      orderReport: this.parser.parseMeeshoWorkbook(
-        files.orderReportFile.buffer,
-        'orderReport',
-      ),
-      returnReport: this.parser.parseMeeshoWorkbook(
-        files.returnReportFile.buffer,
-        'returnReport',
-      ),
+      tcsSales: files.tcsSalesFile
+        ? this.parser.parseMeeshoWorkbook(files.tcsSalesFile.buffer, 'tcsSales')
+        : empty,
+      tcsSalesReturn: files.tcsSalesReturnFile
+        ? this.parser.parseMeeshoWorkbook(
+            files.tcsSalesReturnFile.buffer,
+            'tcsSalesReturn',
+          )
+        : empty,
+      orderReport: files.orderReportFile
+        ? this.parser.parseMeeshoWorkbook(
+            files.orderReportFile.buffer,
+            'orderReport',
+          )
+        : empty,
+      returnReport: files.returnReportFile
+        ? this.parser.parseMeeshoWorkbook(
+            files.returnReportFile.buffer,
+            'returnReport',
+          )
+        : empty,
     };
   }
 
@@ -79,6 +85,10 @@ export class MeeshoImportService {
    * Process TCS Sales Report first, then enrich each order from the other three files.
    * Only TCS Sales rows are persisted (one DB row per sales line).
    */
+  parsePaymentFile(file: { buffer: Buffer; originalname: string }) {
+    return this.parser.parseMeeshoPaymentWorkbook(file.buffer);
+  }
+
   buildNormalizedRows(
     parsed: {
       tcsSales: ParsedMeeshoFile;
@@ -87,10 +97,14 @@ export class MeeshoImportService {
       returnReport: ParsedMeeshoFile;
     },
     sellerState?: string,
+    paymentRows?: ParsedSheetRow[],
   ): MeeshoBuildResult {
     const orderReportByOrder = this.indexBySubOrderNum(parsed.orderReport.rows);
     const tcsReturnByOrder = this.indexBySubOrderNum(parsed.tcsSalesReturn.rows);
     const returnReportByOrder = this.indexBySubOrderNum(parsed.returnReport.rows);
+    const paymentByOrder = paymentRows?.length
+      ? this.indexBySubOrderNum(paymentRows)
+      : null;
 
     const rows: MeeshoBuildResult['rows'] = [];
     const errors: MeeshoBuildResult['errors'] = [];
@@ -124,6 +138,12 @@ export class MeeshoImportService {
           mapped,
           returnReportByOrder.get(orderId),
         );
+        if (paymentByOrder) {
+          mapped = this.mapping.enrichMeeshoFromPaymentReport(
+            mapped,
+            paymentByOrder.get(orderId),
+          );
+        }
 
         rows.push({
           ...mapped,

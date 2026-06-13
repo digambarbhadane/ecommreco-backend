@@ -17,6 +17,9 @@ export class ImportUpload {
   @Prop({ required: true, index: true })
   marketplace: string;
 
+  @Prop({ index: true })
+  reportMonth?: string;
+
   @Prop({ required: true, index: true })
   fileName: string;
 

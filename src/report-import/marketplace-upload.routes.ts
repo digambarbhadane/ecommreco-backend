@@ -11,6 +11,7 @@ export const REPORT_UPLOAD_FILE_FIELDS = [
   { name: 'tcsSalesReturnFile', maxCount: 1 },
   { name: 'orderReportFile', maxCount: 1 },
   { name: 'returnReportFile', maxCount: 1 },
+  { name: 'paymentReportFile', maxCount: 1 },
   { name: 'gstrReportPackedFile', maxCount: 1 },
   { name: 'mDirectOrdersReportFile', maxCount: 1 },
   { name: 'salesRevenuePackedB2cFile', maxCount: 1 },
@@ -29,6 +30,7 @@ export type UploadedReportFiles = {
   tcsSalesReturnFile?: Array<{ buffer: Buffer; originalname: string }>;
   orderReportFile?: Array<{ buffer: Buffer; originalname: string }>;
   returnReportFile?: Array<{ buffer: Buffer; originalname: string }>;
+  paymentReportFile?: Array<{ buffer: Buffer; originalname: string }>;
   gstrReportPackedFile?: Array<{ buffer: Buffer; originalname: string }>;
   mDirectOrdersReportFile?: Array<{ buffer: Buffer; originalname: string }>;
   salesRevenuePackedB2cFile?: Array<{

@@ -37,9 +37,20 @@ export class ReportImportService {
     private readonly validationService: ValidationService,
   ) {}
 
+  private async applySellerIdToFilter(
+    filter: Record<string, unknown>,
+    sellerId?: string,
+  ) {
+    const trimmed = String(sellerId ?? '').trim();
+    if (!trimmed) return;
+    filter.sellerId = {
+      $in: await this.validationService.resolveSellerIdAliases(trimmed),
+    };
+  }
+
   async listImportedRows(query: ListImportedRowsDto) {
     const filter: Record<string, unknown> = {};
-    if (query.sellerId) filter.sellerId = query.sellerId;
+    await this.applySellerIdToFilter(filter, query.sellerId);
     if (query.gstin) filter.gstin = query.gstin.trim().toUpperCase();
     if (query.marketplace) filter.marketplace = query.marketplace;
     if (query.documentType) filter.documentType = query.documentType;
@@ -85,7 +96,7 @@ export class ReportImportService {
     >,
   ) {
     const filter: Record<string, unknown> = {};
-    if (query.sellerId) filter.sellerId = query.sellerId;
+    await this.applySellerIdToFilter(filter, query.sellerId);
     if (query.gstin) filter.gstin = query.gstin.trim().toUpperCase();
     if (query.marketplace) filter.marketplace = query.marketplace;
     if (query.fromDate || query.toDate) {
@@ -140,7 +151,7 @@ export class ReportImportService {
     >,
   ) {
     const filter: Record<string, unknown> = {};
-    if (query.sellerId) filter.sellerId = query.sellerId;
+    await this.applySellerIdToFilter(filter, query.sellerId);
     if (query.gstin) filter.gstin = query.gstin.trim().toUpperCase();
     if (query.fromDate || query.toDate) {
       filter.invoiceDate = {};
@@ -204,14 +215,14 @@ export class ReportImportService {
     };
   }
 
-  private buildRowFilter(
+  private async buildRowFilter(
     query: Pick<
       ListImportedRowsDto,
       'sellerId' | 'gstin' | 'marketplace' | 'fromDate' | 'toDate'
     >,
-  ): Record<string, unknown> {
+  ): Promise<Record<string, unknown>> {
     const filter: Record<string, unknown> = {};
-    if (query.sellerId) filter.sellerId = query.sellerId;
+    await this.applySellerIdToFilter(filter, query.sellerId);
     if (query.gstin) filter.gstin = query.gstin.trim().toUpperCase();
     if (query.marketplace) filter.marketplace = query.marketplace;
     if (query.fromDate || query.toDate) {
@@ -232,7 +243,7 @@ export class ReportImportService {
       'sellerId' | 'gstin' | 'fromDate' | 'toDate'
     >,
   ) {
-    const filter = this.buildRowFilter(query);
+    const filter = await this.buildRowFilter(query);
 
     const docTypeUpper = { $toUpper: { $ifNull: ['$documentType', ''] } };
     const isSales = {
@@ -597,7 +608,7 @@ export class ReportImportService {
 
   async getPlatformAnalytics(query: { fromDate?: string; toDate?: string }) {
     const period = this.resolveAnalyticsDateRange(query);
-    const filter = this.buildRowFilter({
+    const filter = await this.buildRowFilter({
       fromDate: period.fromDate,
       toDate: period.toDate,
     });
@@ -832,7 +843,7 @@ export class ReportImportService {
       'sellerId' | 'gstin' | 'marketplace' | 'fromDate' | 'toDate'
     >,
   ) {
-    const filter = this.buildRowFilter(query);
+    const filter = await this.buildRowFilter(query);
     const [totalsRows, marketplaceRows, monthlyRows] = await Promise.all([
       this.aggregateProfitLoss(filter, null),
       this.aggregateProfitLoss(filter, '$marketplace'),
@@ -871,7 +882,7 @@ export class ReportImportService {
         const spanMs = to.getTime() - from.getTime() + 86_400_000;
         const prevTo = new Date(from.getTime() - 86_400_000);
         const prevFrom = new Date(prevTo.getTime() - spanMs + 86_400_000);
-        const prevFilter = this.buildRowFilter({
+        const prevFilter = await this.buildRowFilter({
           ...query,
           fromDate: prevFrom.toISOString().slice(0, 10),
           toDate: prevTo.toISOString().slice(0, 10),

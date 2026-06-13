@@ -35,6 +35,41 @@ function buildMeeshoTcsSalesBuffer() {
   return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
 }
 
+function buildMeeshoPaymentBuffer() {
+  const data = [
+    ['Payment Summary', '', 'Fees', ''],
+    [
+      'Sub Order No',
+      'Live Order Status',
+      'Transaction ID',
+      'Payment Date',
+      'Final Settlement Amount',
+      'Price Type',
+      'Total Sale Amount (Incl. Shipping & GST)',
+      'TCS',
+      'TDS',
+    ],
+    [
+      'ORD-100',
+      'Delivered',
+      'TXN-1',
+      '01/05/2026',
+      850,
+      'Standard',
+      1000,
+      10,
+      5,
+    ],
+  ];
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(
+    workbook,
+    XLSX.utils.aoa_to_sheet(data),
+    'Order Payments',
+  );
+  return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+}
+
 describe('FileParserService Meesho workbooks', () => {
   const parser = new FileParserService();
 
@@ -49,5 +84,52 @@ describe('FileParserService Meesho workbooks', () => {
     );
     expect(String(parsed.rows[0].gstin).toUpperCase()).toContain('27AAAAA0000A1Z5');
     expect(String(parsed.rows[0].sub_order_num)).toBe('ORD-100');
+  });
+
+  it('parses Return Report with seller metadata rows before headers on row 8', () => {
+    const sellerMeta = Array.from({ length: 7 }, (_, i) => [
+      `Seller field ${i + 1}`,
+      'Sample seller info',
+    ]);
+    const data = [
+      ...sellerMeta,
+      [
+        'Order Number',
+        'Sub Order No',
+        'Type of Return',
+        'Sub Type',
+        'Qty',
+        'Return Reason',
+        'Detailed Return Reason',
+      ],
+      [
+        'ORD-100',
+        'ORD-100',
+        'Customer Return',
+        'RTO',
+        1,
+        'Size issue',
+        'Too small',
+      ],
+    ];
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(data), 'Sheet1');
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+
+    const parsed = parser.parseMeeshoWorkbook(buffer, 'returnReport');
+    expect(parsed.rows).toHaveLength(1);
+    expect(String(parsed.rows[0]['Order Number'])).toBe('ORD-100');
+    expect(String(parsed.rows[0]['Return Reason'])).toBe('Size issue');
+  });
+
+  it('parses Order Payments sheet with headers on row 2', () => {
+    const parsed = parser.parseMeeshoPaymentWorkbook(buildMeeshoPaymentBuffer());
+    expect(parsed.rows).toHaveLength(1);
+    expect(parsed.headers).toEqual(
+      expect.arrayContaining(['Sub Order No', 'Live Order Status', 'Transaction ID']),
+    );
+    expect(String(parsed.rows[0]['Sub Order No'])).toBe('ORD-100');
+    expect(String(parsed.rows[0]['Live Order Status'])).toBe('Delivered');
+    expect(String(parsed.rows[0]['Transaction ID'])).toBe('TXN-1');
   });
 });

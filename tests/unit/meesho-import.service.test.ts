@@ -94,4 +94,37 @@ describe('MeeshoImportService', () => {
     expect(row.returnReason).toBe('Size issue');
     expect(row.detailedReturnReason).toBe('Too small');
   });
+
+  it('enriches TCS sales row from payment report by Sub Order No', () => {
+    const result = service.buildNormalizedRows(
+      {
+        tcsSales: { rows: [salesRow], headers: [] },
+        tcsSalesReturn: { rows: [], headers: [] },
+        orderReport: { rows: [], headers: [] },
+        returnReport: { rows: [], headers: [] },
+      },
+      'Maharashtra',
+      [
+        {
+          __sheetName: 'Order Payments',
+          __rowNumber: 3,
+          'Sub Order No': 'ORD-100',
+          'Live Order Status': 'Delivered',
+          'Transaction ID': 'TXN-1',
+          'Payment Date': '01/05/2026',
+          'Final Settlement Amount': 850,
+          TCS: 10,
+          TDS: 5,
+        },
+      ],
+    );
+
+    expect(result.rows).toHaveLength(1);
+    const row = result.rows[0];
+    expect(row.liveOrderStatus).toBe('Delivered');
+    expect(row.transactionId).toBe('TXN-1');
+    expect(row.finalSettlementAmount).toBe(850);
+    expect(row.paymentTcs).toBe(10);
+    expect(row.tds).toBe(5);
+  });
 });

@@ -110,6 +110,39 @@ export class ImportRow {
 
   @Prop()
   detailedReturnReason?: string;
+
+  /** Meesho Order Payments — enriched by Sub Order No */
+  @Prop() liveOrderStatus?: string;
+  @Prop() transactionId?: string;
+  @Prop() paymentDate?: string;
+  @Prop() finalSettlementAmount?: number;
+  @Prop() priceType?: string;
+  @Prop() totalSaleAmountInclShippingGst?: number;
+  @Prop() totalSaleReturnAmountInclShippingGst?: number;
+  @Prop() fixedFeeInclGst?: number;
+  @Prop() warehousingFeeInclGst?: number;
+  @Prop() returnPremiumInclGst?: number;
+  @Prop() returnPremiumInclGstOfReturn?: number;
+  @Prop() meeshoCommissionPercentage?: number;
+  @Prop() meeshoCommissionInclGst?: number;
+  @Prop() meeshoGoldPlatformFeeInclGst?: number;
+  @Prop() meeshoMallPlatformFeeInclGst?: number;
+  @Prop() returnShippingChargeInclGst?: number;
+  @Prop() gstCompensationPrpShipping?: number;
+  @Prop() shippingChargeInclGst?: number;
+  @Prop() otherSupportServiceChargesExclGst?: number;
+  @Prop() waiversExclGst?: number;
+  @Prop() netOtherSupportServiceChargesExclGst?: number;
+  @Prop() gstOnNetOtherSupportServiceCharges?: number;
+  @Prop() paymentTcs?: number;
+  @Prop() tdsRatePercent?: number;
+  @Prop() tds?: number;
+  @Prop() compensation?: number;
+  @Prop() claims?: number;
+  @Prop() recovery?: number;
+  @Prop() compensationReason?: string;
+  @Prop() claimsReason?: string;
+  @Prop() recoveryReason?: string;
 }
 
 export const ImportRowSchema = SchemaFactory.createForClass(ImportRow);
