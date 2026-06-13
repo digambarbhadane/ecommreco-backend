@@ -139,7 +139,7 @@ export class ValidationService {
 
   validateRequiredHeaderGroups(
     headers: string[],
-    requiredHeaderGroups: string[][],
+    requiredHeaderGroups: ReadonlyArray<readonly string[]>,
     sheetName: string,
   ) {
     const missing = requiredHeaderGroups.filter((aliases) => {

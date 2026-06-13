@@ -334,7 +334,7 @@ export class ReportImportController {
   @ApiOperation({
     summary: 'Upload Meesho reports',
     description:
-      'Upload all four Meesho files: tcsSalesFile, tcsSalesReturnFile, orderReportFile, returnReportFile.',
+      'Upload Meesho files month-wise: tcsSalesFile, tcsSalesReturnFile, orderReportFile, returnReportFile, paymentReportFile (at least one required).',
   })
   @ReportUploadMultipart()
   uploadMeesho(
@@ -370,6 +370,7 @@ export class ReportImportController {
     const tcsSalesReturnFile = files?.tcsSalesReturnFile?.[0];
     const orderReportFile = files?.orderReportFile?.[0];
     const returnReportFile = files?.returnReportFile?.[0];
+    const paymentReportFile = files?.paymentReportFile?.[0];
     const gstrReportPackedFile = files?.gstrReportPackedFile?.[0];
     const mDirectOrdersReportFile = files?.mDirectOrdersReportFile?.[0];
     const salesRevenuePackedB2cFile = files?.salesRevenuePackedB2cFile?.[0];
@@ -384,6 +385,7 @@ export class ReportImportController {
       !tcsSalesReturnFile &&
       !orderReportFile &&
       !returnReportFile &&
+      !paymentReportFile &&
       !gstrReportPackedFile &&
       !mDirectOrdersReportFile &&
       !salesRevenuePackedB2cFile &&
@@ -403,6 +405,7 @@ export class ReportImportController {
         tcsSalesReturnFile,
         orderReportFile,
         returnReportFile,
+        paymentReportFile,
         gstrReportPackedFile,
         mDirectOrdersReportFile,
         salesRevenuePackedB2cFile,

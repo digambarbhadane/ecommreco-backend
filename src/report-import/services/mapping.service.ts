@@ -2,6 +2,10 @@ import { Injectable } from '@nestjs/common';
 import { amazonImportMapping } from '../config/importMappings/amazon.mapping';
 import { flipkartImportMapping } from '../config/importMappings/flipkart.mapping';
 import { headerMatchesExcelColumn } from '../config/importMappings/gst-column.util';
+import {
+  meeshoPaymentFieldMappings,
+  type MeeshoPaymentFieldKey,
+} from '../config/importMappings/meesho-payment.mapping';
 import { normalizeHeader as normalizeHeaderUtil } from '../utils/header.util';
 
 export type ParsedSheetRow = {
@@ -42,7 +46,41 @@ export type NormalizedImportRow = {
   returnQty?: number;
   returnReason?: string;
   detailedReturnReason?: string;
+  /** Meesho Order Payments sheet — matched on Sub Order No */
+  liveOrderStatus?: string;
+  transactionId?: string;
+  paymentDate?: string;
+  finalSettlementAmount?: number;
+  priceType?: string;
+  totalSaleAmountInclShippingGst?: number;
+  totalSaleReturnAmountInclShippingGst?: number;
+  fixedFeeInclGst?: number;
+  warehousingFeeInclGst?: number;
+  returnPremiumInclGst?: number;
+  returnPremiumInclGstOfReturn?: number;
+  meeshoCommissionPercentage?: number;
+  meeshoCommissionInclGst?: number;
+  meeshoGoldPlatformFeeInclGst?: number;
+  meeshoMallPlatformFeeInclGst?: number;
+  returnShippingChargeInclGst?: number;
+  gstCompensationPrpShipping?: number;
+  shippingChargeInclGst?: number;
+  otherSupportServiceChargesExclGst?: number;
+  waiversExclGst?: number;
+  netOtherSupportServiceChargesExclGst?: number;
+  gstOnNetOtherSupportServiceCharges?: number;
+  paymentTcs?: number;
+  tdsRatePercent?: number;
+  tds?: number;
+  compensation?: number;
+  claims?: number;
+  recovery?: number;
+  compensationReason?: string;
+  claimsReason?: string;
+  recoveryReason?: string;
 };
+
+export type { MeeshoPaymentFieldKey };
 
 /** Column names used as order key across Meesho reports (matched after normalizeHeader). */
 export const MEESHO_ORDER_ID_ALIASES = [
@@ -681,12 +719,16 @@ export class MappingService {
     returnRow?: ParsedSheetRow,
   ): NormalizedImportRow {
     if (!returnRow) return mapped;
-    const typeOfReturn = asString(getRowCell(returnRow, 'Type of Return'));
+    const typeOfReturn = asString(
+      getRowCell(returnRow, 'Type of Return', 'Return Type'),
+    );
     const subType = asString(getRowCell(returnRow, 'Sub Type'));
     const returnQty = asNumber(getRowCell(returnRow, 'Qty', 'Return Qty'));
-    const returnReason = asString(getRowCell(returnRow, 'Return Reason'));
+    const returnReason = asString(
+      getRowCell(returnRow, 'Return Reason', 'Reason for Return'),
+    );
     const detailedReturnReason = asString(
-      getRowCell(returnRow, 'Detailed Return Reason'),
+      getRowCell(returnRow, 'Detailed Return Reason', 'Detailed Return'),
     );
     if (typeOfReturn) mapped.typeOfReturn = typeOfReturn;
     if (subType) mapped.subType = subType;
@@ -694,6 +736,64 @@ export class MappingService {
     if (returnReason) mapped.returnReason = returnReason;
     if (detailedReturnReason) mapped.detailedReturnReason = detailedReturnReason;
     return mapped;
+  }
+
+  mapMeeshoPaymentFields(
+    paymentRow: ParsedSheetRow,
+  ): Pick<NormalizedImportRow, MeeshoPaymentFieldKey> {
+    const numericTargets = new Set<MeeshoPaymentFieldKey>([
+      'finalSettlementAmount',
+      'totalSaleAmountInclShippingGst',
+      'totalSaleReturnAmountInclShippingGst',
+      'fixedFeeInclGst',
+      'warehousingFeeInclGst',
+      'returnPremiumInclGst',
+      'returnPremiumInclGstOfReturn',
+      'meeshoCommissionPercentage',
+      'meeshoCommissionInclGst',
+      'meeshoGoldPlatformFeeInclGst',
+      'meeshoMallPlatformFeeInclGst',
+      'returnShippingChargeInclGst',
+      'gstCompensationPrpShipping',
+      'shippingChargeInclGst',
+      'otherSupportServiceChargesExclGst',
+      'waiversExclGst',
+      'netOtherSupportServiceChargesExclGst',
+      'gstOnNetOtherSupportServiceCharges',
+      'paymentTcs',
+      'tdsRatePercent',
+      'tds',
+      'compensation',
+      'claims',
+      'recovery',
+    ]);
+    const dateTargets = new Set<MeeshoPaymentFieldKey>(['paymentDate']);
+    const out = {} as Pick<NormalizedImportRow, MeeshoPaymentFieldKey>;
+
+    for (const mapping of meeshoPaymentFieldMappings) {
+      const raw = getRowCell(paymentRow, ...mapping.source);
+      if (raw === undefined) continue;
+      let value: string | number | undefined;
+      if (dateTargets.has(mapping.target)) {
+        value = asDate(raw);
+      } else if (numericTargets.has(mapping.target)) {
+        value = asNumber(raw);
+      } else {
+        value = asString(raw);
+      }
+      if (value !== undefined) {
+        out[mapping.target] = value as never;
+      }
+    }
+    return out;
+  }
+
+  enrichMeeshoFromPaymentReport(
+    mapped: NormalizedImportRow,
+    paymentRow?: ParsedSheetRow,
+  ): NormalizedImportRow {
+    if (!paymentRow) return mapped;
+    return { ...mapped, ...this.mapMeeshoPaymentFields(paymentRow) };
   }
 
   mapSalesRow(row: ParsedSheetRow): NormalizedImportRow {

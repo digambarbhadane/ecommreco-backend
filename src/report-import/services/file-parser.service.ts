@@ -8,6 +8,10 @@ import {
 } from '../config/importMappings/gst-column.util';
 import { ParsedSheetRow } from './mapping.service';
 import {
+  MEESHO_PAYMENT_HEADER_ROW_INDEX,
+  MEESHO_PAYMENT_SHEET_NAMES,
+} from '../config/importMappings/meesho-payment.mapping';
+import {
   cellLooksLikeDataValue,
   headerAliasMatchesCell,
   normalizeHeader,
@@ -70,12 +74,16 @@ const MEESHO_FILE_HEADER_ALIASES: Record<MeeshoFileKind, string[]> = {
   returnReport: [
     'order number',
     'sub order num',
+    'sub order no',
     'type of return',
+    'return type',
     'sub type',
     'qty',
     'return qty',
     'return reason',
+    'reason for return',
     'detailed return reason',
+    'detailed return',
   ],
 };
 
@@ -257,6 +265,37 @@ export class FileParserService {
     const sheet = workbook.Sheets[firstSheetName];
     const headerRowIndex = this.detectMeeshoHeaderRowIndex(sheet, fileKind);
     const rows = this.parseSheetData(sheet, firstSheetName, headerRowIndex, []);
+    return {
+      rows,
+      headers: this.resolveHeaders(sheet, headerRowIndex, rows),
+    };
+  }
+
+  parseMeeshoPaymentWorkbook(buffer: Buffer): ParsedSingleSheetWorkbook {
+    const workbook = XLSX.read(buffer, {
+      type: 'buffer',
+      cellDates: true,
+    });
+    if (!workbook.SheetNames.length) {
+      throw new BadRequestException('Payment workbook does not contain any sheet');
+    }
+
+    const sheetName =
+      workbook.SheetNames.find((name) =>
+        MEESHO_PAYMENT_SHEET_NAMES.some(
+          (target) => normalizeHeader(name) === normalizeHeader(target),
+        ),
+      ) ?? null;
+
+    if (!sheetName || !workbook.Sheets[sheetName]) {
+      throw new BadRequestException(
+        'Payment workbook must contain an "Order Payments" sheet',
+      );
+    }
+
+    const sheet = workbook.Sheets[sheetName];
+    const headerRowIndex = MEESHO_PAYMENT_HEADER_ROW_INDEX;
+    const rows = this.parseSheetData(sheet, sheetName, headerRowIndex, []);
     return {
       rows,
       headers: this.resolveHeaders(sheet, headerRowIndex, rows),
@@ -900,72 +939,92 @@ export class FileParserService {
     return bestIndex;
   }
 
+  private meeshoRowHasAnchor(
+    fileKind: MeeshoFileKind,
+    normalizedCells: string[],
+  ): boolean {
+    const headerLike = normalizedCells.filter((c) => !cellLooksLikeDataValue(c));
+    if (!headerLike.length) return false;
+
+    if (fileKind === 'tcsSales') {
+      return headerLike.some(
+        (cell) =>
+          cell === 'gstin' ||
+          cell.includes('sub order') ||
+          cell.includes('sub order num'),
+      );
+    }
+    if (fileKind === 'tcsSalesReturn') {
+      return headerLike.some(
+        (cell) =>
+          cell.includes('sub order') || cell.includes('cancel return'),
+      );
+    }
+    if (fileKind === 'orderReport') {
+      return headerLike.some(
+        (cell) =>
+          cell.includes('sub order') || cell.includes('reason for credit'),
+      );
+    }
+    return headerLike.some(
+      (cell) =>
+        cell.includes('order number') ||
+        cell.includes('sub order') ||
+        cell.includes('type of return') ||
+        cell.includes('return type') ||
+        cell.includes('return reason') ||
+        cell.includes('reason for return') ||
+        cell.includes('detailed return') ||
+        cell.includes('sub type'),
+    );
+  }
+
+  private scoreMeeshoHeaderRow(
+    normalizedCells: string[],
+    aliases: string[],
+  ): number {
+    const headerLike = normalizedCells.filter((c) => !cellLooksLikeDataValue(c));
+    return aliases.reduce(
+      (acc, alias) =>
+        acc +
+        (headerLike.some((cell) => headerAliasMatchesCell(cell, alias)) ? 1 : 0),
+      0,
+    );
+  }
+
   private detectMeeshoHeaderRowIndex(
     sheet: XLSX.WorkSheet,
     fileKind: MeeshoFileKind,
   ): number {
-    const matrix = this.sheetPreviewMatrix(sheet, 80);
+    // Meesho exports often include seller metadata in the first several rows.
+    const matrix = this.sheetPreviewMatrix(sheet, 200);
     const aliases = MEESHO_FILE_HEADER_ALIASES[fileKind];
     let bestIndex = -1;
     let bestScore = -1;
-    const scanLimit = Math.min(matrix.length, 80);
+    const scanLimit = Math.min(matrix.length, 200);
+    const minRequiredScore = 1;
+
+    const evaluateRow = (rowIndex: number): number => {
+      const row = matrix[rowIndex];
+      if (!Array.isArray(row)) return -1;
+      const normalizedCells = this.normalizePreviewRow(row);
+      if (!normalizedCells.length || !rowLooksLikeHeaderRow(normalizedCells)) {
+        return -1;
+      }
+      if (!this.meeshoRowHasAnchor(fileKind, normalizedCells)) return -1;
+      return this.scoreMeeshoHeaderRow(normalizedCells, aliases);
+    };
 
     for (let i = 0; i < scanLimit; i += 1) {
-      const row = matrix[i];
-      if (!Array.isArray(row)) continue;
-      const normalizedCells = row
-        .map((item) =>
-          item === null || item === undefined
-            ? ''
-            : normalizeHeader(String(item)),
-        )
-        .filter((item) => item.length > 0);
-      if (!normalizedCells.length) continue;
-
-      const hasAnchor =
-        fileKind === 'tcsSales'
-          ? normalizedCells.some(
-              (cell) =>
-                cell === 'gstin' ||
-                cell.includes('sub order') ||
-                cell.includes('sub_order'),
-            )
-          : fileKind === 'tcsSalesReturn'
-            ? normalizedCells.some(
-                (cell) =>
-                  cell.includes('sub order') || cell.includes('cancel return'),
-              )
-            : fileKind === 'orderReport'
-              ? normalizedCells.some(
-                  (cell) =>
-                    cell.includes('sub order') || cell.includes('reason for credit'),
-                )
-              : normalizedCells.some(
-                  (cell) =>
-                    cell.includes('type of return') ||
-                    cell.includes('return reason'),
-                );
-
-      if (!hasAnchor) continue;
-
-      const score = aliases.reduce(
-        (acc, alias) =>
-          acc +
-          (normalizedCells.some(
-            (cell) => cell === alias || cell.includes(alias) || alias.includes(cell),
-          )
-            ? 1
-            : 0),
-        0,
-      );
-
+      const score = evaluateRow(i);
+      if (score < 0) continue;
       if (score > bestScore) {
         bestScore = score;
         bestIndex = i;
       }
     }
 
-    if (bestIndex < 0) {
+    if (bestIndex < 0 || bestScore < minRequiredScore) {
       const label =
         fileKind === 'tcsSales'
           ? 'TCS Sales Report'
