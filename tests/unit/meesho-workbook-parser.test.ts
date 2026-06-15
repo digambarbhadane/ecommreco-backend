@@ -132,4 +132,40 @@ describe('FileParserService Meesho workbooks', () => {
     expect(String(parsed.rows[0]['Live Order Status'])).toBe('Delivered');
     expect(String(parsed.rows[0]['Transaction ID'])).toBe('TXN-1');
   });
+
+  it('parses payment report when the sheet is named Sheet1 (CSV-style export)', () => {
+    const data = [
+      ['Payment Summary', '', 'Fees', ''],
+      [
+        'Sub Order No',
+        'Live Order Status',
+        'Transaction ID',
+        'Payment Date',
+        'Final Settlement Amount',
+        'Price Type',
+        'Total Sale Amount (Incl. Shipping & GST)',
+        'TCS',
+        'TDS',
+      ],
+      [
+        'ORD-200',
+        'Delivered',
+        'TXN-2',
+        '01/06/2026',
+        900,
+        'Standard',
+        1100,
+        12,
+        6,
+      ],
+    ];
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(data), 'Sheet1');
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+
+    const parsed = parser.parseMeeshoPaymentWorkbook(buffer);
+    expect(parsed.rows).toHaveLength(1);
+    expect(String(parsed.rows[0]['Sub Order No'])).toBe('ORD-200');
+    expect(String(parsed.rows[0]['Final Settlement Amount'])).toBe('900');
+  });
 });

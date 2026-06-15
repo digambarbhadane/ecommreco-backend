@@ -153,3 +153,5 @@ ImportRowSchema.index({
   invoiceDate: 1,
 });
 ImportRowSchema.index({ sellerId: 1, documentType: 1 });
+ImportRowSchema.index({ sellerId: 1, gstin: 1, invoiceDate: 1 });
+ImportRowSchema.index({ sellerId: 1, invoiceDate: 1, documentType: 1 });

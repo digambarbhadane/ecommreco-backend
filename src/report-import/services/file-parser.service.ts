@@ -8,6 +8,7 @@ import {
 } from '../config/importMappings/gst-column.util';
 import { ParsedSheetRow } from './mapping.service';
 import {
+  MEESHO_PAYMENT_HEADER_ALIASES,
   MEESHO_PAYMENT_HEADER_ROW_INDEX,
   MEESHO_PAYMENT_SHEET_NAMES,
 } from '../config/importMappings/meesho-payment.mapping';
@@ -280,21 +281,14 @@ export class FileParserService {
       throw new BadRequestException('Payment workbook does not contain any sheet');
     }
 
-    const sheetName =
-      workbook.SheetNames.find((name) =>
-        MEESHO_PAYMENT_SHEET_NAMES.some(
-          (target) => normalizeHeader(name) === normalizeHeader(target),
-        ),
-      ) ?? null;
-
-    if (!sheetName || !workbook.Sheets[sheetName]) {
+    const resolved = this.resolveMeeshoPaymentSheet(workbook);
+    if (!resolved) {
       throw new BadRequestException(
-        'Payment workbook must contain an "Order Payments" sheet',
+        'Payment workbook must contain an "Order Payments" sheet or recognizable payment report headers',
       );
     }
 
-    const sheet = workbook.Sheets[sheetName];
-    const headerRowIndex = MEESHO_PAYMENT_HEADER_ROW_INDEX;
+    const { sheet, sheetName, headerRowIndex } = resolved;
     const rows = this.parseSheetData(sheet, sheetName, headerRowIndex, []);
     return {
       rows,
@@ -937,6 +931,120 @@ export class FileParserService {
     }
 
     return bestIndex;
+  }
+
+  private isMeeshoPaymentSheetName(sheetName: string): boolean {
+    const normalized = normalizeHeader(sheetName);
+    if (
+      MEESHO_PAYMENT_SHEET_NAMES.some(
+        (target) => normalizeHeader(target) === normalized,
+      )
+    ) {
+      return true;
+    }
+    return normalized.includes('order payment') || normalized === 'payments';
+  }
+
+  private meeshoPaymentRowHasAnchor(normalizedCells: string[]): boolean {
+    const headerLike = normalizedCells.filter((c) => !cellLooksLikeDataValue(c));
+    if (!headerLike.length) return false;
+
+    const hasSubOrder = headerLike.some(
+      (cell) =>
+        cell.includes('sub order') ||
+        cell === 'order id' ||
+        cell.includes('sub_order'),
+    );
+    const hasPaymentField = headerLike.some(
+      (cell) =>
+        cell.includes('final settlement') ||
+        cell.includes('payment date') ||
+        cell.includes('transaction id') ||
+        cell.includes('live order status'),
+    );
+    return hasSubOrder && hasPaymentField;
+  }
+
+  private scoreMeeshoPaymentHeaderRow(normalizedCells: string[]): number {
+    return this.scoreMeeshoHeaderRow(
+      normalizedCells,
+      [...MEESHO_PAYMENT_HEADER_ALIASES],
+    );
+  }
+
+  private detectMeeshoPaymentHeaderRowIndex(sheet: XLSX.WorkSheet): number {
+    const matrix = this.sheetPreviewMatrix(sheet, 200);
+    let bestIndex = -1;
+    let bestScore = -1;
+    const scanLimit = Math.min(matrix.length, 200);
+    const minRequiredScore = 2;
+
+    for (let i = 0; i < scanLimit; i += 1) {
+      const row = matrix[i];
+      if (!Array.isArray(row)) continue;
+      const normalizedCells = this.normalizePreviewRow(row);
+      if (!normalizedCells.length || !rowLooksLikeHeaderRow(normalizedCells)) {
+        continue;
+      }
+      if (!this.meeshoPaymentRowHasAnchor(normalizedCells)) continue;
+      const score = this.scoreMeeshoPaymentHeaderRow(normalizedCells);
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = i;
+      }
+    }
+
+    if (bestIndex < 0 || bestScore < minRequiredScore) {
+      return -1;
+    }
+    return bestIndex;
+  }
+
+  private resolveMeeshoPaymentSheet(
+    workbook: XLSX.WorkBook,
+  ): { sheetName: string; sheet: XLSX.WorkSheet; headerRowIndex: number } | null {
+    const namedSheets = workbook.SheetNames.filter((name) =>
+      this.isMeeshoPaymentSheetName(name),
+    );
+    const sheetOrder = [
+      ...namedSheets,
+      ...workbook.SheetNames.filter((name) => !namedSheets.includes(name)),
+    ];
+
+    let best:
+      | { sheetName: string; sheet: XLSX.WorkSheet; headerRowIndex: number; score: number }
+      | null = null;
+
+    for (const sheetName of sheetOrder) {
+      const sheet = workbook.Sheets[sheetName];
+      if (!sheet) continue;
+
+      let headerRowIndex = this.detectMeeshoPaymentHeaderRowIndex(sheet);
+      if (headerRowIndex < 0 && this.isMeeshoPaymentSheetName(sheetName)) {
+        headerRowIndex = MEESHO_PAYMENT_HEADER_ROW_INDEX;
+      }
+      if (headerRowIndex < 0) continue;
+
+      const matrix = this.sheetPreviewMatrix(sheet, headerRowIndex + 1);
+      const row = matrix[headerRowIndex];
+      const normalizedCells = Array.isArray(row)
+        ? this.normalizePreviewRow(row)
+        : [];
+      const score =
+        (this.isMeeshoPaymentSheetName(sheetName) ? 10 : 0) +
+        this.scoreMeeshoPaymentHeaderRow(normalizedCells);
+
+      if (!best || score > best.score) {
+        best = { sheetName, sheet, headerRowIndex, score };
+      }
+    }
+
+    if (!best) return null;
+    return {
+      sheetName: best.sheetName,
+      sheet: best.sheet,
+      headerRowIndex: best.headerRowIndex,
+    };
   }
 
   private meeshoRowHasAnchor(

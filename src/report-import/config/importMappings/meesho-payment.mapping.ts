@@ -3,6 +3,24 @@ export const MEESHO_PAYMENT_SHEET_NAMES = ['Order Payments', 'order payments'];
 
 export const MEESHO_PAYMENT_HEADER_ROW_INDEX = 1;
 
+/** Column labels used to locate the payment header row when the sheet name differs. */
+export const MEESHO_PAYMENT_HEADER_ALIASES = [
+  'sub order no',
+  'sub order num',
+  'sub_order_num',
+  'order id',
+  'live order status',
+  'transaction id',
+  'payment date',
+  'final settlement amount',
+  'price type',
+  'total sale amount',
+  'meesho commission',
+  'shipping charge',
+  'tcs',
+  'tds',
+] as const;
+
 export type MeeshoPaymentFieldKey =
   | 'liveOrderStatus'
   | 'transactionId'

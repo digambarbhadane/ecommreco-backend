@@ -75,7 +75,9 @@ const DEFAULT_LOCAL_MONGODB_URI = 'mongodb://127.0.0.1:27017/sellerspl';
             uri,
             serverSelectionTimeoutMS: 10000,
             connectTimeoutMS: 10000,
-            socketTimeoutMS: 20000,
+            socketTimeoutMS: 45000,
+            maxPoolSize: 20,
+            minPoolSize: 2,
             bufferCommands: false,
             connectionFactory,
           };

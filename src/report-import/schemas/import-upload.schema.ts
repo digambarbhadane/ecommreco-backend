@@ -44,6 +44,9 @@ export class ImportUpload {
   @Prop({ required: true, default: 'completed' })
   status: 'processing' | 'completed' | 'failed';
 
+  @Prop({ type: [String], default: [] })
+  uploadedSlots?: string[];
+
   @Prop()
   errorMessage?: string;
 }

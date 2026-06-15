@@ -39,6 +39,7 @@ import {
   buildMyntraValidationMessage,
   MyntraReportValidationInput,
 } from '../utils/myntra-import.validation';
+import { cacheKey, sellerAliasCache } from '../../common/ttl-cache';
 
 @Injectable()
 export class ValidationService {
@@ -121,12 +122,22 @@ export class ValidationService {
   }
 
   async resolveSellerIdAliases(identifier: string): Promise<string[]> {
-    const seller = await this.findSellerByIdentifier(identifier);
-    if (!seller) {
-      const trimmed = String(identifier ?? '').trim();
-      return trimmed ? [trimmed] : [];
+    const key = cacheKey(identifier);
+    if (key) {
+      const cached = sellerAliasCache.get(key);
+      if (cached) return cached;
     }
-    return this.getSellerIdAliases(seller, identifier);
+    const seller = await this.findSellerByIdentifier(identifier);
+    const aliases = !seller
+      ? (() => {
+          const trimmed = String(identifier ?? '').trim();
+          return trimmed ? [trimmed] : [];
+        })()
+      : this.getSellerIdAliases(seller, identifier);
+    if (key && aliases.length > 0) {
+      sellerAliasCache.set(key, aliases);
+    }
+    return aliases;
   }
 
   async sellerOwnsRecord(

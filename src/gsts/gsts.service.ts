@@ -293,91 +293,63 @@ export class GstsService {
     const limit = Math.max(0, params.limit ?? 10);
     const skip = Math.max(0, params.skip ?? 0);
     const filter: Record<string, unknown> = {};
+    let resolvedSeller: Awaited<
+      ReturnType<GstsService['findSellerByIdentifier']>
+    > = null;
     if (sellerId) {
-      const seller = await this.findSellerByIdentifier(sellerId);
-      if (seller) {
-        filter.sellerId = { $in: this.getSellerIdAliases(seller, sellerId) };
+      resolvedSeller = await this.findSellerByIdentifier(sellerId);
+      if (resolvedSeller) {
+        filter.sellerId = {
+          $in: this.getSellerIdAliases(resolvedSeller, sellerId),
+        };
       } else {
         filter.sellerId = sellerId;
       }
     }
-    const data = await this.gstModel
-      .find(filter)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .lean()
-      .exec();
-    const total = await this.gstModel.countDocuments(filter);
-    let slotSummary:
-      | {
-          purchased: number;
-          used: number;
-          remaining: number;
-        }
-      | undefined;
-    if (sellerId) {
-      const sellerForFilter = await this.findSellerByIdentifier(sellerId);
-      const sellerIdAliases = sellerForFilter
-        ? this.getSellerIdAliases(sellerForFilter, sellerId)
-        : [sellerId];
-      const sellerGsts = await this.gstModel
-        .find({ sellerId: { $in: sellerIdAliases } })
-        .select('panNumber gstNumber')
-        .lean()
-        .exec();
-      const sellerPanSet = new Set<string>();
-      sellerGsts.forEach((item) => {
-        const pan =
-          typeof item.panNumber === 'string' && item.panNumber.length > 0
-            ? item.panNumber.trim().toUpperCase()
-            : this.extractPanFromGst(item.gstNumber);
-        if (pan) {
-          sellerPanSet.add(pan);
-        }
-      });
-      const seller = sellerForFilter
-        ? await this.sellerModel
-            .findById(this.getSellerObjectIdString(sellerForFilter))
-            .select('gstSlots gstSlotsPurchased panProfiles')
-            .lean()
-            .exec()
-        : null;
-      if (seller) {
-        if (Array.isArray(seller.panProfiles)) {
-          seller.panProfiles.forEach((item) => {
-            const pan =
-              typeof item.panNumber === 'string'
-                ? item.panNumber.trim().toUpperCase()
-                : '';
-            if (pan) {
-              sellerPanSet.add(pan);
-            }
-          });
-        }
-        const purchased = Math.max(
-          0,
-          Number(seller.gstSlotsPurchased ?? seller.gstSlots ?? 0),
-        );
-        const used = sellerPanSet.size;
-        slotSummary = {
-          purchased,
-          used,
-          remaining: Math.max(0, purchased - used),
-        };
-      }
-    }
+
+    const [facetResult, slotSummary] = await Promise.all([
+      this.gstModel
+        .aggregate<{
+          data: unknown[];
+          total: { count: number }[];
+        }>([
+          { $match: filter },
+          {
+            $facet: {
+              data: [
+                { $sort: { createdAt: -1 } },
+                { $skip: skip },
+                { $limit: limit },
+              ],
+              total: [{ $count: 'count' }],
+            },
+          },
+        ])
+        .exec(),
+      sellerId
+        ? this.buildGstSlotSummary(resolvedSeller, sellerId)
+        : Promise.resolve(undefined),
+    ]);
+
+    const bucket = facetResult[0] ?? { data: [], total: [] };
+    const data = (bucket.data ?? []) as Array<{
+      panNumber?: string;
+      gstNumber?: string;
+    }>;
+    const total = bucket.total[0]?.count ?? 0;
+
     const groupedByPan: Record<string, typeof data> = {};
     data.forEach((item) => {
       const panKey =
         typeof item.panNumber === 'string' && item.panNumber.length > 0
           ? item.panNumber
-          : this.extractPanFromGst(item.gstNumber);
+          : this.extractPanFromGst(item.gstNumber ?? '');
       if (!groupedByPan[panKey]) {
         groupedByPan[panKey] = [];
       }
       groupedByPan[panKey].push(item);
     });
+
     return {
       success: true,
       data,
@@ -389,6 +361,69 @@ export class GstsService {
       limit,
       skip,
       slotSummary,
+    };
+  }
+
+  private async buildGstSlotSummary(
+    sellerForFilter: Awaited<
+      ReturnType<GstsService['findSellerByIdentifier']>
+    >,
+    sellerId: string,
+  ): Promise<
+    | {
+        purchased: number;
+        used: number;
+        remaining: number;
+      }
+    | undefined
+  > {
+    const sellerIdAliases = sellerForFilter
+      ? this.getSellerIdAliases(sellerForFilter, sellerId)
+      : [sellerId];
+    const sellerGsts = await this.gstModel
+      .find({ sellerId: { $in: sellerIdAliases } })
+      .select('panNumber gstNumber')
+      .lean()
+      .exec();
+    const sellerPanSet = new Set<string>();
+    sellerGsts.forEach((item) => {
+      const pan =
+        typeof item.panNumber === 'string' && item.panNumber.length > 0
+          ? item.panNumber.trim().toUpperCase()
+          : this.extractPanFromGst(item.gstNumber);
+      if (pan) {
+        sellerPanSet.add(pan);
+      }
+    });
+    const seller = sellerForFilter
+      ? await this.sellerModel
+          .findById(this.getSellerObjectIdString(sellerForFilter))
+          .select('gstSlots gstSlotsPurchased panProfiles')
+          .lean()
+          .exec()
+      : null;
+    if (!seller) return undefined;
+
+    if (Array.isArray(seller.panProfiles)) {
+      seller.panProfiles.forEach((item) => {
+        const pan =
+          typeof item.panNumber === 'string'
+            ? item.panNumber.trim().toUpperCase()
+            : '';
+        if (pan) {
+          sellerPanSet.add(pan);
+        }
+      });
+    }
+    const purchased = Math.max(
+      0,
+      Number(seller.gstSlotsPurchased ?? seller.gstSlots ?? 0),
+    );
+    const used = sellerPanSet.size;
+    return {
+      purchased,
+      used,
+      remaining: Math.max(0, purchased - used),
     };
   }
 
