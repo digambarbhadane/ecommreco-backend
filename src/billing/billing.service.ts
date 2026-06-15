@@ -4,7 +4,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
+import { User, UserDocument } from '../users/schemas/user.schema';
 import {
   PanSlotRequest,
   PanSlotRequestDocument,
@@ -57,6 +58,8 @@ export class BillingService {
   constructor(
     @InjectModel(Seller.name)
     private readonly sellerModel: Model<SellerDocument>,
+    @InjectModel(User.name)
+    private readonly userModel: Model<UserDocument>,
     @InjectModel(Subscription.name)
     private readonly subscriptionModel: Model<SubscriptionDocument>,
     @InjectModel(SubscriptionPackage.name)
@@ -75,13 +78,51 @@ export class BillingService {
     return id;
   }
 
-  private async getSellerForUser(user?: RequestUser) {
+  private async findSellerByUser(user?: RequestUser) {
     const userId = this.getUserId(user);
-    const seller = await this.sellerModel.findById(userId).lean().exec();
+    const email =
+      typeof user?.email === 'string' ? user.email.trim().toLowerCase() : '';
+
+    if (Types.ObjectId.isValid(userId)) {
+      const byId = await this.sellerModel.findById(userId).lean().exec();
+      if (byId) return byId;
+    }
+
+    if (email) {
+      const byEmail = await this.sellerModel
+        .findOne({ $or: [{ email }, { username: email }] })
+        .lean()
+        .exec();
+      if (byEmail) return byEmail;
+    }
+
+    const sellerUser = await this.userModel
+      .findOne({ _id: userId, role: 'seller' })
+      .lean()
+      .exec();
+    if (sellerUser?.email) {
+      const sellerEmail = sellerUser.email.trim().toLowerCase();
+      return this.sellerModel
+        .findOne({
+          $or: [{ email: sellerEmail }, { username: sellerEmail }],
+        })
+        .lean()
+        .exec();
+    }
+
+    return null;
+  }
+
+  private async getSellerForUser(user?: RequestUser) {
+    const seller = await this.findSellerByUser(user);
     if (!seller) {
       throw new NotFoundException({ success: false, message: 'Seller not found' });
     }
-    return { userId, seller };
+    const sellerId =
+      seller._id instanceof Types.ObjectId
+        ? seller._id.toString()
+        : String(seller._id);
+    return { userId: sellerId, seller };
   }
 
   private splitGst(totalAmount: number) {
@@ -346,13 +387,39 @@ export class BillingService {
       Number(seller.allocatedPanSlots ?? 0) +
         Number(seller.purchasedPanSlots ?? 0);
 
+    const totalPaid = invoices
+      .filter((inv) => inv.status === 'paid')
+      .reduce((sum, inv) => sum + inv.amount, 0);
+    const totalPending = invoices
+      .filter((inv) => inv.status === 'pending')
+      .reduce((sum, inv) => sum + inv.amount, 0);
+    const lastPaidInvoice = invoices.find((inv) => inv.status === 'paid');
+
+    const gstTotal = Number(seller.gstSlots ?? 0);
+    const gstUsed = Number(seller.gstSlotsUsed ?? 0);
+    const panTotal = totalPanSlots;
+    const panUsed = Number(seller.usedPanSlots ?? 0);
+
+    const addressParts = [seller.address, seller.city, seller.state].filter(
+      Boolean,
+    );
+
     return {
       success: true,
       data: {
+        account: {
+          fullName: seller.fullName,
+          email: seller.email,
+          firmName: seller.firmName,
+          gstNumber: seller.gstNumber,
+          contactNumber: seller.contactNumber,
+          address: addressParts.length ? addressParts.join(', ') : undefined,
+        },
         plan: {
           subscriptionId: seller.subscriptionId,
           status: this.subscriptionStatus(seller),
           accountStatus: seller.accountStatus ?? 'active',
+          onboardingStatus: seller.onboardingStatus ?? 'payment_pending',
           paymentStatus: seller.paymentStatus ?? 'pending',
           startsAt: seller.subscriptionStartsAt
             ? new Date(seller.subscriptionStartsAt).toISOString()
@@ -362,23 +429,52 @@ export class BillingService {
             : undefined,
           durationYears:
             seller.durationYears ?? seller.subscriptionDuration ?? undefined,
-          gstSlots: seller.gstSlots ?? 0,
-          gstSlotsUsed: seller.gstSlotsUsed ?? 0,
+          gstSlots: gstTotal,
+          gstSlotsUsed: gstUsed,
           gstSlotsPurchased: seller.gstSlotsPurchased ?? 0,
           panSlots: {
             allocated: seller.allocatedPanSlots ?? 0,
             purchased: seller.purchasedPanSlots ?? 0,
-            used: seller.usedPanSlots ?? 0,
-            total: totalPanSlots,
+            used: panUsed,
+            total: panTotal,
           },
           amount: Number(seller.paymentAmount ?? seller.amount ?? 0),
           paymentDate: seller.paymentDate
             ? new Date(seller.paymentDate).toISOString()
             : seller.paymentCompletedAt
               ? new Date(seller.paymentCompletedAt).toISOString()
-              : undefined,
+              : seller.paymentVerifiedAt
+                ? new Date(seller.paymentVerifiedAt).toISOString()
+                : undefined,
+          paymentVerifiedAt: seller.paymentVerifiedAt
+            ? new Date(seller.paymentVerifiedAt).toISOString()
+            : undefined,
           paymentReference: seller.transactionId || seller.paymentId,
           paymentLink: seller.paymentLink,
+          accountCreatedAt: seller.accountCreatedAt
+            ? new Date(seller.accountCreatedAt).toISOString()
+            : undefined,
+        },
+        usage: {
+          gst: {
+            total: gstTotal,
+            used: gstUsed,
+            purchased: seller.gstSlotsPurchased ?? 0,
+            available: Math.max(0, gstTotal - gstUsed),
+          },
+          pan: {
+            allocated: seller.allocatedPanSlots ?? 0,
+            purchased: seller.purchasedPanSlots ?? 0,
+            used: panUsed,
+            total: panTotal,
+            available: Math.max(0, panTotal - panUsed),
+          },
+        },
+        totals: {
+          totalPaid,
+          totalPending,
+          invoiceCount: invoices.length,
+          lastPaymentDate: lastPaidInvoice?.paymentDate ?? lastPaidInvoice?.issueDate,
         },
         invoices,
       },

@@ -438,6 +438,25 @@ export class ReportImportController {
     return this.reportImportService.getPlatformAnalytics({ fromDate, toDate });
   }
 
+  @Get('analytics-bundle')
+  @ApiOperation({
+    summary: 'Seller dashboard + P&L bundle',
+    description:
+      'Combined seller dashboard stats and profit-loss metrics in one request (fewer round trips).',
+  })
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  analyticsBundle(@Query() query: ListImportedRowsDto) {
+    if (!query.sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
+    return this.reportImportService.getSellerAnalyticsBundle({
+      sellerId: query.sellerId.trim(),
+      gstin: query.gstin,
+      fromDate: query.fromDate,
+      toDate: query.toDate,
+    });
+  }
+
   @Get('dashboard')
   @ApiOperation({
     summary: 'Seller dashboard stats',
@@ -492,6 +511,44 @@ export class ReportImportController {
   @Roles('seller', 'super_admin', 'accounts_manager')
   marketplaceSummary(@Query() query: ListImportedRowsDto) {
     return this.reportImportService.getMarketplaceDocumentSummary(query);
+  }
+
+  @Get('month-status')
+  @ApiOperation({
+    summary: 'Month-wise upload status',
+    description:
+      'Returns which report files have been uploaded per month for a GST + marketplace (used by import UI).',
+  })
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  monthStatus(
+    @Query('sellerId') sellerId: string,
+    @Query('gstId') gstId: string,
+    @Query('marketplaceId') marketplaceId: string,
+    @Query('marketplace') marketplace: string,
+    @Query('reportMonth') reportMonth?: string,
+  ) {
+    if (!sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
+    if (!gstId?.trim()) {
+      throw new BadRequestException('gstId is required');
+    }
+    if (!marketplaceId?.trim()) {
+      throw new BadRequestException('marketplaceId is required');
+    }
+    const allowed = ['flipkart', 'amazon', 'meesho', 'myntra'] as const;
+    if (!allowed.includes(marketplace as (typeof allowed)[number])) {
+      throw new BadRequestException(
+        'marketplace must be flipkart, amazon, meesho, or myntra',
+      );
+    }
+    return this.reportImportService.getMonthUploadStatus({
+      sellerId: sellerId.trim(),
+      gstId: gstId.trim(),
+      marketplaceId: marketplaceId.trim(),
+      marketplace: marketplace as (typeof allowed)[number],
+      reportMonth,
+    });
   }
 
   @Get('uploads')

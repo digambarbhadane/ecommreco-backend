@@ -6,6 +6,7 @@ import {
   PanSlotTransactionSchema,
 } from '../pan-slot-requests/schemas/pan-slot-transaction.schema';
 import { Seller, SellerSchema } from '../sellers/schemas/seller.schema';
+import { User, UserSchema } from '../users/schemas/user.schema';
 import {
   Subscription,
   SubscriptionSchema,
@@ -20,6 +21,7 @@ import { BillingService } from './billing.service';
 @Module({
   imports: [
     MongooseModule.forFeature([
+      { name: User.name, schema: UserSchema },
       { name: Seller.name, schema: SellerSchema },
       { name: Subscription.name, schema: SubscriptionSchema },
       { name: SubscriptionPackage.name, schema: SubscriptionPackageSchema },

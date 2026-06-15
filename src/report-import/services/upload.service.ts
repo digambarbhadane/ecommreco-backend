@@ -9,6 +9,9 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { UploadReportDto } from '../dto/upload-report.dto';
 import {
+  collectUploadedSlotsFromFiles,
+} from '../import-slot.constants';
+import {
   ImportUpload,
   ImportUploadDocument,
 } from '../schemas/import-upload.schema';
@@ -548,6 +551,7 @@ export class UploadService {
       reportMonth: dto.reportMonth,
       fileName,
       fileHash: `meesho-payment|${fileHash}|month:${dto.reportMonth ?? ''}`,
+      uploadedSlots: ['paymentReportFile'],
       totalRecords: bulkOps.length,
       salesRecords: bulkOps.length,
       cashbackRecords: 0,
@@ -1058,6 +1062,7 @@ export class UploadService {
     });
 
     let uploadId = existingUploadId ?? '';
+    const uploadedSlots = collectUploadedSlotsFromFiles(files);
     if (!uploadId) {
       const upload = await this.uploadModel.create({
         sellerId,
@@ -1067,6 +1072,7 @@ export class UploadService {
         ...(dto.reportMonth ? { reportMonth: dto.reportMonth } : {}),
         fileName,
         fileHash,
+        uploadedSlots,
         totalRecords: normalizedRows.length,
         minInvoiceDate,
         maxInvoiceDate,
@@ -1119,6 +1125,7 @@ export class UploadService {
         cashbackRecords,
         fileHash,
         fileName,
+        uploadedSlots,
       },
       $unset: { errorMessage: 1 },
     });
