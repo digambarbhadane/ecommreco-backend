@@ -3048,13 +3048,23 @@ export class LeadsService {
       }
 
       this.repairLeadConversionQueue(lead, user?.email || 'system');
+      lead.markModified('paymentDetails');
       await lead.save();
+
+      const isSuperAdmin = user?.role === 'super_admin';
       return {
         success: true,
-        message: 'Lead is already queued for account manager review.',
+        message: isSuperAdmin
+          ? 'Lead is ready for seller account setup.'
+          : 'Lead is already queued for account manager review.',
         data: {
           leadId: lead.leadId,
-          status: 'queued_for_account_manager',
+          status: isSuperAdmin
+            ? 'ready_for_seller_creation'
+            : 'queued_for_account_manager',
+          paymentStatus: lead.paymentDetails?.status,
+          conversionRequestedAt: lead.conversionRequestedAt,
+          sellerId: lead.sellerId,
         },
       };
     }
@@ -3188,6 +3198,7 @@ export class LeadsService {
       paymentDetails.paymentDate = lead.conversionRequestedAt ?? now;
     }
     lead.paymentDetails = paymentDetails;
+    lead.markModified('paymentDetails');
     if (!lead.pipelineStage || lead.pipelineStage === 'Interested') {
       lead.pipelineStage = 'Converted to Seller';
     }

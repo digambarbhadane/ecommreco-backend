@@ -243,12 +243,13 @@ export class AccountManagerService {
     if (lead.leadStatus !== 'converted') {
       throw new BadRequestException('Lead is not ready for conversion');
     }
-    if (lead.paymentDetails?.status !== 'completed') {
-      throw new BadRequestException('Payment is not completed');
-    }
     this.repairConversionLeadFields(lead);
     if (lead.isModified()) {
+      lead.markModified('paymentDetails');
       await lead.save();
+    }
+    if (lead.paymentDetails?.status !== 'completed') {
+      throw new BadRequestException('Payment is not completed');
     }
 
     if (role === 'accounts_manager') {
@@ -283,10 +284,14 @@ export class AccountManagerService {
     if (lead.leadStatus !== 'converted') {
       throw new BadRequestException('Lead is not ready for conversion');
     }
+    this.repairConversionLeadFields(lead);
+    if (lead.isModified()) {
+      lead.markModified('paymentDetails');
+      await lead.save();
+    }
     if (lead.paymentDetails?.status !== 'completed') {
       throw new BadRequestException('Payment is not completed');
     }
-    this.repairConversionLeadFields(lead);
 
     if (role === 'accounts_manager') {
       if (
@@ -772,6 +777,44 @@ export class AccountManagerService {
       paymentDetails.paymentDate = lead.conversionRequestedAt ?? now;
     }
     lead.paymentDetails = paymentDetails;
+    lead.markModified('paymentDetails');
+  }
+
+  async findSellerByLeadId(leadId: string, user?: RequestUser) {
+    this.assertAccountManagerAccess(user);
+
+    const lead = await this.leadModel
+      .findOne(this.buildLeadIdentityFilter(leadId))
+      .exec();
+    if (!lead) {
+      throw new NotFoundException('Lead not found');
+    }
+
+    let seller: SellerDocument | null = null;
+    if (typeof lead.sellerId === 'string' && lead.sellerId.trim()) {
+      seller = await this.findSellerByIdentifier(lead.sellerId);
+    }
+    if (!seller && lead.leadId) {
+      seller = await this.findSellerByIdentifier(lead.leadId);
+    }
+    if (!seller && lead.email) {
+      seller = await this.sellerModel
+        .findOne({
+          email: lead.email.trim().toLowerCase(),
+          leadId: lead.leadId || lead._id.toString(),
+        })
+        .exec();
+    }
+    if (!seller) {
+      throw new NotFoundException('Seller not found for this lead');
+    }
+
+    if (!lead.sellerId) {
+      lead.sellerId = seller._id.toString();
+      await lead.save();
+    }
+
+    return this.findOne(seller._id.toString(), user);
   }
 
   private async repairStuckConversionLeads() {
