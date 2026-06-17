@@ -13,6 +13,7 @@ export class SubscriptionPackage {
   basePrice: number;
 
   @Prop({
+    type: String,
     required: true,
     enum: ['percentage', 'flat', 'none'],
     default: 'none',

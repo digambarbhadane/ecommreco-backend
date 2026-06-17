@@ -1,8 +1,15 @@
+/// <reference types="node" />
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe, Logger } from '@nestjs/common';
+import { Logger, RequestMethod, ValidationPipe } from '@nestjs/common';
+import { SwaggerModule } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import * as express from 'express';
 import { AppModule } from './app.module';
+import {
+  buildSwaggerConfig,
+  createDocumentOptions,
+  normalizeSwaggerDocument,
+} from '../config/swagger';
 
 const normalizeOrigin = (value: string) => value.trim().replace(/\/+$/, '');
 
@@ -60,8 +67,22 @@ const isPrivateNetworkOrigin = (origin: string) => {
   }
 };
 
+const DEFAULT_DEV_ORIGINS = [
+  'http://localhost:8080',
+  'http://127.0.0.1:8080',
+  'http://[::1]:8080',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://[::1]:5173',
+  'http://localhost:4173',
+  'http://127.0.0.1:4173',
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+];
+
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+<<<<<<< HEAD
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ extended: true, limit: '50mb' }));
   app.use((req, res, next) => {
@@ -70,6 +91,10 @@ async function bootstrap() {
     }
     next();
   });
+=======
+  app.use(express.json({ limit: '10mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+>>>>>>> 86bbd8c0b784f5559b068c42e44fdc061bc3025a
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -77,7 +102,10 @@ async function bootstrap() {
       forbidNonWhitelisted: true,
     }),
   );
-  app.setGlobalPrefix('api/v1');
+  app.setGlobalPrefix('api/v1', {
+    exclude: [{ path: '', method: RequestMethod.GET }],
+  });
+
   const config = app.get(ConfigService);
   const nodeEnv = config.get<string>('NODE_ENV') ?? 'development';
   const isProduction = nodeEnv === 'production';
@@ -92,6 +120,7 @@ async function bootstrap() {
   ];
   const whitelist = new Set(
     [
+<<<<<<< HEAD
       'http://localhost:5173',
       'http://127.0.0.1:5173',
       'http://[::1]:5173',
@@ -101,11 +130,17 @@ async function bootstrap() {
       'http://localhost:4200',
       'http://127.0.0.1:4200',
       'http://[::1]:4200',
+=======
+      ...DEFAULT_DEV_ORIGINS,
+>>>>>>> 86bbd8c0b784f5559b068c42e44fdc061bc3025a
       'https://ecommreco.com',
+      'https://www.ecommreco.com',
+      'https://uat.ecommreco.com',
       ...configuredOrigins,
     ].map(normalizeOrigin),
   );
 
+<<<<<<< HEAD
   app.use((req, res, next) => {
     if (req.method !== 'OPTIONS') {
       next();
@@ -139,6 +174,30 @@ async function bootstrap() {
     }
     res.sendStatus(204);
   });
+=======
+  const allowOrigin = (origin: string | undefined): boolean | string => {
+    if (!origin) {
+      return true;
+    }
+    if (allowAllOrigins) {
+      return origin;
+    }
+    const normalizedOrigin = normalizeOrigin(origin);
+    if (isPrivateNetworkOrigin(normalizedOrigin)) {
+      return origin;
+    }
+    if (allowRenderOrigins && isRenderOrigin(normalizedOrigin)) {
+      return origin;
+    }
+    if (whitelist.has(normalizedOrigin)) {
+      return origin;
+    }
+    Logger.warn(
+      `CORS: origin not in whitelist (${origin}); denying.`,
+    );
+    return false;
+  };
+>>>>>>> 86bbd8c0b784f5559b068c42e44fdc061bc3025a
 
   app.enableCors({
     origin: (
@@ -146,6 +205,7 @@ async function bootstrap() {
       callback: (err: Error | null, allow?: boolean | string) => void,
     ) => {
       try {
+<<<<<<< HEAD
         if (!origin) {
           callback(null, true);
           return;
@@ -187,13 +247,17 @@ async function bootstrap() {
         }
         Logger.warn(`CORS blocked for origin: ${origin}`);
         callback(null, false);
+=======
+        const decision = allowOrigin(origin);
+        callback(null, decision);
+>>>>>>> 86bbd8c0b784f5559b068c42e44fdc061bc3025a
       } catch (err: unknown) {
         const msg =
           err && typeof err === 'object' && 'message' in err
             ? String((err as { message?: unknown }).message)
             : String(err);
         Logger.error(`CORS origin evaluation failed: ${msg}`);
-        callback(null, true);
+        callback(null, origin ?? true);
       }
     },
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
@@ -204,9 +268,13 @@ async function bootstrap() {
       'Authorization',
       'X-Requested-With',
       'Origin',
+      'Access-Control-Request-Method',
+      'Access-Control-Request-Headers',
       'x-setup-token',
     ],
+    exposedHeaders: ['Content-Disposition', 'Content-Type'],
     optionsSuccessStatus: 204,
+    maxAge: 86400,
   });
 
   const configuredPort = config.get<string>('PORT');
@@ -216,8 +284,48 @@ async function bootstrap() {
     typeof parsedPort === 'number' && Number.isFinite(parsedPort)
       ? parsedPort
       : 5000;
+
+  const swaggerEnabled =
+    nodeEnv !== 'production' ||
+    config.get<string>('ENABLE_SWAGGER') === 'true';
+  if (swaggerEnabled) {
+    const swaggerConfig = buildSwaggerConfig();
+    const document = normalizeSwaggerDocument(
+      SwaggerModule.createDocument(
+        app,
+        swaggerConfig,
+        createDocumentOptions(),
+      ),
+    );
+
+    SwaggerModule.setup('api/v1/docs', app, document, {
+      jsonDocumentUrl: 'api/v1/docs-json',
+      yamlDocumentUrl: 'api/v1/docs-yaml',
+      swaggerOptions: {
+        persistAuthorization: true,
+        docExpansion: 'list',
+        filter: true,
+        showRequestDuration: true,
+        tagsSorter: 'alpha',
+        operationsSorter: 'alpha',
+      },
+      customSiteTitle: 'EcommReco API Docs',
+    });
+
+    Logger.log(`Swagger UI: http://localhost:${port}/api/v1/docs`);
+    Logger.log(`OpenAPI JSON: http://localhost:${port}/api/v1/docs-json`);
+  } else {
+    Logger.warn(
+      'Swagger documentation is disabled in production (set ENABLE_SWAGGER=true to enable)',
+    );
+  }
+
   await app.listen(port, '0.0.0.0');
-  Logger.log(`API running on port ${port}`);
+  Logger.log(`API running on http://0.0.0.0:${port}`);
+  Logger.log(`Health: http://0.0.0.0:${port}/ and http://0.0.0.0:${port}/api/v1/health`);
+  Logger.log(
+    `CORS: allowAll=${allowAllOrigins} env=${nodeEnv} whitelist=${whitelist.size} origins`,
+  );
 }
 
 void bootstrap();

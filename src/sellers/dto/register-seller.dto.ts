@@ -1,5 +1,7 @@
 import { Transform } from 'class-transformer';
 import {
+  ArrayNotEmpty,
+  IsArray,
   IsEmail,
   IsIn,
   IsNotEmpty,
@@ -29,12 +31,41 @@ export class RegisterSellerDto {
   )
   email: string;
 
-  @IsNotEmpty()
+  @IsOptional()
   @IsString()
   @Transform(({ value }) =>
-    typeof value === 'string' ? value.trim().toUpperCase() : undefined,
+    typeof value === 'string' && value.trim().length > 0
+      ? value.trim().toUpperCase()
+      : undefined,
   )
-  gstNumber: string;
+  gstNumber?: string;
+
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsString({ each: true })
+  @Transform(({ value }) => {
+    if (!Array.isArray(value)) return undefined;
+    return value
+      .map((item) => (typeof item === 'string' ? item.trim().toLowerCase() : ''))
+      .filter((item) => item.length > 0);
+  })
+  marketplaces: string[];
+
+  @IsNotEmpty()
+  @IsString()
+  @IsIn(['0-1000', '1000-2000', '2000-3000', '3000+'])
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim() : undefined,
+  )
+  ordersPerMonth: '0-1000' | '1000-2000' | '2000-3000' | '3000+';
+
+  @IsNotEmpty()
+  @IsString()
+  @IsIn(['ecommerce_accounting', 'reconciliation', 'both'])
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim().toLowerCase() : undefined,
+  )
+  servicesNeeded: 'ecommerce_accounting' | 'reconciliation' | 'both';
 
   @IsIn([true], {
     message: 'You must accept the Terms and Conditions and Privacy Policy',

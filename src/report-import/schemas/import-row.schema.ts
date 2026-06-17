@@ -1,0 +1,157 @@
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { HydratedDocument } from 'mongoose';
+
+export type ImportRowDocument = HydratedDocument<ImportRow>;
+
+@Schema({
+  timestamps: { createdAt: true, updatedAt: false },
+  collection: 'import_rows',
+})
+export class ImportRow {
+  @Prop({ required: true, index: true })
+  uploadId: string;
+
+  @Prop({ required: true, index: true })
+  sellerId: string;
+
+  @Prop({ required: true, index: true })
+  gstin: string;
+
+  @Prop({ required: true, index: true })
+  marketplace: string;
+
+  @Prop({ required: true, enum: ['sales', 'cashback'], index: true })
+  reportType: 'sales' | 'cashback';
+
+  @Prop({ required: true, index: true })
+  documentType: string; // canonical: Document Type
+
+  @Prop()
+  voucherType?: string; // canonical: Voucher Type
+
+  @Prop()
+  orderID?: string; // canonical: Order ID
+
+  @Prop()
+  skuID?: string; // canonical: SKU ID
+
+  @Prop()
+  hsnCode?: string;
+
+  @Prop()
+  paymentMode?: string; // canonical: Payment Mode
+
+  @Prop()
+  fulfilmentType?: string;
+
+  @Prop()
+  quantity?: number; // canonical: Quantity
+
+  @Prop()
+  invoiceAmount?: number;
+
+  @Prop()
+  taxableAmount?: number; // canonical: Taxable Amount
+
+  @Prop()
+  igstRate?: number;
+
+  @Prop()
+  igstAmount?: number;
+
+  @Prop()
+  cgstRate?: number;
+
+  @Prop()
+  cgstAmount?: number;
+
+  @Prop()
+  sgstRate?: number;
+
+  @Prop()
+  sgstAmount?: number;
+
+  @Prop()
+  invoiceNo?: string; // canonical: Invoice No
+
+  @Prop()
+  buyerInvoiceDate?: string; // canonical: Buyer Invoice Date (Sales Report)
+
+  @Prop({ index: true })
+  invoiceDate?: string;
+
+  @Prop()
+  pincode?: string; // canonical: Pincode
+
+  @Prop()
+  stateName?: string; // canonical: State Name
+
+  @Prop()
+  customerGstNo?: string; // Amazon optional: Customer Bill To Gstid
+
+  @Prop()
+  buyerName?: string; // Amazon optional: Buyer Name
+
+  /** Meesho-only — enriched from TCS Sales Return / Return Report */
+  @Prop()
+  returnInvoiceDate?: string;
+
+  @Prop()
+  typeOfReturn?: string;
+
+  @Prop()
+  subType?: string;
+
+  @Prop()
+  returnQty?: number;
+
+  @Prop()
+  returnReason?: string;
+
+  @Prop()
+  detailedReturnReason?: string;
+
+  /** Meesho Order Payments — enriched by Sub Order No */
+  @Prop() liveOrderStatus?: string;
+  @Prop() transactionId?: string;
+  @Prop() paymentDate?: string;
+  @Prop() finalSettlementAmount?: number;
+  @Prop() priceType?: string;
+  @Prop() totalSaleAmountInclShippingGst?: number;
+  @Prop() totalSaleReturnAmountInclShippingGst?: number;
+  @Prop() fixedFeeInclGst?: number;
+  @Prop() warehousingFeeInclGst?: number;
+  @Prop() returnPremiumInclGst?: number;
+  @Prop() returnPremiumInclGstOfReturn?: number;
+  @Prop() meeshoCommissionPercentage?: number;
+  @Prop() meeshoCommissionInclGst?: number;
+  @Prop() meeshoGoldPlatformFeeInclGst?: number;
+  @Prop() meeshoMallPlatformFeeInclGst?: number;
+  @Prop() returnShippingChargeInclGst?: number;
+  @Prop() gstCompensationPrpShipping?: number;
+  @Prop() shippingChargeInclGst?: number;
+  @Prop() otherSupportServiceChargesExclGst?: number;
+  @Prop() waiversExclGst?: number;
+  @Prop() netOtherSupportServiceChargesExclGst?: number;
+  @Prop() gstOnNetOtherSupportServiceCharges?: number;
+  @Prop() paymentTcs?: number;
+  @Prop() tdsRatePercent?: number;
+  @Prop() tds?: number;
+  @Prop() compensation?: number;
+  @Prop() claims?: number;
+  @Prop() recovery?: number;
+  @Prop() compensationReason?: string;
+  @Prop() claimsReason?: string;
+  @Prop() recoveryReason?: string;
+}
+
+export const ImportRowSchema = SchemaFactory.createForClass(ImportRow);
+ImportRowSchema.index({
+  sellerId: 1,
+  gstin: 1,
+  marketplace: 1,
+  invoiceDate: 1,
+});
+ImportRowSchema.index({ sellerId: 1, documentType: 1 });
+ImportRowSchema.index({ sellerId: 1, gstin: 1, invoiceDate: 1 });
+ImportRowSchema.index({ sellerId: 1, invoiceDate: 1, documentType: 1 });

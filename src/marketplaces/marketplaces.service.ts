@@ -3,6 +3,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -14,7 +15,7 @@ import {
 } from '../platform-marketplaces/schemas/platform-marketplace.schema';
 
 @Injectable()
-export class MarketplacesService {
+export class MarketplacesService implements OnModuleInit {
   private readonly logger = new Logger(MarketplacesService.name);
 
   constructor(
@@ -23,6 +24,21 @@ export class MarketplacesService {
     @InjectModel(PlatformMarketplace.name)
     private readonly platformMarketplaceModel: Model<PlatformMarketplaceDocument>,
   ) {}
+
+  async onModuleInit() {
+    try {
+      await this.marketplaceModel.collection.dropIndex('sellerId_1_platformMarketplaceId_1');
+      this.logger.log('Dropped legacy marketplace unique index (seller + platform only)');
+    } catch {
+      // Index may not exist on fresh databases.
+    }
+    try {
+      await this.marketplaceModel.syncIndexes();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Marketplace index sync warning: ${message}`);
+    }
+  }
 
   async create(dto: CreateMarketplaceDto) {
     const platform = await this.resolvePlatform(dto);
@@ -38,13 +54,14 @@ export class MarketplacesService {
       .findOne({
         sellerId: dto.sellerId,
         platformMarketplaceId: platform._id,
+        gstId: dto.gstId,
       })
       .lean()
       .exec();
     if (existing) {
       throw new BadRequestException({
         success: false,
-        message: 'Marketplace already connected',
+        message: 'This marketplace is already connected to the selected GST profile',
         errorCode: 'DUPLICATE_MARKETPLACE',
       });
     }
@@ -78,7 +95,7 @@ export class MarketplacesService {
     limit?: number;
     skip?: number;
   }) {
-    const limit = Math.max(0, params.limit ?? 10);
+    const limit = Math.max(0, params.limit ?? 500);
     const skip = Math.max(0, params.skip ?? 0);
     const data = await this.marketplaceModel
       .find({ sellerId: params.sellerId })
@@ -152,10 +169,12 @@ export class MarketplacesService {
       status,
       name: platformName ?? item.storeName ?? 'Marketplace',
       storeName: item.storeName,
+      platformSlug: platform?.slug ?? '',
       platformMarketplaceId: platform
         ? {
             _id: platform._id?.toString?.() ?? platform._id,
             name: platform.name,
+            slug: platform.slug,
             logoUrl: platform.logoUrl,
             description: platform.description,
             status: platform.status,

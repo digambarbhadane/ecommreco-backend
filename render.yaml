@@ -1,0 +1,26 @@
+# Render Blueprint — EcommReco API
+# https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: ecommreco-api
+    runtime: node
+    branch: ecommereco-dev
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm run start:render
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_OPTIONS
+        value: --max-old-space-size=460
+      - key: PORT
+        value: 10000
+      - key: USE_MEMORY_DB
+        value: false
+      - key: ALLOW_MEMORY_DB_FALLBACK
+        value: false
+      - key: CORS_ALLOW_RENDER_ORIGINS
+        value: true
+      # Set in Render dashboard (secrets):
+      # MONGODB_URI, MONGODB_DB_NAME, JWT_SECRET, FRONTEND_URL, etc.

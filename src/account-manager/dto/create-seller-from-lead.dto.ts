@@ -24,9 +24,9 @@ export class CreateSellerFromLeadDto {
   @IsEmail()
   email: string;
 
-  @IsNotEmpty()
+  @IsOptional()
   @IsString()
-  gstNumber: string;
+  gstNumber?: string;
 
   @IsOptional()
   @IsString()

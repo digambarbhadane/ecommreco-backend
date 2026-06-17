@@ -1,6 +1,9 @@
 import { Transform } from 'class-transformer';
 import {
+  ArrayNotEmpty,
+  IsArray,
   IsEmail,
+  IsIn,
   IsNotEmpty,
   IsObject,
   IsOptional,
@@ -11,12 +14,12 @@ import {
 } from 'class-validator';
 
 export class CreateManualLeadDto {
-  @IsNotEmpty()
+  @IsOptional()
   @IsString()
   @Transform(({ value }) =>
     typeof value === 'string' ? value.trim() : undefined,
   )
-  fullName: string;
+  fullName?: string;
 
   @IsNotEmpty()
   @IsString()
@@ -28,14 +31,14 @@ export class CreateManualLeadDto {
   )
   contactNumber: string;
 
-  @IsNotEmpty()
+  @IsOptional()
   @IsEmail()
   @Transform(({ value }) =>
     typeof value === 'string' ? value.trim().toLowerCase() : undefined,
   )
-  email: string;
+  email?: string;
 
-  @IsNotEmpty()
+  @IsOptional()
   @IsString()
   @Transform(({ value }) =>
     typeof value === 'string' ? value.trim().toUpperCase() : undefined,
@@ -45,7 +48,23 @@ export class CreateManualLeadDto {
   @Matches(/^[A-Za-z0-9]{16}$/, {
     message: 'gstNumber must be 16 alphanumeric characters',
   })
-  gstNumber: string;
+  gstNumber?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsString({ each: true })
+  marketplaces?: string[];
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['ecommerce_accounting', 'reconciliation', 'both'])
+  servicesNeeded?: 'ecommerce_accounting' | 'reconciliation' | 'both';
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['0-1000', '1000-2000', '2000-3000', '3000+'])
+  ordersPerMonth?: '0-1000' | '1000-2000' | '2000-3000' | '3000+';
 
   @IsOptional()
   @IsString()

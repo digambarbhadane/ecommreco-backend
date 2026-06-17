@@ -5,7 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -116,7 +116,30 @@ export class SellersService {
       delete sanitized.credentialsSentAt;
     }
 
+    const id = sanitized._id;
+    if (id !== undefined && id !== null) {
+      sanitized.id =
+        typeof id === 'string'
+          ? id
+          : typeof (id as { toString?: () => string }).toString === 'function'
+            ? (id as { toString: () => string }).toString()
+            : String(id);
+    }
     return sanitized;
+  }
+
+  private async findSellerByIdentifier(identifier: string) {
+    const value = String(identifier ?? '').trim();
+    if (!value) return null;
+    if (Types.ObjectId.isValid(value)) {
+      const sellerById = await this.sellerModel.findById(value).exec();
+      if (sellerById) return sellerById;
+    }
+    const sellerByPublicId = await this.sellerModel
+      .findOne({ publicId: value })
+      .exec();
+    if (sellerByPublicId) return sellerByPublicId;
+    return null;
   }
 
   async register(dto: RegisterSellerDto) {
@@ -186,10 +209,22 @@ export class SellersService {
         ],
       });
     } else if (role === 'training_and_support_manager') {
-      const viewStatus =
-        requestedStatus === 'active' ? 'active' : 'training_pending';
-      and.push({ onboardingStatus: viewStatus });
-      if (viewStatus === 'training_pending') {
+      const completedView =
+        requestedStatus === 'active' || requestedStatus === 'training_completed';
+      if (completedView) {
+        and.push({
+          $or: [
+            { onboardingStatus: 'training_completed' },
+            {
+              onboardingStatus: 'active',
+              trainingCompletedAt: { $exists: true, $ne: null },
+            },
+          ],
+        });
+      } else {
+        and.push({ onboardingStatus: 'training_pending' });
+      }
+      if (!completedView) {
         and.push({
           $or: [
             { assignedTrainingSupportManager: email },
@@ -240,7 +275,8 @@ export class SellersService {
     if (
       role === 'training_and_support_manager' &&
       email &&
-      requestedStatus !== 'active'
+      requestedStatus !== 'active' &&
+      requestedStatus !== 'training_completed'
     ) {
       const toAssign = data
         .filter((s) => !s.assignedTrainingSupportManager)
@@ -278,7 +314,7 @@ export class SellersService {
   }
 
   async getSeller(sellerId: string, role: ViewerRole, user?: RequestUser) {
-    const seller = await this.sellerModel.findById(sellerId).exec();
+    const seller = await this.findSellerByIdentifier(sellerId);
     if (!seller) {
       throw new NotFoundException({
         success: false,
@@ -475,8 +511,7 @@ export class SellersService {
     }
     const password =
       dto.password ??
-      Math.random().toString(36).slice(-8) +
-        Math.random().toString(36).slice(-2);
+      require('crypto').randomBytes(6).toString('hex');
     const hashedPassword = await bcrypt.hash(password, 10);
     seller.password = hashedPassword;
     seller.username = seller.email;
@@ -503,6 +538,24 @@ export class SellersService {
       recipientRole: 'super_admin',
       message: `Credentials generated for ${seller.fullName} (Seller ID: ${seller._id.toString()}, Username: ${seller.email}, Email: ${seller.email}, GST: ${seller.gstNumber || '—'}, GST Slots: ${typeof seller.gstSlots === 'number' ? seller.gstSlots : '—'}, Duration: ${typeof seller.durationYears === 'number' ? seller.durationYears : typeof seller.subscriptionDuration === 'number' ? seller.subscriptionDuration : '—'} year(s), Amount: ${typeof seller.amount === 'number' ? seller.amount : typeof seller.paymentAmount === 'number' ? seller.paymentAmount : '—'}).`,
     });
+
+    if (dto.sendEmail && actorRole === 'super_admin') {
+      const loginUrl =
+        process.env.FRONTEND_URL?.trim() ||
+        process.env.APP_URL?.trim() ||
+        'https://app.ecommreco.com/login';
+      await this.emailService.sendEmail({
+        to: seller.email,
+        type: EmailType.NOTIFICATION,
+        subject: 'Your EcommReco seller account credentials',
+        payload: {
+          message: `Hello ${seller.fullName},\n\nYour seller account is ready.\n\nUsername: ${seller.email}\nPassword: ${password}\n\nLogin: ${loginUrl}\n\nPlease change your password after signing in.`,
+          actionUrl: loginUrl,
+          actionText: 'Sign in to EcommReco',
+        },
+      });
+    }
+
     return {
       success: true,
       data: {
@@ -712,8 +765,14 @@ export class SellersService {
         message: 'Seller is not ready for training completion',
       });
     }
+<<<<<<< HEAD
     seller.onboardingStatus = 'active';
     seller.accountStatus = 'active';
+=======
+    seller.onboardingStatus = 'training_completed';
+    seller.accountStatus = 'active';
+    seller.trainingStatus = 'completed';
+>>>>>>> 86bbd8c0b784f5559b068c42e44fdc061bc3025a
     seller.trainingCompletedAt = new Date();
     seller.trainingCompletedBy = user?.email || 'admin';
     await seller.save();

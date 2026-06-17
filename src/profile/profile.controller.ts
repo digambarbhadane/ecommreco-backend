@@ -1,4 +1,9 @@
 import {
+  ApiTags,
+  ApiOperation,
+  ApiBearerAuth,
+} from '@nestjs/swagger';
+import {
   Body,
   Controller,
   Delete,
@@ -23,6 +28,12 @@ type RequestWithUser = Request & {
   user?: RequestUser;
 };
 
+/**
+ * Legacy profile controller — kept for backward compatibility.
+ * @deprecated Use ApiProfileController (`/profile/me`, `/profile/update`, etc.) instead.
+ */
+@ApiTags('Profile (legacy)')
+@ApiBearerAuth()
 @Controller('profile')
 @UseGuards(AuthGuard('jwt'), RolesGuard)
 @Roles(
@@ -36,16 +47,19 @@ export class ProfileController {
   constructor(private readonly profileService: ProfileService) {}
 
   @Get()
+  @ApiOperation({ summary: 'Get current user profile', deprecated: true })
   get(@Req() req: RequestWithUser) {
     return this.profileService.getProfile(req.user);
   }
 
   @Patch()
+  @ApiOperation({ summary: 'Update current user profile', deprecated: true })
   update(@Body() dto: UpdateProfileDto, @Req() req: RequestWithUser) {
     return this.profileService.updateProfile(dto, req.user);
   }
 
   @Delete()
+  @ApiOperation({ summary: 'Delete current user profile', description: 'Soft-delete the current user account.', deprecated: true })
   remove(@Req() req: RequestWithUser) {
     return this.profileService.deleteProfile(req.user);
   }

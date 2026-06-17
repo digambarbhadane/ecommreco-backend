@@ -29,6 +29,15 @@ export class Seller {
   @Prop()
   businessType?: string;
 
+  @Prop()
+  tradeName?: string;
+
+  @Prop()
+  registrationDate?: string;
+
+  @Prop()
+  gstStatus?: string;
+
   @Prop({ required: true })
   gstNumber: string;
 
@@ -58,6 +67,36 @@ export class Seller {
 
   @Prop({ default: 0 })
   gstSlotsUsed?: number;
+
+  /** PAN slots from base subscription plan */
+  @Prop()
+  allocatedPanSlots?: number;
+
+  /** Additional PAN slots purchased via add-on requests */
+  @Prop({ default: 0 })
+  purchasedPanSlots?: number;
+
+  @Prop()
+  usedPanSlots?: number;
+
+  @Prop()
+  totalPanSlots?: number;
+
+  @Prop({
+    type: [
+      {
+        panNumber: { type: String, required: true },
+        businessName: { type: String },
+        createdAt: { type: Date, default: Date.now },
+      },
+    ],
+    default: [],
+  })
+  panProfiles?: {
+    panNumber: string;
+    businessName?: string;
+    createdAt: Date;
+  }[];
 
   @Prop()
   durationYears?: number;

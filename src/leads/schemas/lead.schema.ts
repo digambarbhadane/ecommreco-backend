@@ -33,6 +33,18 @@ export class Lead {
   marketplaces?: string[];
 
   @Prop()
+  marketplace?: string;
+
+  @Prop()
+  ordersPerMonth?: '0-1000' | '1000-2000' | '2000-3000' | '3000+';
+
+  @Prop({
+    type: String,
+    enum: ['ecommerce_accounting', 'reconciliation', 'both'],
+  })
+  servicesNeeded?: 'ecommerce_accounting' | 'reconciliation' | 'both';
+
+  @Prop()
   firmName?: string;
 
   @Prop()
@@ -102,6 +114,39 @@ export class Lead {
     createdBy?: string;
   }[];
 
+  @Prop({
+    type: [
+      {
+        scheduledAt: { type: Date, required: true },
+        status: {
+          type: String,
+          enum: ['scheduled', 'done'],
+          default: 'scheduled',
+        },
+        meetLink: { type: String, required: true },
+        recipientEmail: String,
+        emailSent: { type: Boolean, default: false },
+        notes: String,
+        createdBy: String,
+        updatedAt: Date,
+      },
+    ],
+    default: [],
+  })
+  demos: {
+    scheduledAt: Date;
+    status: 'scheduled' | 'done';
+    meetLink: string;
+    recipientEmail?: string;
+    emailSent?: boolean;
+    notes?: string;
+    createdBy?: string;
+    updatedAt?: Date;
+  }[];
+
+  @Prop({ type: String, enum: ['none', 'scheduled', 'done'], default: 'none' })
+  demoStatus?: 'none' | 'scheduled' | 'done';
+
   @Prop({ type: Object })
   subscriptionConfig?: {
     gstSlots: number;
@@ -130,6 +175,18 @@ export class Lead {
 
   @Prop()
   assignedSalesManagerId?: string;
+
+  @Prop({ index: true })
+  assignedTo?: string;
+
+  @Prop({ index: true })
+  lastContactedAt?: Date;
+
+  @Prop({ index: true })
+  lastConnectedAt?: Date;
+
+  @Prop({ index: true })
+  convertedAt?: Date;
 
   @Prop()
   assignedBy?: string;
@@ -167,6 +224,27 @@ export class Lead {
 
   @Prop({ default: 'new' })
   leadStatus: 'new' | 'contacted' | 'interested' | 'converted' | 'rejected';
+
+  @Prop({
+    type: String,
+    enum: [
+      'GENERATED',
+      'CONTACTED',
+      'CONNECTED',
+      'FOLLOW_UP',
+      'CONVERTED',
+      'LOST',
+    ],
+    default: 'GENERATED',
+    index: true,
+  })
+  status:
+    | 'GENERATED'
+    | 'CONTACTED'
+    | 'CONNECTED'
+    | 'FOLLOW_UP'
+    | 'CONVERTED'
+    | 'LOST';
 
   @Prop()
   source?: string;
@@ -215,3 +293,9 @@ LeadSchema.index({
   email: 'text',
   firmName: 'text',
 });
+LeadSchema.index({ assignedSalesManagerId: 1, createdAt: -1 });
+LeadSchema.index({ assignedTo: 1, createdAt: -1 });
+LeadSchema.index({ leadStatus: 1, updatedAt: -1 });
+LeadSchema.index({ lastContactedAt: -1 });
+LeadSchema.index({ lastConnectedAt: -1 });
+LeadSchema.index({ convertedAt: -1 });

@@ -2,11 +2,16 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, PipelineStage, Types, UpdateQuery } from 'mongoose';
+import * as bcrypt from 'bcrypt';
 import { NotificationsService } from '../notifications/notifications.service';
+import { EmailService } from '../email/email.service';
+import { EmailConfigService } from '../email/config/email.config';
+import { EmailType } from '../email/email.types';
 import { Seller, SellerDocument } from '../sellers/schemas/seller.schema';
 import { User, UserDocument } from '../users/schemas/user.schema';
 import { generatePublicId } from '../common/public-id';
@@ -32,6 +37,8 @@ type RequestUser = {
 
 @Injectable()
 export class LeadsService {
+  private readonly logger = new Logger(LeadsService.name);
+
   constructor(
     @InjectModel(Lead.name)
     private readonly leadModel: Model<LeadDocument>,
@@ -42,6 +49,8 @@ export class LeadsService {
     @InjectModel(Counter.name)
     private readonly counterModel: Model<CounterDocument>,
     private readonly notificationsService: NotificationsService,
+    private readonly emailService: EmailService,
+    private readonly emailConfig: EmailConfigService,
   ) {}
 
   private async getNextLeadId(date = new Date()): Promise<string> {
@@ -76,6 +85,16 @@ export class LeadsService {
 
   private normalizeEmail(value: unknown) {
     return typeof value === 'string' ? value.trim().toLowerCase() : '';
+  }
+
+  private generateMeetLink() {
+    const chars = 'abcdefghijklmnopqrstuvwxyz';
+    const segment = (length: number) =>
+      Array.from(
+        { length },
+        () => chars[Math.floor(Math.random() * chars.length)],
+      ).join('');
+    return `https://meet.google.com/${segment(3)}-${segment(4)}-${segment(3)}`;
   }
 
   private async resolveSalesManager(params: {
@@ -297,12 +316,37 @@ export class LeadsService {
     };
   }
 
+  async deleteLead(id: string, deletedBy: string) {
+    const identityFilter = this.buildLeadIdentityFilter(id);
+    const deletedLead = await this.leadModel
+      .findOneAndDelete(identityFilter)
+      .lean()
+      .exec();
+
+    if (!deletedLead) {
+      throw new NotFoundException('Lead not found');
+    }
+
+    return {
+      success: true,
+      message: 'Lead deleted successfully',
+      data: {
+        id: deletedLead._id?.toString?.() ?? '',
+        leadId: deletedLead.leadId,
+        publicId: deletedLead.publicId,
+        deletedBy,
+      },
+    };
+  }
+
   async listFollowUps(params: {
     page: number;
     limit: number;
     leadId?: string;
     status?: string;
     search?: string;
+    from?: string;
+    to?: string;
     user?: RequestUser;
   }) {
     const skip = (params.page - 1) * params.limit;
@@ -330,6 +374,30 @@ export class LeadsService {
     } else if (!params.status) {
       // Default to showing only pending (which includes overdue)
       followUpMatch['followUps.status'] = 'pending';
+    }
+
+    const parseBound = (value: string, mode: 'start' | 'end') => {
+      const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+      if (dateOnly) {
+        const [y, m, d] = value.split('-').map((x) => Number(x));
+        const istMidnightUtcMs =
+          Date.UTC(y, (m || 1) - 1, d || 1) - 5.5 * 60 * 60000;
+        return mode === 'start'
+          ? new Date(istMidnightUtcMs)
+          : new Date(istMidnightUtcMs + 24 * 60 * 60 * 1000 - 1);
+      }
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+    };
+    const from = typeof params.from === 'string' ? params.from.trim() : '';
+    const to = typeof params.to === 'string' ? params.to.trim() : '';
+    const fromDate = from ? parseBound(from, 'start') : undefined;
+    const toDate = to ? parseBound(to, 'end') : undefined;
+    if (fromDate || toDate) {
+      followUpMatch['followUps.scheduledAt'] = {
+        ...(fromDate ? { $gte: fromDate } : {}),
+        ...(toDate ? { $lte: toDate } : {}),
+      };
     }
 
     const search =
@@ -498,6 +566,8 @@ export class LeadsService {
     limit: number;
     leadId?: string;
     search?: string;
+    from?: string;
+    to?: string;
     user?: RequestUser;
   }) {
     const skip = (params.page - 1) * params.limit;
@@ -523,9 +593,39 @@ export class LeadsService {
       typeof params.search === 'string' ? params.search.trim() : '';
     const hasSearch = search.length > 0;
 
+    const parseBound = (value: string, mode: 'start' | 'end') => {
+      const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+      if (dateOnly) {
+        const [y, m, d] = value.split('-').map((x) => Number(x));
+        const istMidnightUtcMs =
+          Date.UTC(y, (m || 1) - 1, d || 1) - 5.5 * 60 * 60000;
+        return mode === 'start'
+          ? new Date(istMidnightUtcMs)
+          : new Date(istMidnightUtcMs + 24 * 60 * 60 * 1000 - 1);
+      }
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+    };
+    const from = typeof params.from === 'string' ? params.from.trim() : '';
+    const to = typeof params.to === 'string' ? params.to.trim() : '';
+    const fromDate = from ? parseBound(from, 'start') : undefined;
+    const toDate = to ? parseBound(to, 'end') : undefined;
+    const dateMatch: Record<string, unknown> =
+      fromDate || toDate
+        ? {
+            'notes.createdAt': {
+              ...(fromDate ? { $gte: fromDate } : {}),
+              ...(toDate ? { $lte: toDate } : {}),
+            },
+          }
+        : {};
+
     const pipeline: PipelineStage[] = [
       { $match: leadMatch as PipelineStage.Match['$match'] },
       { $unwind: '$notes' },
+      ...(Object.keys(dateMatch).length
+        ? [{ $match: dateMatch as PipelineStage.Match['$match'] }]
+        : []),
       {
         $addFields: {
           createdAtText: {
@@ -578,6 +678,9 @@ export class LeadsService {
     const countPipeline: PipelineStage[] = [
       { $match: leadMatch as PipelineStage.Match['$match'] },
       { $unwind: '$notes' },
+      ...(Object.keys(dateMatch).length
+        ? [{ $match: dateMatch as PipelineStage.Match['$match'] }]
+        : []),
       {
         $addFields: {
           createdAtText: {
@@ -623,17 +726,55 @@ export class LeadsService {
     };
   }
 
-  async getDashboardStats(user?: RequestUser) {
+  async getDashboardStats(
+    user?: RequestUser,
+    params?: { from?: string; to?: string },
+  ) {
     const salesFilter = this.buildSalesManagerLeadAccessFilter(user);
     const baseFilter: Record<string, unknown> = salesFilter ? salesFilter : {};
 
-    const totalLeads = await this.leadModel.countDocuments(baseFilter);
+    const parseBound = (value: string, mode: 'start' | 'end') => {
+      const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+      if (dateOnly) {
+        const [y, m, d] = value.split('-').map((x) => Number(x));
+        const istMidnightUtcMs =
+          Date.UTC(y, (m || 1) - 1, d || 1) - 5.5 * 60 * 60000;
+        return mode === 'start'
+          ? new Date(istMidnightUtcMs)
+          : new Date(istMidnightUtcMs + 24 * 60 * 60 * 1000 - 1);
+      }
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+    };
+    const from = typeof params?.from === 'string' ? params.from.trim() : '';
+    const to = typeof params?.to === 'string' ? params.to.trim() : '';
+    const fromDate = from ? parseBound(from, 'start') : undefined;
+    const toDate = to ? parseBound(to, 'end') : undefined;
+    const hasRange = Boolean(fromDate || toDate);
+    const createdAtRange: Record<string, unknown> = hasRange
+      ? {
+          createdAt: {
+            ...(fromDate ? { $gte: fromDate } : {}),
+            ...(toDate ? { $lte: toDate } : {}),
+          },
+        }
+      : {};
+
+    const totalLeads = await this.leadModel.countDocuments(
+      hasRange
+        ? ({ $and: [baseFilter, createdAtRange] } as Record<string, unknown>)
+        : baseFilter,
+    );
 
     const leadsByStatus = await this.leadModel.aggregate<{
       _id: string;
       count: number;
     }>([
-      { $match: baseFilter as PipelineStage.Match['$match'] },
+      {
+        $match: (hasRange
+          ? ({ $and: [baseFilter, createdAtRange] } as Record<string, unknown>)
+          : baseFilter) as PipelineStage.Match['$match'],
+      },
       {
         $group: {
           _id: '$leadStatus',
@@ -650,40 +791,99 @@ export class LeadsService {
       {},
     );
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const newLeadsToday = await this.leadModel.countDocuments({
-      ...(salesFilter ? baseFilter : {}),
-      createdAt: { $gte: today },
-    });
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const newLeadsToday = await this.leadModel.countDocuments(
+      hasRange
+        ? ({ $and: [baseFilter, createdAtRange] } as Record<string, unknown>)
+        : {
+            ...(salesFilter ? baseFilter : {}),
+            createdAt: { $gte: startOfToday },
+          },
+    );
 
     const pendingFollowUpsResult = await this.leadModel.aggregate<{
       count: number;
     }>([
       { $match: baseFilter as PipelineStage.Match['$match'] },
       { $unwind: '$followUps' },
-      { $match: { 'followUps.status': 'pending' } },
+      {
+        $match: {
+          'followUps.status': 'pending',
+          ...(hasRange
+            ? {
+                'followUps.scheduledAt': {
+                  ...(fromDate ? { $gte: fromDate } : {}),
+                  ...(toDate ? { $lte: toDate } : {}),
+                },
+              }
+            : {}),
+        } as Record<string, unknown>,
+      },
       { $count: 'count' },
     ]);
     const pendingFollowUps = pendingFollowUpsResult[0]?.count ?? 0;
 
-    const convertedLeads = statusMap['converted'] || 0;
+    const convertedLeads = hasRange
+      ? await this.leadModel.countDocuments({
+          $and: [
+            baseFilter,
+            {
+              $or: [
+                {
+                  convertedAt: {
+                    ...(fromDate ? { $gte: fromDate } : {}),
+                    ...(toDate ? { $lte: toDate } : {}),
+                  },
+                },
+                {
+                  activityTimeline: {
+                    $elemMatch: {
+                      timestamp: {
+                        ...(fromDate ? { $gte: fromDate } : {}),
+                        ...(toDate ? { $lte: toDate } : {}),
+                      },
+                      'metadata.newStatus': 'CONVERTED',
+                    },
+                  },
+                },
+                {
+                  activityTimeline: {
+                    $elemMatch: {
+                      timestamp: {
+                        ...(fromDate ? { $gte: fromDate } : {}),
+                        ...(toDate ? { $lte: toDate } : {}),
+                      },
+                      'metadata.newLeadStatus': 'converted',
+                    },
+                  },
+                },
+              ],
+            },
+          ],
+        })
+      : statusMap['converted'] || 0;
     const conversionRate =
       totalLeads > 0 ? (convertedLeads / totalLeads) * 100 : 0;
 
     // Get recent leads (last 5)
     const recentLeads = await this.leadModel
-      .find(baseFilter)
+      .find(
+        hasRange
+          ? ({ $and: [baseFilter, createdAtRange] } as Record<string, unknown>)
+          : baseFilter,
+      )
       .sort({ createdAt: -1 })
       .limit(5)
       .select('fullName email contactNumber leadStatus createdAt leadId')
       .lean();
 
-    // Get today's follow-ups
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
     const endOfDay = new Date();
     endOfDay.setHours(23, 59, 59, 999);
+    const followUpFrom = hasRange ? fromDate : startOfDay;
+    const followUpTo = hasRange ? toDate : endOfDay;
 
     const todaysFollowUps = await this.leadModel.aggregate<{
       leadId: string;
@@ -691,10 +891,14 @@ export class LeadsService {
       contactNumber: string;
       followUp: unknown;
     }>([
+      { $match: baseFilter as PipelineStage.Match['$match'] },
       { $unwind: '$followUps' },
       {
         $match: {
-          'followUps.scheduledAt': { $gte: startOfDay, $lte: endOfDay },
+          'followUps.scheduledAt': {
+            ...(followUpFrom ? { $gte: followUpFrom } : {}),
+            ...(followUpTo ? { $lte: followUpTo } : {}),
+          },
           'followUps.status': 'pending',
         },
       },
@@ -771,6 +975,7 @@ export class LeadsService {
       createdByUserId: requesterId || undefined,
       assignedSalesManager: assigned?.email,
       assignedSalesManagerId: assigned?.id,
+      assignedTo: assigned?.id,
       assignedBy: requesterEmail || createdBy,
       assignedAt: assigned ? new Date() : undefined,
       metadata: {
@@ -800,7 +1005,7 @@ export class LeadsService {
     await this.notificationsService.createNotification({
       event: 'lead_created',
       recipientRole: 'sales_admin',
-      message: `New manual lead created for ${created.fullName} by ${createdBy}. Score: ${leadScore}`,
+      message: `New manual lead created for ${created.fullName || created.contactNumber} by ${createdBy}. Score: ${leadScore}`,
     });
 
     return {
@@ -842,6 +1047,7 @@ export class LeadsService {
       creatorRole: 'seller',
       assignedSalesManager: assigned?.email,
       assignedSalesManagerId: assigned?.id,
+      assignedTo: assigned?.id,
       assignedBy: assigned ? 'system' : undefined,
       assignedAt: assigned ? new Date() : undefined,
       ipAddress,
@@ -865,7 +1071,7 @@ export class LeadsService {
       ],
       notes: [
         {
-          content: `Lead created by seller ${dto.fullName}. Source: ${source}`,
+          content: `Lead created by seller ${dto.fullName}. Source: ${source}. Services: ${dto.servicesNeeded}`,
           addedBy: dto.fullName,
           createdAt: new Date(),
         },
@@ -878,10 +1084,79 @@ export class LeadsService {
       message: `New lead created for ${created.fullName}. Score: ${leadScore}`,
     });
 
+    void this.sendRegistrationWelcomeEmail(dto, created.leadId).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `Failed to send registration welcome email to ${dto.email}: ${message}`,
+      );
+    });
+
     return {
       success: true,
       data: created,
     };
+  }
+
+  private async sendRegistrationWelcomeEmail(
+    dto: CreateLeadDto,
+    leadId?: string,
+  ) {
+    const recipient = this.normalizeEmail(dto.email);
+    if (!recipient) return;
+
+    await this.emailService.sendEmail({
+      to: recipient,
+      type: EmailType.REGISTRATION_WELCOME,
+      fromOverride: this.emailConfig.formatFromAddress(
+        this.emailConfig.defaultFrom,
+      ),
+      replyTo: this.emailConfig.supportEmail,
+      subject: 'Welcome to EcommReco — we will connect within 24 hours',
+      payload: {
+        fullName: dto.fullName,
+        email: recipient,
+        contactNumber: dto.contactNumber,
+        servicesLabel: this.formatServicesNeededLabel(dto.servicesNeeded),
+        marketplacesLabel: this.formatMarketplacesLabel(dto.marketplaces),
+        ordersPerMonth: dto.ordersPerMonth,
+        leadId: leadId ?? '',
+        websiteUrl: this.emailConfig.frontendUrl,
+        supportEmail: this.emailConfig.supportEmail,
+        year: new Date().getFullYear(),
+      },
+    });
+  }
+
+  private formatServicesNeededLabel(
+    value?: CreateLeadDto['servicesNeeded'],
+  ): string {
+    switch (value) {
+      case 'ecommerce_accounting':
+        return 'Ecommerce Accounting';
+      case 'reconciliation':
+        return 'Reconciliation';
+      case 'both':
+        return 'Ecommerce Accounting & Reconciliation';
+      default:
+        return '';
+    }
+  }
+
+  private formatMarketplacesLabel(marketplaces?: string[]): string {
+    if (!Array.isArray(marketplaces) || marketplaces.length === 0) {
+      return '';
+    }
+    const labels: Record<string, string> = {
+      amazon: 'Amazon',
+      flipkart: 'Flipkart',
+      myntra: 'Myntra',
+      meesho: 'Meesho',
+      shopify: 'Shopify',
+      other: 'Other',
+    };
+    return marketplaces
+      .map((item) => labels[item.toLowerCase()] ?? item)
+      .join(', ');
   }
 
   async importLeads(dto: ImportLeadsDto, user?: RequestUser) {
@@ -1456,6 +1731,7 @@ export class LeadsService {
         creatorRole: user?.role || 'super_admin',
         assignedSalesManager: assigned?.email,
         assignedSalesManagerId: assigned?.id,
+        assignedTo: assigned?.id,
         assignedBy: requesterEmail || 'super_admin',
         assignedAt: assigned ? now : undefined,
         metadata: {
@@ -1508,6 +1784,7 @@ export class LeadsService {
         for (const docIdx of needsAutoAssignmentIndexes) {
           docs[docIdx].assignedSalesManager = undefined;
           docs[docIdx].assignedSalesManagerId = undefined;
+          docs[docIdx].assignedTo = undefined;
         }
       } else {
         const counter = await this.counterModel.findOneAndUpdate(
@@ -1531,6 +1808,7 @@ export class LeadsService {
           const candidate = normalizedAutoCandidates[candidateIndex];
           docs[docIdx].assignedSalesManager = candidate.email;
           docs[docIdx].assignedSalesManagerId = candidate.id;
+          docs[docIdx].assignedTo = candidate.id;
           docs[docIdx].assignedAt = now;
         }
       }
@@ -1633,11 +1911,19 @@ export class LeadsService {
     const errors: Record<string, string> = {};
 
     // Check for duplicates in Sellers collection
-    const existingSeller = await this.sellerModel
-      .findOne({
-        $or: [{ email }, { contactNumber }, { gstNumber }],
-      })
-      .exec();
+    const sellerOrFilters = [
+      ...(email ? [{ email }] : []),
+      ...(contactNumber ? [{ contactNumber }] : []),
+      ...(gstNumber ? [{ gstNumber }] : []),
+    ];
+    const existingSeller =
+      sellerOrFilters.length > 0
+        ? await this.sellerModel
+            .findOne({
+              $or: sellerOrFilters,
+            })
+            .exec()
+        : null;
 
     if (existingSeller) {
       if (existingSeller.email === email) {
@@ -1655,11 +1941,19 @@ export class LeadsService {
     // Check for duplicates in Leads collection
     // We only need to check if we haven't already found an error for a field,
     // but to be thorough and catch all conflicts, we check anyway.
-    const existingLead = await this.leadModel
-      .findOne({
-        $or: [{ email }, { contactNumber }, { gstNumber }],
-      })
-      .exec();
+    const leadOrFilters = [
+      ...(email ? [{ email }] : []),
+      ...(contactNumber ? [{ contactNumber }] : []),
+      ...(gstNumber ? [{ gstNumber }] : []),
+    ];
+    const existingLead =
+      leadOrFilters.length > 0
+        ? await this.leadModel
+            .findOne({
+              $or: leadOrFilters,
+            })
+            .exec()
+        : null;
 
     if (existingLead) {
       if (existingLead.email === email && !errors.email) {
@@ -1743,6 +2037,10 @@ export class LeadsService {
       skip?: number;
       page?: number;
       search?: string;
+      today?: boolean;
+      activity?: 'generated' | 'contacted' | 'connected' | 'converted' | 'lost';
+      from?: string;
+      to?: string;
     },
     user?: RequestUser,
   ) {
@@ -1758,6 +2056,140 @@ export class LeadsService {
     const salesFilter = this.buildSalesManagerLeadAccessFilter(user);
     if (salesFilter) {
       Object.assign(filter, salesFilter);
+    }
+    const parseBound = (value: string, mode: 'start' | 'end') => {
+      const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+      if (dateOnly) {
+        const [y, m, d] = value.split('-').map((x) => Number(x));
+        const istMidnightUtcMs =
+          Date.UTC(y, (m || 1) - 1, d || 1) - 5.5 * 60 * 60000;
+        return mode === 'start'
+          ? new Date(istMidnightUtcMs)
+          : new Date(istMidnightUtcMs + 24 * 60 * 60 * 1000 - 1);
+      }
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+    };
+
+    const from = typeof params.from === 'string' ? params.from.trim() : '';
+    const to = typeof params.to === 'string' ? params.to.trim() : '';
+    const fromDate = from ? parseBound(from, 'start') : undefined;
+    const toDate = to ? parseBound(to, 'end') : undefined;
+    const hasExplicitRange = Boolean(fromDate || toDate);
+
+    const andFilters: Array<Record<string, unknown>> = [filter];
+
+    if (hasExplicitRange || params.today) {
+      let start = fromDate;
+      let end = toDate;
+      if (!hasExplicitRange && params.today) {
+        const now = new Date();
+        const utcMs = now.getTime() + now.getTimezoneOffset() * 60000;
+        const istNow = new Date(utcMs + 5.5 * 60 * 60000);
+        const istY = istNow.getFullYear();
+        const istM = istNow.getMonth();
+        const istD = istNow.getDate();
+        const istMidnightUtcMs = Date.UTC(istY, istM, istD) - 5.5 * 60 * 60000;
+        start = new Date(istMidnightUtcMs);
+        end = new Date(istMidnightUtcMs + 24 * 60 * 60 * 1000 - 1);
+      }
+
+      const timeRange: Record<string, unknown> = {
+        ...(start ? { $gte: start } : {}),
+        ...(end ? { $lte: end } : {}),
+      };
+
+      const activity = params.activity || 'generated';
+      if (activity === 'generated') {
+        andFilters.push({ createdAt: timeRange });
+      } else if (activity === 'contacted') {
+        andFilters.push({
+          $or: [
+            { lastContactedAt: timeRange },
+            {
+              activityTimeline: {
+                $elemMatch: {
+                  timestamp: timeRange,
+                  'metadata.newStatus': 'CONTACTED',
+                },
+              },
+            },
+            {
+              activityTimeline: {
+                $elemMatch: {
+                  timestamp: timeRange,
+                  'metadata.newLeadStatus': 'contacted',
+                },
+              },
+            },
+          ],
+        });
+      } else if (activity === 'connected') {
+        andFilters.push({
+          $or: [
+            { lastConnectedAt: timeRange },
+            {
+              activityTimeline: {
+                $elemMatch: {
+                  timestamp: timeRange,
+                  'metadata.newStatus': 'CONNECTED',
+                },
+              },
+            },
+            {
+              activityTimeline: {
+                $elemMatch: {
+                  timestamp: timeRange,
+                  'metadata.newLeadStatus': 'interested',
+                },
+              },
+            },
+          ],
+        });
+      } else if (activity === 'converted') {
+        andFilters.push({
+          $or: [
+            { convertedAt: timeRange },
+            {
+              activityTimeline: {
+                $elemMatch: {
+                  timestamp: timeRange,
+                  'metadata.newStatus': 'CONVERTED',
+                },
+              },
+            },
+            {
+              activityTimeline: {
+                $elemMatch: {
+                  timestamp: timeRange,
+                  'metadata.newLeadStatus': 'converted',
+                },
+              },
+            },
+          ],
+        });
+      } else if (activity === 'lost') {
+        andFilters.push({
+          $or: [
+            {
+              activityTimeline: {
+                $elemMatch: {
+                  timestamp: timeRange,
+                  'metadata.newStatus': 'LOST',
+                },
+              },
+            },
+            {
+              activityTimeline: {
+                $elemMatch: {
+                  timestamp: timeRange,
+                  'metadata.newLeadStatus': 'rejected',
+                },
+              },
+            },
+          ],
+        });
+      }
     }
     const search =
       typeof params.search === 'string' ? params.search.trim() : '';
@@ -1778,8 +2210,19 @@ export class LeadsService {
     }
     const searchFilter: Record<string, unknown> =
       hasSearch && searchOrFilters.length ? { $or: searchOrFilters } : {};
+    const effectiveFilter =
+      andFilters.length > 1
+        ? ({ $and: andFilters } as Record<string, unknown>)
+        : filter;
     const data = await this.leadModel
-      .find(hasSearch ? { $and: [filter, searchFilter] } : filter)
+      .find(
+        hasSearch
+          ? ({ $and: [effectiveFilter, searchFilter] } as Record<
+              string,
+              unknown
+            >)
+          : effectiveFilter,
+      )
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
@@ -1824,7 +2267,9 @@ export class LeadsService {
     }
 
     const total = await this.leadModel.countDocuments(
-      hasSearch ? { $and: [filter, searchFilter] } : filter,
+      hasSearch
+        ? ({ $and: [effectiveFilter, searchFilter] } as Record<string, unknown>)
+        : effectiveFilter,
     );
     return {
       success: true,
@@ -2251,6 +2696,144 @@ export class LeadsService {
     return { success: true, data: lead };
   }
 
+  async scheduleDemo(
+    id: string,
+    payload: {
+      scheduledAt: Date;
+      notes?: string;
+      recipientEmail?: string;
+      sendEmail?: boolean;
+      meetLink?: string;
+    },
+    createdBy: string,
+  ) {
+    if (
+      !(payload.scheduledAt instanceof Date) ||
+      Number.isNaN(payload.scheduledAt.getTime())
+    ) {
+      throw new BadRequestException('Invalid demo date/time');
+    }
+    if (payload.scheduledAt.getTime() < Date.now()) {
+      throw new BadRequestException('Demo date/time must be in the future');
+    }
+
+    const lead = await this.leadModel
+      .findOne(this.buildLeadIdentityFilter(id))
+      .exec();
+    if (!lead) {
+      throw new NotFoundException('Lead not found');
+    }
+
+    const recipientEmail = this.normalizeEmail(
+      payload.recipientEmail || lead.email,
+    );
+    const sendEmail = Boolean(payload.sendEmail);
+    if (sendEmail && !recipientEmail) {
+      throw new BadRequestException(
+        'Recipient email is required to send demo invite',
+      );
+    }
+
+    const meetLink =
+      typeof payload.meetLink === 'string' && payload.meetLink.trim().length > 0
+        ? payload.meetLink.trim()
+        : this.generateMeetLink();
+
+    let emailSent = false;
+    if (sendEmail && recipientEmail) {
+      const fullName = (lead.fullName || '').trim() || 'Seller';
+      await this.emailService.sendEmail({
+        to: recipientEmail,
+        type: EmailType.NOTIFICATION,
+        subject: 'Demo Scheduled - EcommReco',
+        payload: {
+          message: `Hi ${fullName}, your demo is scheduled for ${payload.scheduledAt.toLocaleString()}. Join using this Google Meet link: ${meetLink}`,
+          actionUrl: meetLink,
+          actionText: 'Join Demo',
+        },
+      });
+      emailSent = true;
+    }
+
+    lead.demos = Array.isArray(lead.demos) ? lead.demos : [];
+    lead.demos.push({
+      scheduledAt: payload.scheduledAt,
+      status: 'scheduled',
+      meetLink,
+      recipientEmail: recipientEmail || undefined,
+      emailSent,
+      notes: payload.notes,
+      createdBy,
+      updatedAt: new Date(),
+    });
+    lead.demoStatus = 'scheduled';
+    lead.activityTimeline.push({
+      action: 'demo_scheduled',
+      description: `Demo scheduled for ${payload.scheduledAt.toLocaleString()}`,
+      performedBy: createdBy,
+      timestamp: new Date(),
+      metadata: {
+        meetLink,
+        recipientEmail: recipientEmail || undefined,
+        emailSent,
+      },
+    });
+
+    const saved = await lead.save();
+    return { success: true, data: saved };
+  }
+
+  async updateDemoStatus(
+    id: string,
+    demoId: string,
+    status: 'scheduled' | 'done',
+    updatedBy: string,
+  ) {
+    if (!Types.ObjectId.isValid(demoId)) {
+      throw new BadRequestException('Invalid demo ID');
+    }
+
+    const lead = await this.leadModel
+      .findOne(this.buildLeadIdentityFilter(id))
+      .exec();
+    if (!lead) {
+      throw new NotFoundException('Lead not found');
+    }
+
+    type DemoSubdoc = Lead['demos'][number] & { _id: Types.ObjectId };
+    const demos = lead.demos as unknown as DemoSubdoc[];
+    const demo = demos.find((d) => d._id.toString() === demoId);
+    if (!demo) {
+      throw new NotFoundException('Demo not found in this lead');
+    }
+
+    demo.status = status;
+    demo.updatedAt = new Date();
+
+    const hasScheduled = demos.some((d) => d.status === 'scheduled');
+    if (status === 'done' && !hasScheduled) {
+      lead.demoStatus = 'done';
+    } else if (hasScheduled || status === 'scheduled') {
+      lead.demoStatus = 'scheduled';
+    } else {
+      lead.demoStatus = 'none';
+    }
+
+    lead.activityTimeline.push({
+      action: 'demo_status_updated',
+      description: `Demo status updated to ${status}`,
+      performedBy: updatedBy,
+      timestamp: new Date(),
+      metadata: {
+        demoId,
+        status,
+      },
+    });
+
+    const saved = await lead.save();
+    return { success: true, data: saved };
+  }
+
   async updateLeadStatus(
     leadId: string,
     dto: UpdateLeadStatusDto,
@@ -2278,9 +2861,56 @@ export class LeadsService {
       }
     }
 
+    const legacyFromEnum = (status: Lead['status']): Lead['leadStatus'] => {
+      switch (status) {
+        case 'GENERATED':
+          return 'new';
+        case 'CONTACTED':
+          return 'contacted';
+        case 'CONNECTED':
+          return 'interested';
+        case 'FOLLOW_UP':
+          return 'contacted';
+        case 'CONVERTED':
+          return 'converted';
+        case 'LOST':
+          return 'rejected';
+      }
+    };
+    const enumFromLegacy = (leadStatus: Lead['leadStatus']): Lead['status'] => {
+      switch (leadStatus) {
+        case 'new':
+          return 'GENERATED';
+        case 'contacted':
+          return 'CONTACTED';
+        case 'interested':
+          return 'CONNECTED';
+        case 'converted':
+          return 'CONVERTED';
+        case 'rejected':
+          return 'LOST';
+      }
+    };
+
+    const requestedLegacy = dto.leadStatus;
+    const requestedEnum = dto.status;
+    if (!requestedLegacy && !requestedEnum) {
+      throw new BadRequestException({
+        success: false,
+        message: 'leadStatus or status is required',
+      });
+    }
+
+    const effectiveLeadStatus: Lead['leadStatus'] = requestedLegacy
+      ? requestedLegacy
+      : legacyFromEnum(requestedEnum as Lead['status']);
+    const effectiveStatus: Lead['status'] = requestedEnum
+      ? requestedEnum
+      : enumFromLegacy(requestedLegacy as Lead['leadStatus']);
+
     // Map leadStatus to pipelineStage
     let pipelineStage: Lead['pipelineStage'] = 'New Lead';
-    switch (dto.leadStatus) {
+    switch (effectiveLeadStatus) {
       case 'new':
         pipelineStage = 'New Lead';
         break;
@@ -2294,25 +2924,45 @@ export class LeadsService {
         pipelineStage = 'Converted to Seller';
         break;
       case 'rejected':
-        // Keep current stage or move to a specific rejected stage if exists
-        // For now, we'll keep it as is, or maybe 'Rejected' if the frontend supports it.
-        // The frontend SalesPipeline doesn't have 'Rejected', so we might leave it or set to last known.
-        // Let's not update pipelineStage for rejected to avoid breaking the UI flow visualization.
         break;
     }
 
     const activityTimelineEntry = {
       action: 'status_updated',
-      description: `Status updated to ${dto.leadStatus}`,
+      description: `Status updated to ${effectiveStatus}`,
       performedBy: updatedBy,
       timestamp: new Date(),
+      metadata: {
+        newLeadStatus: effectiveLeadStatus,
+        newStatus: effectiveStatus,
+      },
     };
 
-    const setUpdate: Partial<Pick<Lead, 'leadStatus' | 'pipelineStage'>> = {
-      leadStatus: dto.leadStatus,
+    const setUpdate: Partial<
+      Pick<
+        Lead,
+        | 'leadStatus'
+        | 'pipelineStage'
+        | 'status'
+        | 'lastContactedAt'
+        | 'lastConnectedAt'
+        | 'convertedAt'
+      >
+    > = {
+      leadStatus: effectiveLeadStatus,
+      status: effectiveStatus,
     };
-    if (dto.leadStatus !== 'rejected') {
+    if (effectiveLeadStatus !== 'rejected') {
       setUpdate.pipelineStage = pipelineStage;
+    }
+    if (effectiveLeadStatus === 'contacted') {
+      setUpdate.lastContactedAt = new Date();
+    }
+    if (effectiveLeadStatus === 'interested') {
+      setUpdate.lastConnectedAt = new Date();
+    }
+    if (effectiveLeadStatus === 'converted') {
+      setUpdate.convertedAt = new Date();
     }
 
     const pushUpdate: NonNullable<UpdateQuery<LeadDocument>['$push']> = {
@@ -2361,12 +3011,36 @@ export class LeadsService {
         message: 'Lead not found',
       });
     }
+
     if (typeof lead.sellerId === 'string' && lead.sellerId.trim().length > 0) {
-      throw new BadRequestException({
-        success: false,
-        message: 'Seller already created for this lead',
-      });
+      const existingSeller = await this.sellerModel
+        .findById(lead.sellerId)
+        .exec();
+      if (!existingSeller) {
+        throw new NotFoundException({
+          success: false,
+          message: 'Linked seller record not found for this lead',
+        });
+      }
+      const userSync = await this.ensureSellerUserAccount(
+        existingSeller.email,
+        existingSeller.fullName,
+        existingSeller.contactNumber,
+        user?.email || 'system',
+      );
+      return {
+        success: true,
+        message: userSync.created
+          ? 'Seller already existed. Missing user account has been created.'
+          : 'Seller already existed and user account is already present.',
+        data: {
+          leadId: lead.leadId,
+          sellerId: existingSeller._id.toString(),
+          userId: userSync.userId,
+        },
+      };
     }
+
     if (!lead.leadId) {
       lead.leadId = await this.getNextLeadId(
         this.toDate((lead as unknown as { createdAt?: unknown }).createdAt),
@@ -2381,12 +3055,61 @@ export class LeadsService {
     if (lead.isModified()) {
       await lead.save();
     }
-    if (lead.leadStatus === 'converted') {
+
+    const leadEmail = typeof lead.email === 'string' ? lead.email.trim().toLowerCase() : '';
+    if (!leadEmail) {
       throw new BadRequestException({
         success: false,
-        message: 'Lead already converted',
+        message: 'Lead email is required before conversion',
       });
     }
+
+    if (lead.leadStatus === 'converted') {
+      const orphanSeller = await this.sellerModel
+        .findOne({ email: leadEmail, leadId: lead.leadId })
+        .exec();
+      if (orphanSeller) {
+        lead.sellerId = orphanSeller._id.toString();
+        await lead.save();
+        const userSync = await this.ensureSellerUserAccount(
+          orphanSeller.email,
+          orphanSeller.fullName,
+          orphanSeller.contactNumber,
+          user?.email || 'system',
+        );
+        return {
+          success: true,
+          message: 'Lead linked to existing seller record.',
+          data: {
+            leadId: lead.leadId,
+            sellerId: orphanSeller._id.toString(),
+            userId: userSync.userId,
+          },
+        };
+      }
+
+      this.repairLeadConversionQueue(lead, user?.email || 'system');
+      lead.markModified('paymentDetails');
+      await lead.save();
+
+      const isSuperAdmin = user?.role === 'super_admin';
+      return {
+        success: true,
+        message: isSuperAdmin
+          ? 'Lead is ready for seller account setup.'
+          : 'Lead is already queued for account manager review.',
+        data: {
+          leadId: lead.leadId,
+          status: isSuperAdmin
+            ? 'ready_for_seller_creation'
+            : 'queued_for_account_manager',
+          paymentStatus: lead.paymentDetails?.status,
+          conversionRequestedAt: lead.conversionRequestedAt,
+          sellerId: lead.sellerId,
+        },
+      };
+    }
+
     if (lead.leadStatus === 'rejected') {
       throw new BadRequestException({
         success: false,
@@ -2394,7 +3117,16 @@ export class LeadsService {
       });
     }
 
-    // Determine subscription details
+    const existingSellerByEmail = await this.sellerModel
+      .findOne({ email: leadEmail })
+      .exec();
+    if (existingSellerByEmail) {
+      throw new BadRequestException({
+        success: false,
+        message: 'A seller with this email already exists.',
+      });
+    }
+
     let gstSlots = dto.gstSlots;
     let durationYears = dto.durationYears;
     let amount = 0;
@@ -2405,7 +3137,6 @@ export class LeadsService {
         durationYears = lead.subscriptionConfig.durationYears;
         amount = lead.subscriptionConfig.amount;
       } else {
-        // Default to 1 GST, 1 Year if nothing configured
         gstSlots = 1;
         durationYears = 1;
         amount = PRICE_PER_GST_PER_YEAR;
@@ -2414,26 +3145,29 @@ export class LeadsService {
       amount = gstSlots * durationYears * PRICE_PER_GST_PER_YEAR;
     }
 
-    // Force payment completion as per Sales Manager action
     const paymentCompletedAt = new Date();
     const subscriptionId = this.generateSubscriptionId();
     const leadCreatedAt = (lead as unknown as { createdAt?: Date }).createdAt;
-    const leadEmail = typeof lead.email === 'string' ? lead.email.trim() : '';
-    const leadContactNumber =
-      typeof lead.contactNumber === 'string' ? lead.contactNumber.trim() : '';
-    const leadGstNumber =
-      typeof lead.gstNumber === 'string' ? lead.gstNumber.trim() : '';
+    const sellerFullName =
+      (typeof lead.fullName === 'string' ? lead.fullName.trim() : '') ||
+      leadEmail.split('@')[0] ||
+      'Seller';
+    const actorEmail = user?.email || 'system';
 
-    // Update Lead Status
     lead.leadStatus = 'converted';
     lead.pipelineStage = 'Converted to Seller';
+    lead.convertedAt = paymentCompletedAt;
+    lead.conversionRequestedAt = paymentCompletedAt;
+    lead.conversionRequestedBy = actorEmail;
+    lead.conversionSubscriptionId = subscriptionId;
+    lead.conversionAmount = amount;
+    lead.conversionLeadCreatedAt = leadCreatedAt;
 
-    // Mark Lead Payment as Completed
     const paymentDetails = lead.paymentDetails ?? {
       link: 'manual-conversion',
-      status: 'completed',
-      generatedBy: 'system',
-      generatedAt: new Date(),
+      status: 'completed' as const,
+      generatedBy: actorEmail,
+      generatedAt: paymentCompletedAt,
     };
     paymentDetails.status = 'completed';
     paymentDetails.paymentDate = paymentCompletedAt;
@@ -2443,27 +3177,23 @@ export class LeadsService {
       gstSlots,
       durationYears,
       amount,
-      updatedAt: new Date(),
-      updatedBy: user?.email || 'sales_manager',
+      updatedAt: paymentCompletedAt,
+      updatedBy: actorEmail,
     };
 
-    (
-      lead as unknown as { conversionRequestedAt?: Date }
-    ).conversionRequestedAt = paymentCompletedAt;
-    (
-      lead as unknown as { conversionRequestedBy?: string }
-    ).conversionRequestedBy = user?.email || 'system';
-    (
-      lead as unknown as { conversionSubscriptionId?: string }
-    ).conversionSubscriptionId = subscriptionId;
-    (lead as unknown as { conversionAmount?: number }).conversionAmount =
-      amount;
-    (
-      lead as unknown as { conversionLeadCreatedAt?: Date }
-    ).conversionLeadCreatedAt = leadCreatedAt;
+    lead.activityTimeline = Array.isArray(lead.activityTimeline)
+      ? lead.activityTimeline
+      : [];
+    lead.activityTimeline.push({
+      action: 'lead_conversion_requested',
+      description: 'Lead sent to account manager for seller onboarding',
+      performedBy: actorEmail,
+      timestamp: paymentCompletedAt,
+    });
 
     await lead.save();
 
+<<<<<<< HEAD
     const salesManagerEmail =
       typeof user?.email === 'string' ? user.email.toLowerCase() : '';
 
@@ -2527,16 +3257,134 @@ export class LeadsService {
       recipientRole: 'accounts_manager',
       message: `New conversion request: ${lead.fullName} (Seller ID: ${seller.id}). Status: under review. Payment marked completed.`,
     });
+=======
+    await this.notifyLeadConverted(
+      lead.fullName || sellerFullName,
+      lead.leadId,
+      undefined,
+    );
+>>>>>>> 86bbd8c0b784f5559b068c42e44fdc061bc3025a
 
     return {
       success: true,
+      message: 'Lead converted and sent to account manager for seller setup.',
       data: {
         leadId: lead.leadId,
-        sellerId: seller._id.toString(),
+        status: 'queued_for_account_manager',
         amount,
         paymentCompletedAt,
       },
     };
+  }
+
+  private repairLeadConversionQueue(lead: LeadDocument, actorEmail: string) {
+    const now = new Date();
+    if (!lead.conversionRequestedAt) {
+      lead.conversionRequestedAt =
+        lead.convertedAt ??
+        (lead.paymentDetails?.paymentDate
+          ? new Date(lead.paymentDetails.paymentDate)
+          : now);
+    }
+    if (!lead.conversionRequestedBy) {
+      lead.conversionRequestedBy = actorEmail;
+    }
+    if (!lead.convertedAt) {
+      lead.convertedAt = lead.conversionRequestedAt;
+    }
+    const paymentDetails = lead.paymentDetails ?? {
+      link: 'manual-conversion',
+      status: 'completed' as const,
+      generatedBy: actorEmail,
+      generatedAt: now,
+    };
+    if (paymentDetails.status !== 'completed') {
+      paymentDetails.status = 'completed';
+    }
+    if (!paymentDetails.paymentDate) {
+      paymentDetails.paymentDate = lead.conversionRequestedAt ?? now;
+    }
+    lead.paymentDetails = paymentDetails;
+    lead.markModified('paymentDetails');
+    if (!lead.pipelineStage || lead.pipelineStage === 'Interested') {
+      lead.pipelineStage = 'Converted to Seller';
+    }
+  }
+
+  private async notifyLeadConverted(
+    leadName: string,
+    leadPublicId: string | undefined,
+    sellerId?: string,
+  ) {
+    try {
+      const sellerNote = sellerId ? ` Seller ID: ${sellerId}.` : '';
+      await this.notificationsService.createNotification({
+        event: 'lead_converted',
+        recipientRole: 'operations_admin',
+        message: `Lead ${leadName} converted.${sellerNote} Payment marked as completed.`,
+      });
+      await this.notificationsService.createNotification({
+        event: 'lead_conversion_requested',
+        recipientRole: 'accounts_manager',
+        message: `New conversion request: ${leadName} (Lead ID: ${leadPublicId ?? 'N/A'}). Payment marked completed. Please create the seller account.`,
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        `Lead converted but notification dispatch failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  private generateTempPassword() {
+    return (
+      Math.random().toString(36).slice(-8) +
+      Math.random().toString(36).slice(-4)
+    );
+  }
+
+  private async ensureSellerUserAccount(
+    email: string,
+    fullName: string,
+    mobile: string,
+    actorEmail: string,
+  ) {
+    const normalizedEmail = email.trim().toLowerCase();
+    const existingUser = await this.userModel
+      .findOne({ email: normalizedEmail })
+      .select('_id role')
+      .lean<{ _id: Types.ObjectId; role: string }>()
+      .exec();
+
+    if (existingUser) {
+      if (existingUser.role !== 'seller') {
+        throw new BadRequestException({
+          success: false,
+          message:
+            'User with this email already exists with a different role. Cannot create seller user.',
+        });
+      }
+      return { created: false, userId: existingUser._id.toString() };
+    }
+
+    const hashedPassword = await bcrypt.hash(this.generateTempPassword(), 10);
+    const createdUser = await this.userModel.create({
+      publicId: generatePublicId('user', normalizedEmail),
+      username: normalizedEmail,
+      fullName: fullName || normalizedEmail,
+      email: normalizedEmail,
+      password: hashedPassword,
+      role: 'seller',
+      mobile,
+      status: 'approved',
+      profileCompleted: true,
+      mustChangePassword: true,
+      credentialsGeneratedAt: new Date(),
+      credentialsGeneratedBy: actorEmail,
+    });
+
+    return { created: true, userId: createdUser._id.toString() };
   }
 
   private generateSubscriptionId() {

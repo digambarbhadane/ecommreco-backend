@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { EmailModule } from '../email/email.module';
 import { Seller, SellerSchema } from '../sellers/schemas/seller.schema';
 import { Gst, GstSchema } from '../gsts/schemas/gst.schema';
 import { User, UserSchema } from '../users/schemas/user.schema';
@@ -19,6 +20,7 @@ import { Counter, CounterSchema } from './schemas/counter.schema';
       { name: User.name, schema: UserSchema },
     ]),
     NotificationsModule,
+    EmailModule,
   ],
   controllers: [LeadsController],
   providers: [LeadsService],
