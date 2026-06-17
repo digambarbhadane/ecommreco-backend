@@ -8,6 +8,8 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import * as bcrypt from 'bcrypt';
 import { NotificationsService } from '../notifications/notifications.service';
+import { EmailService } from '../email/email.service';
+import { EmailType } from '../email/email.types';
 import { GenerateCredentialsDto } from './dto/generate-credentials.dto';
 import { RegisterSellerDto } from './dto/register-seller.dto';
 import { SendPaymentLinkDto } from './dto/send-payment-link.dto';
@@ -39,6 +41,7 @@ export class SellersService {
     private readonly sellerModel: Model<SellerDocument>,
     private readonly leadsService: LeadsService,
     private readonly notificationsService: NotificationsService,
+    private readonly emailService: EmailService,
   ) {}
 
   private sanitizeSellerForRole(
@@ -501,6 +504,24 @@ export class SellersService {
       recipientRole: 'super_admin',
       message: `Credentials generated for ${seller.fullName} (Seller ID: ${seller._id.toString()}, Username: ${seller.email}, Email: ${seller.email}, GST: ${seller.gstNumber || '—'}, GST Slots: ${typeof seller.gstSlots === 'number' ? seller.gstSlots : '—'}, Duration: ${typeof seller.durationYears === 'number' ? seller.durationYears : typeof seller.subscriptionDuration === 'number' ? seller.subscriptionDuration : '—'} year(s), Amount: ${typeof seller.amount === 'number' ? seller.amount : typeof seller.paymentAmount === 'number' ? seller.paymentAmount : '—'}).`,
     });
+
+    if (dto.sendEmail && actorRole === 'super_admin') {
+      const loginUrl =
+        process.env.FRONTEND_URL?.trim() ||
+        process.env.APP_URL?.trim() ||
+        'https://app.ecommreco.com/login';
+      await this.emailService.sendEmail({
+        to: seller.email,
+        type: EmailType.NOTIFICATION,
+        subject: 'Your EcommReco seller account credentials',
+        payload: {
+          message: `Hello ${seller.fullName},\n\nYour seller account is ready.\n\nUsername: ${seller.email}\nPassword: ${password}\n\nLogin: ${loginUrl}\n\nPlease change your password after signing in.`,
+          actionUrl: loginUrl,
+          actionText: 'Sign in to EcommReco',
+        },
+      });
+    }
+
     return {
       success: true,
       data: {
