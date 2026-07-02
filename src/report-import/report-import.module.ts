@@ -55,6 +55,7 @@ import { ImportQueueService } from './services/import-queue.service';
 import { ImportJobOrchestratorService } from './services/import-job-orchestrator.service';
 import { ImportProgressGateway } from './gateways/import-progress.gateway';
 import { ReconciliationService } from './services/reconciliation.service';
+import { StateWiseReportService } from './services/state-wise-report.service';
 
 @Module({
   imports: [
@@ -93,6 +94,7 @@ import { ReconciliationService } from './services/reconciliation.service';
     ImportJobOrchestratorService,
     ImportProgressGateway,
     ReconciliationService,
+    StateWiseReportService,
   ],
 })
 export class ReportImportModule {}

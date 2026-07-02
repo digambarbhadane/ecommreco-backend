@@ -22,6 +22,17 @@ const igstAmt = num('igstAmount');
 const cgstAmt = num('cgstAmount');
 const sgstAmt = num('sgstAmount');
 const qty = num('quantity');
+const isIntraTxn = { $eq: ['$gstTransactionType', 'intra'] };
+const isInterTxn = { $eq: ['$gstTransactionType', 'inter'] };
+const igstForSummary = {
+  $cond: [isIntraTxn, 0, igstAmt],
+};
+const cgstForSummary = {
+  $cond: [isInterTxn, 0, cgstAmt],
+};
+const sgstForSummary = {
+  $cond: [isInterTxn, 0, sgstAmt],
+};
 
 export const PAYMENT_AMOUNT_FIELDS = [
   { key: 'finalSettlementAmount', label: 'Final settlement' },
@@ -96,30 +107,42 @@ export function buildWorkflowMonthSummaryPipeline(
                 $sum: { $cond: [isReturnDoc, taxableAmt, 0] },
               },
               salesIgst: {
-                $sum: { $cond: [isSalesDoc, igstAmt, 0] },
+                $sum: { $cond: [isSalesDoc, igstForSummary, 0] },
               },
               returnsIgst: {
-                $sum: { $cond: [isReturnDoc, igstAmt, 0] },
+                $sum: { $cond: [isReturnDoc, igstForSummary, 0] },
               },
               salesCgst: {
-                $sum: { $cond: [isSalesDoc, cgstAmt, 0] },
+                $sum: { $cond: [isSalesDoc, cgstForSummary, 0] },
               },
               returnsCgst: {
-                $sum: { $cond: [isReturnDoc, cgstAmt, 0] },
+                $sum: { $cond: [isReturnDoc, cgstForSummary, 0] },
               },
               salesSgst: {
-                $sum: { $cond: [isSalesDoc, sgstAmt, 0] },
+                $sum: { $cond: [isSalesDoc, sgstForSummary, 0] },
               },
               returnsSgst: {
-                $sum: { $cond: [isReturnDoc, sgstAmt, 0] },
+                $sum: { $cond: [isReturnDoc, sgstForSummary, 0] },
               },
               cancelledInvoiceAmount: {
                 $sum: { $cond: [isCancelledDoc, invoiceAmt, 0] },
               },
               totalTaxableAmount: { $sum: taxableAmt },
-              totalIgst: { $sum: igstAmt },
-              totalCgst: { $sum: cgstAmt },
-              totalSgst: { $sum: sgstAmt },
+              totalIgst: { $sum: igstForSummary },
+              totalCgst: { $sum: cgstForSummary },
+              totalSgst: { $sum: sgstForSummary },
+              intraStateSalesRows: {
+                $sum: { $cond: [{ $and: [isSalesDoc, isIntraTxn] }, 1, 0] },
+              },
+              interStateSalesRows: {
+                $sum: { $cond: [{ $and: [isSalesDoc, isInterTxn] }, 1, 0] },
+              },
+              intraStateTaxableAmount: {
+                $sum: { $cond: [isIntraTxn, taxableAmt, 0] },
+              },
+              interStateTaxableAmount: {
+                $sum: { $cond: [isInterTxn, taxableAmt, 0] },
+              },
               minInvoiceDate: { $min: '$invoiceDate' },
               maxInvoiceDate: { $max: '$invoiceDate' },
               ordersWithSettlement: {
@@ -184,6 +207,10 @@ export type WorkflowMonthTotalsRow = {
   totalIgst?: number;
   totalCgst?: number;
   totalSgst?: number;
+  intraStateSalesRows?: number;
+  interStateSalesRows?: number;
+  intraStateTaxableAmount?: number;
+  interStateTaxableAmount?: number;
   minInvoiceDate?: string;
   maxInvoiceDate?: string;
   ordersWithSettlement?: number;
@@ -195,42 +222,49 @@ export type MeeshoMonthTotalsRow = WorkflowMonthTotalsRow & {
   meeshoReturnCancellationRows?: number;
   meeshoReturnRtoRows?: number;
   meeshoReturnCustomerRows?: number;
+  meeshoReturnNaRows?: number;
   meeshoGrossSalesPcs?: number;
   meeshoTcsReturnPcs?: number;
   meeshoReturnCancellationPcs?: number;
   meeshoReturnRtoPcs?: number;
   meeshoReturnCustomerPcs?: number;
+  meeshoReturnNaPcs?: number;
   meeshoGrossSalesTaxable?: number;
   meeshoTcsReturnTaxable?: number;
   meeshoReturnCancellationTaxable?: number;
   meeshoReturnRtoTaxable?: number;
   meeshoReturnCustomerTaxable?: number;
+  meeshoReturnNaTaxable?: number;
   meeshoGrossSalesIgst?: number;
   meeshoTcsReturnIgst?: number;
   meeshoReturnCancellationIgst?: number;
   meeshoReturnRtoIgst?: number;
   meeshoReturnCustomerIgst?: number;
+  meeshoReturnNaIgst?: number;
   meeshoGrossSalesCgst?: number;
   meeshoTcsReturnCgst?: number;
   meeshoReturnCancellationCgst?: number;
   meeshoReturnRtoCgst?: number;
   meeshoReturnCustomerCgst?: number;
+  meeshoReturnNaCgst?: number;
   meeshoGrossSalesSgst?: number;
   meeshoTcsReturnSgst?: number;
   meeshoReturnCancellationSgst?: number;
   meeshoReturnRtoSgst?: number;
   meeshoReturnCustomerSgst?: number;
+  meeshoReturnNaSgst?: number;
   meeshoGrossSalesInvoice?: number;
   meeshoTcsReturnInvoice?: number;
   meeshoReturnCancellationInvoice?: number;
   meeshoReturnRtoInvoice?: number;
   meeshoReturnCustomerInvoice?: number;
+  meeshoReturnNaInvoice?: number;
 };
 
 export function buildMeeshoWorkflowMonthSummaryPipeline(
   rowFilter: Record<string, unknown>,
 ): PipelineStage[] {
-  const meeshoReturnQty = {
+  const meeshoReturnQtyForSummary = {
     $ifNull: ['$returnQty', { $ifNull: ['$quantity', 0] }],
   };
 
@@ -242,7 +276,14 @@ export function buildMeeshoWorkflowMonthSummaryPipeline(
     $sum: { $cond: [{ $eq: [`$${flag}`, true] }, fieldExpr, 0] },
   });
 
-  const sumWhenReturnSubType = (
+  /** TCS Sales Return documents only — matches Excel pivot on the return file. */
+  const isMeeshoReturnRow = { $eq: ['$meeshoIsGrossSale', false] };
+
+  const sumWhenMeeshoReturnRow = (fieldExpr: Record<string, unknown> | number) => ({
+    $sum: { $cond: [isMeeshoReturnRow, fieldExpr, 0] },
+  });
+
+  const sumWhenTcsReturnSubType = (
     subType: string,
     fieldExpr: Record<string, unknown> | number,
   ) => ({
@@ -250,7 +291,7 @@ export function buildMeeshoWorkflowMonthSummaryPipeline(
       $cond: [
         {
           $and: [
-            { $eq: ['$meeshoHasTcsReturn', true] },
+            isMeeshoReturnRow,
             { $eq: ['$meeshoReturnSubType', subType] },
           ],
         },
@@ -276,81 +317,126 @@ export function buildMeeshoWorkflowMonthSummaryPipeline(
                 $sum: { $cond: [{ $eq: ['$reportType', 'cashback'] }, 1, 0] },
               },
               meeshoGrossSalesRows: sumWhen('meeshoIsGrossSale', 1),
-              meeshoTcsReturnRows: sumWhen('meeshoHasTcsReturn', 1),
-              meeshoReturnCancellationRows: sumWhenReturnSubType('cancellation', 1),
-              meeshoReturnRtoRows: sumWhenReturnSubType('rto', 1),
-              meeshoReturnCustomerRows: sumWhenReturnSubType('customer_return', 1),
+              meeshoTcsReturnRows: sumWhenMeeshoReturnRow(1),
+              meeshoReturnCancellationRows: sumWhenTcsReturnSubType('cancellation', 1),
+              meeshoReturnRtoRows: sumWhenTcsReturnSubType('rto', 1),
+              meeshoReturnCustomerRows: sumWhenTcsReturnSubType('customer_return', 1),
+              meeshoReturnNaRows: sumWhenTcsReturnSubType('na', 1),
               meeshoGrossSalesPcs: sumWhen('meeshoIsGrossSale', qty),
-              meeshoTcsReturnPcs: sumWhen('meeshoHasTcsReturn', meeshoReturnQty),
-              meeshoReturnCancellationPcs: sumWhenReturnSubType(
+              meeshoTcsReturnPcs: sumWhenMeeshoReturnRow(meeshoReturnQtyForSummary),
+              meeshoReturnCancellationPcs: sumWhenTcsReturnSubType(
                 'cancellation',
-                meeshoReturnQty,
+                meeshoReturnQtyForSummary,
               ),
-              meeshoReturnRtoPcs: sumWhenReturnSubType('rto', meeshoReturnQty),
-              meeshoReturnCustomerPcs: sumWhenReturnSubType(
+              meeshoReturnRtoPcs: sumWhenTcsReturnSubType('rto', meeshoReturnQtyForSummary),
+              meeshoReturnCustomerPcs: sumWhenTcsReturnSubType(
                 'customer_return',
-                meeshoReturnQty,
+                meeshoReturnQtyForSummary,
               ),
+              meeshoReturnNaPcs: sumWhenTcsReturnSubType('na', meeshoReturnQtyForSummary),
               meeshoGrossSalesTaxable: sumWhen('meeshoIsGrossSale', taxableAmt),
-              meeshoTcsReturnTaxable: sumWhen('meeshoHasTcsReturn', taxableAmt),
-              meeshoReturnCancellationTaxable: sumWhenReturnSubType(
+              meeshoTcsReturnTaxable: sumWhenMeeshoReturnRow(taxableAmt),
+              meeshoReturnCancellationTaxable: sumWhenTcsReturnSubType(
                 'cancellation',
                 taxableAmt,
               ),
-              meeshoReturnRtoTaxable: sumWhenReturnSubType('rto', taxableAmt),
-              meeshoReturnCustomerTaxable: sumWhenReturnSubType(
+              meeshoReturnRtoTaxable: sumWhenTcsReturnSubType('rto', taxableAmt),
+              meeshoReturnCustomerTaxable: sumWhenTcsReturnSubType(
                 'customer_return',
                 taxableAmt,
               ),
-              meeshoGrossSalesIgst: sumWhen('meeshoIsGrossSale', igstAmt),
-              meeshoTcsReturnIgst: sumWhen('meeshoHasTcsReturn', igstAmt),
-              meeshoReturnCancellationIgst: sumWhenReturnSubType(
+              meeshoReturnNaTaxable: sumWhenTcsReturnSubType('na', taxableAmt),
+              meeshoGrossSalesIgst: sumWhen('meeshoIsGrossSale', igstForSummary),
+              meeshoTcsReturnIgst: sumWhenMeeshoReturnRow(igstForSummary),
+              meeshoReturnCancellationIgst: sumWhenTcsReturnSubType(
                 'cancellation',
-                igstAmt,
+                igstForSummary,
               ),
-              meeshoReturnRtoIgst: sumWhenReturnSubType('rto', igstAmt),
-              meeshoReturnCustomerIgst: sumWhenReturnSubType(
+              meeshoReturnRtoIgst: sumWhenTcsReturnSubType('rto', igstForSummary),
+              meeshoReturnCustomerIgst: sumWhenTcsReturnSubType(
                 'customer_return',
-                igstAmt,
+                igstForSummary,
               ),
-              meeshoGrossSalesCgst: sumWhen('meeshoIsGrossSale', cgstAmt),
-              meeshoTcsReturnCgst: sumWhen('meeshoHasTcsReturn', cgstAmt),
-              meeshoReturnCancellationCgst: sumWhenReturnSubType(
+              meeshoReturnNaIgst: sumWhenTcsReturnSubType('na', igstForSummary),
+              meeshoGrossSalesCgst: sumWhen('meeshoIsGrossSale', cgstForSummary),
+              meeshoTcsReturnCgst: sumWhenMeeshoReturnRow(cgstForSummary),
+              meeshoReturnCancellationCgst: sumWhenTcsReturnSubType(
                 'cancellation',
-                cgstAmt,
+                cgstForSummary,
               ),
-              meeshoReturnRtoCgst: sumWhenReturnSubType('rto', cgstAmt),
-              meeshoReturnCustomerCgst: sumWhenReturnSubType(
+              meeshoReturnRtoCgst: sumWhenTcsReturnSubType('rto', cgstForSummary),
+              meeshoReturnCustomerCgst: sumWhenTcsReturnSubType(
                 'customer_return',
-                cgstAmt,
+                cgstForSummary,
               ),
-              meeshoGrossSalesSgst: sumWhen('meeshoIsGrossSale', sgstAmt),
-              meeshoTcsReturnSgst: sumWhen('meeshoHasTcsReturn', sgstAmt),
-              meeshoReturnCancellationSgst: sumWhenReturnSubType(
+              meeshoReturnNaCgst: sumWhenTcsReturnSubType('na', cgstForSummary),
+              meeshoGrossSalesSgst: sumWhen('meeshoIsGrossSale', sgstForSummary),
+              meeshoTcsReturnSgst: sumWhenMeeshoReturnRow(sgstForSummary),
+              meeshoReturnCancellationSgst: sumWhenTcsReturnSubType(
                 'cancellation',
-                sgstAmt,
+                sgstForSummary,
               ),
-              meeshoReturnRtoSgst: sumWhenReturnSubType('rto', sgstAmt),
-              meeshoReturnCustomerSgst: sumWhenReturnSubType(
+              meeshoReturnRtoSgst: sumWhenTcsReturnSubType('rto', sgstForSummary),
+              meeshoReturnCustomerSgst: sumWhenTcsReturnSubType(
                 'customer_return',
-                sgstAmt,
+                sgstForSummary,
               ),
+              meeshoReturnNaSgst: sumWhenTcsReturnSubType('na', sgstForSummary),
               meeshoGrossSalesInvoice: sumWhen('meeshoIsGrossSale', invoiceAmt),
-              meeshoTcsReturnInvoice: sumWhen('meeshoHasTcsReturn', invoiceAmt),
-              meeshoReturnCancellationInvoice: sumWhenReturnSubType(
+              meeshoTcsReturnInvoice: sumWhenMeeshoReturnRow(invoiceAmt),
+              meeshoReturnCancellationInvoice: sumWhenTcsReturnSubType(
                 'cancellation',
                 invoiceAmt,
               ),
-              meeshoReturnRtoInvoice: sumWhenReturnSubType('rto', invoiceAmt),
-              meeshoReturnCustomerInvoice: sumWhenReturnSubType(
+              meeshoReturnRtoInvoice: sumWhenTcsReturnSubType('rto', invoiceAmt),
+              meeshoReturnCustomerInvoice: sumWhenTcsReturnSubType(
                 'customer_return',
                 invoiceAmt,
               ),
+              meeshoReturnNaInvoice: sumWhenTcsReturnSubType('na', invoiceAmt),
               totalInvoiceAmount: { $sum: invoiceAmt },
               totalTaxableAmount: { $sum: taxableAmt },
-              totalIgst: { $sum: igstAmt },
-              totalCgst: { $sum: cgstAmt },
-              totalSgst: { $sum: sgstAmt },
+              totalIgst: { $sum: igstForSummary },
+              totalCgst: { $sum: cgstForSummary },
+              totalSgst: { $sum: sgstForSummary },
+              intraStateSalesRows: {
+                $sum: {
+                  $cond: [
+                    {
+                      $and: [
+                        { $eq: ['$meeshoIsGrossSale', true] },
+                        { $eq: ['$gstTransactionType', 'intra'] },
+                      ],
+                    },
+                    1,
+                    0,
+                  ],
+                },
+              },
+              interStateSalesRows: {
+                $sum: {
+                  $cond: [
+                    {
+                      $and: [
+                        { $eq: ['$meeshoIsGrossSale', true] },
+                        { $eq: ['$gstTransactionType', 'inter'] },
+                      ],
+                    },
+                    1,
+                    0,
+                  ],
+                },
+              },
+              intraStateTaxableAmount: {
+                $sum: {
+                  $cond: [{ $eq: ['$gstTransactionType', 'intra'] }, taxableAmt, 0],
+                },
+              },
+              interStateTaxableAmount: {
+                $sum: {
+                  $cond: [{ $eq: ['$gstTransactionType', 'inter'] }, taxableAmt, 0],
+                },
+              },
               minInvoiceDate: { $min: '$invoiceDate' },
               maxInvoiceDate: { $max: '$invoiceDate' },
               ordersWithSettlement: {

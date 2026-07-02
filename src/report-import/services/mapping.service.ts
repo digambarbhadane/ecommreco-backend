@@ -11,6 +11,11 @@ import {
   type MeeshoPaymentFieldKey,
 } from '../config/importMappings/meesho-payment.mapping';
 import { normalizeHeader as normalizeHeaderUtil } from '../utils/header.util';
+import {
+  collectSellerRegistrationStateKeys,
+  isSameIndianState,
+  resolveIndianStateKey,
+} from '../utils/gst-state.util';
 
 export type ParsedSheetRow = {
   __sheetName: string;
@@ -37,6 +42,7 @@ export type NormalizedImportRow = {
   cgstAmount?: number;
   sgstRate?: number;
   sgstAmount?: number;
+  gstTransactionType?: 'intra' | 'inter';
   invoiceNo?: string;
   buyerInvoiceDate?: string;
   invoiceDate?: string;
@@ -53,9 +59,15 @@ export type NormalizedImportRow = {
   meeshoHasTcsReturn?: boolean;
   meeshoIsGrossSale?: boolean;
   meeshoIsPreviousMonthReturn?: boolean;
-  meeshoReturnSubType?: 'cancellation' | 'rto' | 'customer_return';
+  meeshoReturnSubType?: 'cancellation' | 'rto' | 'customer_return' | 'na';
   meeshoOrderStatus?: string;
   meeshoTcsReturnStatus?: string;
+  /** Return line amounts from TCS Sales Return (kept separate from gross sales amounts on the row). */
+  meeshoReturnInvoiceAmount?: number;
+  meeshoReturnTaxableAmount?: number;
+  meeshoReturnIgstAmount?: number;
+  meeshoReturnCgstAmount?: number;
+  meeshoReturnSgstAmount?: number;
   /** Meesho Order Payments sheet — matched on Sub Order No */
   liveOrderStatus?: string;
   transactionId?: string;
@@ -163,14 +175,8 @@ export const MYNTRA_ORDER_ID_ALIASES = [
   ...MYNTRA_MDIRECT_ORDER_ID_ALIASES,
 ] as const;
 
-export const normalizeStateName = (value?: string): string => {
-  if (!value) return '';
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/&/g, 'and')
-    .replace(/\s+/g, ' ');
-};
+export const normalizeStateName = (value?: string): string =>
+  resolveIndianStateKey(value);
 
 export const getRowCell = (
   row: ParsedSheetRow,
@@ -654,6 +660,94 @@ export class MappingService {
     Pick<NormalizedImportRow, 'returnReason' | 'detailedReturnReason'>
   >();
 
+  /**
+   * Enforce GST component split using seller registration state vs customer state.
+   * Intra-state => only CGST/SGST. Inter-state => only IGST.
+   */
+  normalizeTaxByState(
+    mapped: NormalizedImportRow,
+    sellerStates?: string | string[],
+    sellerGstins?: string | string[],
+  ): NormalizedImportRow {
+    const states = Array.isArray(sellerStates)
+      ? sellerStates
+      : sellerStates
+        ? [sellerStates]
+        : [];
+    const gstins = Array.isArray(sellerGstins)
+      ? sellerGstins
+      : sellerGstins
+        ? [sellerGstins]
+        : [];
+    if (mapped.sellerGSTIN) {
+      gstins.push(mapped.sellerGSTIN);
+    }
+    const sellerStateKeys = collectSellerRegistrationStateKeys(states, gstins);
+    const canCompare =
+      sellerStateKeys.size > 0 &&
+      resolveIndianStateKey(mapped.stateName).length > 0;
+    if (!canCompare) return mapped;
+
+    const isIntraState = isSameIndianState(mapped.stateName, sellerStateKeys);
+
+    if (isIntraState) {
+      mapped.gstTransactionType = 'intra';
+      const hasCgst =
+        typeof mapped.cgstAmount === 'number' || typeof mapped.cgstRate === 'number';
+      const hasSgst =
+        typeof mapped.sgstAmount === 'number' || typeof mapped.sgstRate === 'number';
+
+      if (!(hasCgst || hasSgst)) {
+        const igstRate = mapped.igstRate;
+        const igstAmount = mapped.igstAmount;
+        if (typeof igstRate === 'number' && Number.isFinite(igstRate)) {
+          mapped.cgstRate = igstRate / 2;
+          mapped.sgstRate = igstRate / 2;
+        }
+        if (typeof igstAmount === 'number' && Number.isFinite(igstAmount)) {
+          mapped.cgstAmount = igstAmount / 2;
+          mapped.sgstAmount = igstAmount / 2;
+        }
+      }
+
+      mapped.igstRate = undefined;
+      mapped.igstAmount = undefined;
+      return mapped;
+    }
+
+    mapped.gstTransactionType = 'inter';
+    const hasIgst =
+      typeof mapped.igstAmount === 'number' || typeof mapped.igstRate === 'number';
+    if (!hasIgst) {
+      const cgstRate = mapped.cgstRate;
+      const sgstRate = mapped.sgstRate;
+      const cgstAmount = mapped.cgstAmount;
+      const sgstAmount = mapped.sgstAmount;
+      if (
+        typeof cgstRate === 'number' &&
+        Number.isFinite(cgstRate) &&
+        typeof sgstRate === 'number' &&
+        Number.isFinite(sgstRate)
+      ) {
+        mapped.igstRate = cgstRate + sgstRate;
+      }
+      if (
+        typeof cgstAmount === 'number' &&
+        Number.isFinite(cgstAmount) &&
+        typeof sgstAmount === 'number' &&
+        Number.isFinite(sgstAmount)
+      ) {
+        mapped.igstAmount = cgstAmount + sgstAmount;
+      }
+    }
+
+    mapped.cgstRate = undefined;
+    mapped.cgstAmount = undefined;
+    mapped.sgstRate = undefined;
+    mapped.sgstAmount = undefined;
+    return mapped;
+  }
+
   mapMeeshoTcsSalesRow(
     row: ParsedSheetRow,
     sellerState?: string,
@@ -662,33 +756,30 @@ export class MappingService {
     if (!mapped.documentType) {
       mapped.documentType = 'SALE';
     }
+    return this.normalizeTaxByState(mapped, sellerState);
+  }
 
-    const sellerStateNorm = normalizeStateName(sellerState);
-    const customerStateNorm = normalizeStateName(mapped.stateName);
-    const isIntraState =
-      sellerStateNorm.length > 0 &&
-      customerStateNorm.length > 0 &&
-      sellerStateNorm === customerStateNorm;
-
-    if (isIntraState) {
-      const igstRate = mapped.igstRate;
-      const igstAmount = mapped.igstAmount;
-      if (typeof igstRate === 'number' && Number.isFinite(igstRate)) {
-        mapped.cgstRate = igstRate / 2;
-        mapped.sgstRate = igstRate / 2;
-      }
-      if (typeof igstAmount === 'number' && Number.isFinite(igstAmount)) {
-        mapped.cgstAmount = igstAmount / 2;
-        mapped.sgstAmount = igstAmount / 2;
-      }
-    } else {
-      mapped.cgstRate = undefined;
-      mapped.cgstAmount = undefined;
-      mapped.sgstRate = undefined;
-      mapped.sgstAmount = undefined;
+  mapMeeshoTcsReturnRow(
+    row: ParsedSheetRow,
+    sellerState?: string,
+  ): NormalizedImportRow {
+    const mapped = this.mapRow(row, 'sales', MEESHO_TCS_SALES_MAPPINGS);
+    mapped.documentType = 'RETURN';
+    mapped.meeshoHasTcsReturn = true;
+    const returnInvoiceDate = asDate(
+      getRowCell(row, 'cancel_return_date', 'Return Invoice Date'),
+    );
+    if (returnInvoiceDate) {
+      mapped.returnInvoiceDate = returnInvoiceDate;
+      mapped.invoiceDate = returnInvoiceDate;
     }
-
-    return mapped;
+    const typeOfReturn = asString(
+      getRowCell(row, 'Type of Return', 'Return Type', 'type_of_return'),
+    );
+    const subType = asString(getRowCell(row, 'Sub Type', 'sub_type'));
+    if (typeOfReturn) mapped.typeOfReturn = typeOfReturn;
+    if (subType) mapped.subType = subType;
+    return this.normalizeTaxByState(mapped, sellerState);
   }
 
   enrichMeeshoFromOrderReport(
@@ -718,6 +809,7 @@ export class MappingService {
   enrichMeeshoFromTcsSalesReturn(
     mapped: NormalizedImportRow,
     returnRow?: ParsedSheetRow,
+    sellerState?: string,
   ): NormalizedImportRow {
     if (!returnRow) return mapped;
     mapped.meeshoHasTcsReturn = true;
@@ -735,6 +827,33 @@ export class MappingService {
       ),
     );
     if (tcsReturnStatus) mapped.meeshoTcsReturnStatus = tcsReturnStatus;
+    const typeOfReturn = asString(
+      getRowCell(returnRow, 'Type of Return', 'Return Type', 'type_of_return'),
+    );
+    const subType = asString(getRowCell(returnRow, 'Sub Type', 'sub_type'));
+    if (typeOfReturn) mapped.typeOfReturn = typeOfReturn;
+    if (subType) mapped.subType = subType;
+
+    const returnMapped = this.mapMeeshoTcsReturnRow(returnRow, sellerState);
+    if (returnMapped.invoiceAmount !== undefined) {
+      mapped.meeshoReturnInvoiceAmount = returnMapped.invoiceAmount;
+    }
+    if (returnMapped.taxableAmount !== undefined) {
+      mapped.meeshoReturnTaxableAmount = returnMapped.taxableAmount;
+    }
+    if (returnMapped.igstAmount !== undefined) {
+      mapped.meeshoReturnIgstAmount = returnMapped.igstAmount;
+    }
+    if (returnMapped.cgstAmount !== undefined) {
+      mapped.meeshoReturnCgstAmount = returnMapped.cgstAmount;
+    }
+    if (returnMapped.sgstAmount !== undefined) {
+      mapped.meeshoReturnSgstAmount = returnMapped.sgstAmount;
+    }
+    if (returnMapped.quantity !== undefined) {
+      mapped.returnQty = returnMapped.quantity;
+    }
+
     return mapped;
   }
 

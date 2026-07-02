@@ -1525,6 +1525,23 @@ export class UploadService {
         }
       }
     }
+
+    const sellerGstRegistration = await this.validation.getSellerGstRegistrationInfo(
+      ctx.sellerIdAliases,
+    );
+    const sellerGstStates = [...sellerGstRegistration.states];
+    const sellerGstins = [...sellerGstRegistration.gstins];
+    if (gst.state) {
+      sellerGstStates.push(gst.state);
+    }
+    if (gst.gstNumber) {
+      sellerGstins.push(gst.gstNumber);
+    }
+    // Apply a single GST split rule to every marketplace before persistence/summary.
+    for (const row of normalizedRows) {
+      this.mapping.normalizeTaxByState(row, sellerGstStates, sellerGstins);
+    }
+
     timer?.endStage('dataTransformation');
     onProgress?.('saving_data', 55, 0, normalizedRows.length);
 
@@ -1558,6 +1575,18 @@ export class UploadService {
       );
     }
     const marketplaceId = marketplace._id?.toString?.() ?? dto.marketplaceId;
+
+    // Re-upload for the same month must replace prior imported rows to avoid duplicates.
+    if (dto.reportMonth) {
+      await this.deletePreviousMonthData({
+        sellerId,
+        gstin: gst.gstNumber,
+        marketplaceId,
+        reportMonth: dto.reportMonth,
+        keepUploadId: existingUploadId ?? undefined,
+      });
+    }
+
     await this.validation.ensureNoDuplicateFileHashes({
       sellerId,
       gstin: gst.gstNumber,
@@ -1702,5 +1731,45 @@ export class UploadService {
       (sum, file) => sum + (file?.buffer?.length ?? 0),
       0,
     );
+  }
+
+  private async deletePreviousMonthData(input: {
+    sellerId: string;
+    gstin: string;
+    marketplaceId: string;
+    reportMonth: string;
+    keepUploadId?: string;
+  }) {
+    const oldUploads = await this.uploadModel
+      .find({
+        sellerId: input.sellerId,
+        gstin: input.gstin,
+        marketplace: input.marketplaceId,
+        reportMonth: input.reportMonth,
+        ...(input.keepUploadId ? { _id: { $ne: input.keepUploadId } } : {}),
+        lifecycleStatus: { $ne: 'deleted' },
+      })
+      .select('_id')
+      .lean()
+      .exec();
+
+    const oldUploadIds = oldUploads.map((u) => String(u._id ?? '')).filter(Boolean);
+    if (!oldUploadIds.length) return;
+
+    await this.rowModel.deleteMany({ uploadId: { $in: oldUploadIds } }).exec();
+    await this.rowErrorModel.deleteMany({ uploadId: { $in: oldUploadIds } }).exec();
+    await this.uploadModel
+      .updateMany(
+        { _id: { $in: oldUploadIds } },
+        {
+          $set: {
+            status: 'failed',
+            lifecycleStatus: 'deleted',
+            errorMessage: 'Deleted due to month re-upload replacement',
+            totalRecords: 0,
+          },
+        },
+      )
+      .exec();
   }
 }

@@ -822,6 +822,15 @@ export class ImportWorkflowService {
                 sgst: Number(meeshoTotals.meeshoReturnCustomerSgst ?? 0),
                 invoiceAmount: Number(meeshoTotals.meeshoReturnCustomerInvoice ?? 0),
               },
+              na: {
+                totalRows: Number(meeshoTotals.meeshoReturnNaRows ?? 0),
+                pcs: Number(meeshoTotals.meeshoReturnNaPcs ?? 0),
+                taxableValue: Number(meeshoTotals.meeshoReturnNaTaxable ?? 0),
+                igst: Number(meeshoTotals.meeshoReturnNaIgst ?? 0),
+                cgst: Number(meeshoTotals.meeshoReturnNaCgst ?? 0),
+                sgst: Number(meeshoTotals.meeshoReturnNaSgst ?? 0),
+                invoiceAmount: Number(meeshoTotals.meeshoReturnNaInvoice ?? 0),
+              },
             },
           }
         : {
@@ -884,6 +893,15 @@ export class ImportWorkflowService {
           totalSgst: Number(totals.totalSgst ?? 0),
           totalTax,
           finalSettlementAmount: Number(totals.finalSettlementAmount ?? 0),
+        },
+        gstBreakdown: {
+          cgstTotal: Number(totals.totalCgst ?? 0),
+          sgstTotal: Number(totals.totalSgst ?? 0),
+          igstTotal: Number(totals.totalIgst ?? 0),
+          intraStateSales: Number(totals.intraStateSalesRows ?? 0),
+          interStateSales: Number(totals.interStateSalesRows ?? 0),
+          taxableValueIntraState: Number(totals.intraStateTaxableAmount ?? 0),
+          taxableValueInterState: Number(totals.interStateTaxableAmount ?? 0),
         },
         salesReturnTable,
         paymentAmounts,
@@ -964,7 +982,10 @@ export class ImportWorkflowService {
       .exec();
 
     if (!slotRecord) {
-      throw new NotFoundException('No uploaded report found for this slot');
+      return {
+        success: true,
+        message: 'No previous uploaded data found for this slot',
+      };
     }
 
     const upload = await this.uploadModel.findById(slotRecord.uploadId).lean().exec();
@@ -1034,9 +1055,36 @@ export class ImportWorkflowService {
         },
       });
     } else {
-      throw new BadRequestException(
-        'This report was imported together with other files in one batch. Please re-upload all reports from that batch, or contact support.',
+      // Legacy/import-all uploads can carry multiple slots in a single upload id.
+      // For re-upload, clear that whole upload atomically so each slot can be uploaded again.
+      await this.rowModel.deleteMany({ uploadId: String(upload._id) }).exec();
+      await this.rowErrorModel.deleteMany({ uploadId: String(upload._id) }).exec();
+      await this.uploadModel.findByIdAndUpdate(upload._id, {
+        $set: {
+          status: 'failed',
+          lifecycleStatus: 'deleted',
+          errorMessage: 'Deleted full multi-slot upload for re-upload',
+        },
+      });
+
+      await this.slotRecordModel.updateMany(
+        {
+          sellerId: { $in: sellerAliases },
+          gstId,
+          marketplaceId,
+          reportMonth,
+          uploadId: String(upload._id),
+          status: { $in: ['completed', 'processing', 'failed'] },
+        },
+        { $set: { status: 'deleted' } },
       );
+
+      return {
+        success: true,
+        message:
+          'Previous batch import data removed. You can upload fresh files for all slots now.',
+        deletedUploadId: String(upload._id),
+      };
     }
 
     await this.slotRecordModel.updateMany(
