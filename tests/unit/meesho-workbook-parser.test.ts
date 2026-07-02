@@ -70,6 +70,37 @@ function buildMeeshoPaymentBuffer() {
   return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
 }
 
+function buildMeeshoLifecycleReturnBuffer() {
+  const sellerMeta = Array.from({ length: 7 }, (_, i) => [
+    `Seller field ${i + 1}`,
+    'Sample seller info',
+  ]);
+  const data = [
+    ...sellerMeta,
+    [
+      'Order Number',
+      'Sub Order No',
+      'Type of Return',
+      'Sub Type',
+      'Qty',
+      'Return Reason',
+      'Detailed Return Reason',
+    ],
+    [
+      'ORD-100',
+      'ORD-100',
+      'Customer Return',
+      'RTO',
+      1,
+      'Size issue',
+      'Too small',
+    ],
+  ];
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(data), 'Sheet1');
+  return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+}
+
 describe('FileParserService Meesho workbooks', () => {
   const parser = new FileParserService();
 
@@ -86,13 +117,25 @@ describe('FileParserService Meesho workbooks', () => {
     expect(String(parsed.rows[0].sub_order_num)).toBe('ORD-100');
   });
 
-  it('parses Return Report with seller metadata rows before headers on row 8', () => {
-    const sellerMeta = Array.from({ length: 7 }, (_, i) => [
-      `Seller field ${i + 1}`,
-      'Sample seller info',
-    ]);
+  it.each([
+    'returnInTransit',
+    'returnOutForDelivery',
+    'returnDeliveryComplete',
+  ] as const)(
+    'parses %s with seller metadata rows before headers on row 8',
+    (fileKind) => {
+      const parsed = parser.parseMeeshoWorkbook(
+        buildMeeshoLifecycleReturnBuffer(),
+        fileKind,
+      );
+      expect(parsed.rows).toHaveLength(1);
+      expect(String(parsed.rows[0]['Order Number'])).toBe('ORD-100');
+      expect(String(parsed.rows[0]['Return Reason'])).toBe('Size issue');
+    },
+  );
+
+  it('rejects lifecycle return report when headers are not on row 8', () => {
     const data = [
-      ...sellerMeta,
       [
         'Order Number',
         'Sub Order No',
@@ -116,10 +159,9 @@ describe('FileParserService Meesho workbooks', () => {
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(data), 'Sheet1');
     const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
 
-    const parsed = parser.parseMeeshoWorkbook(buffer, 'returnReport');
-    expect(parsed.rows).toHaveLength(1);
-    expect(String(parsed.rows[0]['Order Number'])).toBe('ORD-100');
-    expect(String(parsed.rows[0]['Return Reason'])).toBe('Size issue');
+    expect(() =>
+      parser.parseMeeshoWorkbook(buffer, 'returnInTransit'),
+    ).toThrow(/row 8/i);
   });
 
   it('parses Order Payments sheet with headers on row 2', () => {

@@ -21,6 +21,7 @@ import { Request } from 'express';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { GenerateCredentialsDto } from './dto/generate-credentials.dto';
+import { ResetCredentialsDto } from './dto/reset-credentials.dto';
 import { RegisterSellerDto } from './dto/register-seller.dto';
 import { SendPaymentLinkDto } from './dto/send-payment-link.dto';
 import { SellersService } from './sellers.service';
@@ -156,6 +157,21 @@ export class SellersController {
   @Roles('super_admin')
   approveCredentials(@Param('id') id: string, @Req() req: RequestWithUser) {
     return this.sellersService.approveCredentials(id, req.user);
+  }
+
+  @Post(':id/reset-credentials')
+  @ApiOperation({
+    summary: 'Reset seller credentials',
+    description: 'Super admin resets seller login password. Username is always the seller email.',
+  })
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('super_admin')
+  resetCredentials(
+    @Param('id') id: string,
+    @Body() dto: ResetCredentialsDto,
+    @Req() req: RequestWithUser,
+  ) {
+    return this.sellersService.resetCredentials(id, dto, req.user);
   }
 
   @Post(':id/complete-training')

@@ -52,10 +52,10 @@ export class UsersService {
         }
       : {};
 
-    const userFilter: Record<string, unknown> = { ...searchFilter };
+    const userFilter: Record<string, unknown> = { ...searchFilter, role: { $ne: 'seller' } };
     if (roleFilter === 'admin') {
       userFilter.role = { $ne: 'seller' };
-    } else if (roleFilter) {
+    } else if (roleFilter && roleFilter !== 'seller') {
       userFilter.role = roleFilter;
     }
 
@@ -70,62 +70,6 @@ export class UsersService {
       ...user,
       id: user._id.toString(),
     }));
-
-    if (!roleFilter || roleFilter === 'seller') {
-      const sellerFilter: Record<string, unknown> = {};
-      if (search) {
-        sellerFilter.$or = [
-          { fullName: { $regex: search, $options: 'i' } },
-          { email: { $regex: search, $options: 'i' } },
-          { contactNumber: { $regex: search, $options: 'i' } },
-        ];
-      }
-
-      const sellers = await this.sellerModel
-        .find(sellerFilter)
-        .sort({ createdAt: -1 })
-        .select('fullName email contactNumber createdAt updatedAt')
-        .lean<
-          Array<{
-            _id: Types.ObjectId;
-            fullName: string;
-            email: string;
-            contactNumber?: string;
-            createdAt?: Date;
-            updatedAt?: Date;
-          }>
-        >()
-        .exec();
-
-      const userEmails = new Set(
-        rows
-          .map((row) =>
-            typeof row.email === 'string' ? row.email.trim().toLowerCase() : '',
-          )
-          .filter(Boolean),
-      );
-
-      for (const seller of sellers) {
-        const email =
-          typeof seller.email === 'string'
-            ? seller.email.trim().toLowerCase()
-            : '';
-        if (!email || userEmails.has(email)) continue;
-        rows.push({
-          _id: seller._id,
-          id: seller._id.toString(),
-          fullName: seller.fullName,
-          email: seller.email,
-          role: 'seller',
-          mobile: seller.contactNumber,
-          status: 'approved',
-          profileCompleted: true,
-          createdAt: seller.createdAt,
-          updatedAt: seller.updatedAt,
-          linkedFromSeller: true,
-        });
-      }
-    }
 
     rows.sort(
       (a, b) =>
@@ -319,7 +263,7 @@ export class UsersService {
       const email = seller.email.trim().toLowerCase();
       activeUser = await this.userModel.create({
         publicId: generatePublicId('user', email),
-        username: seller.username || email,
+        username: email,
         fullName: seller.fullName,
         email,
         password: hashedPassword,
@@ -351,20 +295,13 @@ export class UsersService {
 
     if (linkedSeller) {
       linkedSeller.password = hashedPassword;
-      if (!linkedSeller.username) {
-        linkedSeller.username = activeUser?.username || linkedSeller.email;
-      }
+      linkedSeller.username = linkedSeller.email.trim().toLowerCase();
       linkedSeller.credentialsGeneratedAt = credentialsGeneratedAt;
       linkedSeller.credentialGeneratedBy = actorEmail;
       await linkedSeller.save();
     }
 
-    const username =
-      linkedSeller?.username ||
-      activeUser?.username ||
-      activeUser?.email ||
-      linkedSeller?.email ||
-      '';
+    const username = linkedSeller?.email?.trim().toLowerCase() || activeUser?.email?.trim().toLowerCase() || '';
 
     const safe = activeUser
       ? await this.userModel

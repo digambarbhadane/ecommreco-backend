@@ -7,6 +7,7 @@ import {
   ParsedSheetRow,
 } from './mapping.service';
 import { FileParserService } from './file-parser.service';
+import { classifyMeeshoImportRow } from '../utils/meesho-analytics.util';
 
 type ParsedMeeshoFile = {
   rows: ParsedSheetRow[];
@@ -38,9 +39,20 @@ export class MeeshoImportService {
     tcsSalesFile?: { buffer: Buffer; originalname: string };
     tcsSalesReturnFile?: { buffer: Buffer; originalname: string };
     orderReportFile?: { buffer: Buffer; originalname: string };
-    returnReportFile?: { buffer: Buffer; originalname: string };
+    returnInTransitReportFile?: { buffer: Buffer; originalname: string };
+    returnOutForDeliveryReportFile?: { buffer: Buffer; originalname: string };
+    returnDeliveryCompleteReportFile?: { buffer: Buffer; originalname: string };
   }) {
     const empty: ParsedMeeshoFile = { rows: [], headers: [] };
+    const parseLifecycle = (
+      file: { buffer: Buffer; originalname: string } | undefined,
+      kind:
+        | 'returnInTransit'
+        | 'returnOutForDelivery'
+        | 'returnDeliveryComplete',
+    ) =>
+      file ? this.parser.parseMeeshoWorkbook(file.buffer, kind) : empty;
+
     return {
       tcsSales: files.tcsSalesFile
         ? this.parser.parseMeeshoWorkbook(files.tcsSalesFile.buffer, 'tcsSales')
@@ -57,12 +69,18 @@ export class MeeshoImportService {
             'orderReport',
           )
         : empty,
-      returnReport: files.returnReportFile
-        ? this.parser.parseMeeshoWorkbook(
-            files.returnReportFile.buffer,
-            'returnReport',
-          )
-        : empty,
+      returnInTransit: parseLifecycle(
+        files.returnInTransitReportFile,
+        'returnInTransit',
+      ),
+      returnOutForDelivery: parseLifecycle(
+        files.returnOutForDeliveryReportFile,
+        'returnOutForDelivery',
+      ),
+      returnDeliveryComplete: parseLifecycle(
+        files.returnDeliveryCompleteReportFile,
+        'returnDeliveryComplete',
+      ),
     };
   }
 
@@ -82,11 +100,37 @@ export class MeeshoImportService {
   }
 
   /**
-   * Process TCS Sales Report first, then enrich each order from the other three files.
+   * Process TCS Sales Report first, then enrich each order from the other files.
    * Only TCS Sales rows are persisted (one DB row per sales line).
    */
   parsePaymentFile(file: { buffer: Buffer; originalname: string }) {
     return this.parser.parseMeeshoPaymentWorkbook(file.buffer);
+  }
+
+  private enrichLifecycleReturnReports(
+    mapped: NormalizedImportRow,
+    orderId: string,
+    indexes: {
+      returnInTransit: Map<string, ParsedSheetRow>;
+      returnOutForDelivery: Map<string, ParsedSheetRow>;
+      returnDeliveryComplete: Map<string, ParsedSheetRow>;
+    },
+  ): NormalizedImportRow {
+    if (!mapped.meeshoHasTcsReturn) return mapped;
+
+    let enriched = mapped;
+    const lifecycleRows = [
+      indexes.returnInTransit.get(orderId),
+      indexes.returnOutForDelivery.get(orderId),
+      indexes.returnDeliveryComplete.get(orderId),
+    ];
+    for (const lifecycleRow of lifecycleRows) {
+      enriched = this.mapping.enrichMeeshoFromLifecycleReturnReport(
+        enriched,
+        lifecycleRow,
+      );
+    }
+    return enriched;
   }
 
   buildNormalizedRows(
@@ -94,14 +138,25 @@ export class MeeshoImportService {
       tcsSales: ParsedMeeshoFile;
       tcsSalesReturn: ParsedMeeshoFile;
       orderReport: ParsedMeeshoFile;
-      returnReport: ParsedMeeshoFile;
+      returnInTransit: ParsedMeeshoFile;
+      returnOutForDelivery: ParsedMeeshoFile;
+      returnDeliveryComplete: ParsedMeeshoFile;
     },
     sellerState?: string,
     paymentRows?: ParsedSheetRow[],
+    _reportMonth?: string,
   ): MeeshoBuildResult {
     const orderReportByOrder = this.indexBySubOrderNum(parsed.orderReport.rows);
     const tcsReturnByOrder = this.indexBySubOrderNum(parsed.tcsSalesReturn.rows);
-    const returnReportByOrder = this.indexBySubOrderNum(parsed.returnReport.rows);
+    const lifecycleIndexes = {
+      returnInTransit: this.indexBySubOrderNum(parsed.returnInTransit.rows),
+      returnOutForDelivery: this.indexBySubOrderNum(
+        parsed.returnOutForDelivery.rows,
+      ),
+      returnDeliveryComplete: this.indexBySubOrderNum(
+        parsed.returnDeliveryComplete.rows,
+      ),
+    };
     const paymentByOrder = paymentRows?.length
       ? this.indexBySubOrderNum(paymentRows)
       : null;
@@ -134,9 +189,10 @@ export class MeeshoImportService {
           mapped,
           tcsReturnByOrder.get(orderId),
         );
-        mapped = this.mapping.enrichMeeshoFromReturnReport(
+        mapped = this.enrichLifecycleReturnReports(
           mapped,
-          returnReportByOrder.get(orderId),
+          orderId,
+          lifecycleIndexes,
         );
         if (paymentByOrder) {
           mapped = this.mapping.enrichMeeshoFromPaymentReport(
@@ -144,6 +200,12 @@ export class MeeshoImportService {
             paymentByOrder.get(orderId),
           );
         }
+
+        const classification = classifyMeeshoImportRow(mapped);
+        mapped.meeshoIsGrossSale = classification.meeshoIsGrossSale;
+        mapped.meeshoIsPreviousMonthReturn = classification.meeshoIsPreviousMonthReturn;
+        mapped.meeshoHasTcsReturn = classification.meeshoHasTcsReturn;
+        mapped.meeshoReturnSubType = classification.meeshoReturnSubType;
 
         rows.push({
           ...mapped,

@@ -20,6 +20,9 @@ export class ImportRow {
   @Prop({ required: true, index: true })
   marketplace: string;
 
+  @Prop({ index: true })
+  reportMonth?: string;
+
   @Prop({ required: true, enum: ['sales', 'cashback'], index: true })
   reportType: 'sales' | 'cashback';
 
@@ -111,6 +114,24 @@ export class ImportRow {
   @Prop()
   detailedReturnReason?: string;
 
+  @Prop({ index: true })
+  meeshoHasTcsReturn?: boolean;
+
+  @Prop()
+  meeshoOrderStatus?: string;
+
+  @Prop()
+  meeshoTcsReturnStatus?: string;
+
+  @Prop({ index: true })
+  meeshoIsGrossSale?: boolean;
+
+  @Prop({ index: true })
+  meeshoIsPreviousMonthReturn?: boolean;
+
+  @Prop({ index: true })
+  meeshoReturnSubType?: string;
+
   /** Meesho Order Payments — enriched by Sub Order No */
   @Prop() liveOrderStatus?: string;
   @Prop() transactionId?: string;
@@ -155,3 +176,9 @@ ImportRowSchema.index({
 ImportRowSchema.index({ sellerId: 1, documentType: 1 });
 ImportRowSchema.index({ sellerId: 1, gstin: 1, invoiceDate: 1 });
 ImportRowSchema.index({ sellerId: 1, invoiceDate: 1, documentType: 1 });
+// Supports the payment-lookup query: uploadId $in + orderID $in
+ImportRowSchema.index({ uploadId: 1, orderID: 1 });
+ImportRowSchema.index(
+  { sellerId: 1, marketplace: 1, orderID: 1, reportMonth: 1 },
+  { name: 'import_rows_order_month_idx' },
+);

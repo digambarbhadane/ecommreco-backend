@@ -3,7 +3,10 @@ import { NestFactory } from '@nestjs/core';
 import { Logger, RequestMethod, ValidationPipe } from '@nestjs/common';
 import { SwaggerModule } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
+import { IoAdapter } from '@nestjs/platform-socket.io';
 import * as express from 'express';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const compression = require('compression') as () => ReturnType<typeof import('compression')>;
 import { AppModule } from './app.module';
 import {
   buildSwaggerConfig,
@@ -82,6 +85,8 @@ const DEFAULT_DEV_ORIGINS = [
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  app.useWebSocketAdapter(new IoAdapter(app));
+  app.use(compression());
   app.use(express.json({ limit: '10mb' }));
   app.use(express.urlencoded({ extended: true, limit: '10mb' }));
   app.useGlobalPipes(

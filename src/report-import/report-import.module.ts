@@ -25,10 +25,36 @@ import {
 import { FileParserService } from './services/file-parser.service';
 import { MappingService } from './services/mapping.service';
 import { MeeshoImportService } from './services/meesho-import.service';
+import { FlipkartImportService } from './services/flipkart-import.service';
 import { MyntraImportService } from './services/myntra-import.service';
 import { UploadService } from './services/upload.service';
 import { ValidationService } from './services/validation.service';
+import {
+  ImportSlotRecord,
+  ImportSlotRecordSchema,
+} from './schemas/import-slot-record.schema';
+import { ImportWorkflowService } from './services/import-workflow.service';
 import { ImportSessionService } from './services/import-session.service';
+import { ImportJob, ImportJobSchema } from './schemas/import-job.schema';
+import {
+  ReconTransaction,
+  ReconTransactionSchema,
+} from './schemas/recon-transaction.schema';
+import { ReconEvent, ReconEventSchema } from './schemas/recon-event.schema';
+import {
+  ReconAuditLog,
+  ReconAuditLogSchema,
+} from './schemas/recon-audit-log.schema';
+import {
+  ReconAdjustment,
+  ReconAdjustmentSchema,
+} from './schemas/recon-adjustment.schema';
+import { ImportJobService } from './services/import-job.service';
+import { ImportFileStoreService } from './services/import-file-store.service';
+import { ImportQueueService } from './services/import-queue.service';
+import { ImportJobOrchestratorService } from './services/import-job-orchestrator.service';
+import { ImportProgressGateway } from './gateways/import-progress.gateway';
+import { ReconciliationService } from './services/reconciliation.service';
 
 @Module({
   imports: [
@@ -41,6 +67,12 @@ import { ImportSessionService } from './services/import-session.service';
       { name: ImportUpload.name, schema: ImportUploadSchema },
       { name: ImportRow.name, schema: ImportRowSchema },
       { name: ImportRowError.name, schema: ImportRowErrorSchema },
+      { name: ImportSlotRecord.name, schema: ImportSlotRecordSchema },
+      { name: ImportJob.name, schema: ImportJobSchema },
+      { name: ReconTransaction.name, schema: ReconTransactionSchema },
+      { name: ReconEvent.name, schema: ReconEventSchema },
+      { name: ReconAuditLog.name, schema: ReconAuditLogSchema },
+      { name: ReconAdjustment.name, schema: ReconAdjustmentSchema },
     ]),
   ],
   controllers: [ReportImportController],
@@ -50,9 +82,17 @@ import { ImportSessionService } from './services/import-session.service';
     ValidationService,
     MappingService,
     MeeshoImportService,
+    FlipkartImportService,
     MyntraImportService,
     UploadService,
     ImportSessionService,
+    ImportWorkflowService,
+    ImportJobService,
+    ImportFileStoreService,
+    ImportQueueService,
+    ImportJobOrchestratorService,
+    ImportProgressGateway,
+    ReconciliationService,
   ],
 })
 export class ReportImportModule {}

@@ -11,9 +11,11 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { EmailService } from '../email/email.service';
 import { EmailType } from '../email/email.types';
 import { GenerateCredentialsDto } from './dto/generate-credentials.dto';
+import { ResetCredentialsDto } from './dto/reset-credentials.dto';
 import { RegisterSellerDto } from './dto/register-seller.dto';
 import { SendPaymentLinkDto } from './dto/send-payment-link.dto';
 import { Seller, SellerDocument } from './schemas/seller.schema';
+import { User, UserDocument } from '../users/schemas/user.schema';
 import { LeadsService } from '../leads/leads.service';
 import { generatePublicId } from '../common/public-id';
 
@@ -39,6 +41,8 @@ export class SellersService {
   constructor(
     @InjectModel(Seller.name)
     private readonly sellerModel: Model<SellerDocument>,
+    @InjectModel(User.name)
+    private readonly userModel: Model<UserDocument>,
     private readonly leadsService: LeadsService,
     private readonly notificationsService: NotificationsService,
     private readonly emailService: EmailService,
@@ -476,7 +480,7 @@ export class SellersService {
       require('crypto').randomBytes(6).toString('hex');
     const hashedPassword = await bcrypt.hash(password, 10);
     seller.password = hashedPassword;
-    seller.username = seller.email;
+    seller.username = seller.email.trim().toLowerCase();
     const actorRole = typeof user?.role === 'string' ? user.role : undefined;
     const credentialsGeneratedAt = new Date();
     seller.credentialsGeneratedAt = credentialsGeneratedAt;
@@ -663,6 +667,113 @@ export class SellersService {
         'super_admin',
       ),
     };
+  }
+
+  async resetCredentials(
+    sellerId: string,
+    dto: ResetCredentialsDto,
+    user?: RequestUser,
+  ) {
+    const seller = await this.sellerModel.findById(sellerId).exec();
+    if (!seller) {
+      throw new NotFoundException({
+        success: false,
+        message: 'Seller not found',
+      });
+    }
+
+    const email = seller.email.trim().toLowerCase();
+    if (!email) {
+      throw new BadRequestException({
+        success: false,
+        message: 'Seller email is required to reset credentials',
+      });
+    }
+
+    const password =
+      typeof dto.password === 'string' && dto.password.length >= 6
+        ? dto.password
+        : this.generatePassword();
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const actorEmail = user?.email || 'super_admin';
+    const credentialsGeneratedAt = new Date();
+
+    seller.password = hashedPassword;
+    seller.username = email;
+    seller.credentialsGeneratedAt = credentialsGeneratedAt;
+    seller.credentialGeneratedBy = actorEmail;
+    await seller.save();
+
+    await this.syncSellerLoginUser(seller, {
+      password: hashedPassword,
+      actorEmail,
+      credentialsGeneratedAt,
+    });
+
+    await this.notificationsService.createNotification({
+      event: 'credentials_reset',
+      recipientRole: 'super_admin',
+      message: `Credentials reset for ${seller.fullName} (${email}) by ${actorEmail}.`,
+    });
+
+    return {
+      success: true,
+      data: this.sanitizeSellerForRole(
+        seller.toObject() as unknown as Record<string, unknown>,
+        'super_admin',
+      ),
+      credentials: { username: email, password },
+    };
+  }
+
+  private generatePassword() {
+    const base = Math.random().toString(36).slice(-10);
+    const extra = Math.floor(Math.random() * 90 + 10).toString();
+    return `${base}A1!${extra}`;
+  }
+
+  private async syncSellerLoginUser(
+    seller: SellerDocument,
+    options: {
+      password: string;
+      actorEmail: string;
+      credentialsGeneratedAt: Date;
+    },
+  ) {
+    const email = seller.email.trim().toLowerCase();
+    const existing = await this.userModel.findOne({ email }).exec();
+    if (existing && existing.role !== 'seller') {
+      throw new BadRequestException({
+        success: false,
+        message: 'A user with this email already exists with a different role',
+      });
+    }
+
+    const companyName = seller.firmName || seller.tradeName || '';
+    const update = {
+      fullName: seller.fullName,
+      email,
+      username: email,
+      mobile: seller.contactNumber,
+      companyName,
+      role: 'seller',
+      status: 'approved' as const,
+      profileCompleted: true,
+      password: options.password,
+      mustChangePassword: true,
+      credentialsGeneratedAt: options.credentialsGeneratedAt,
+      credentialsGeneratedBy: options.actorEmail,
+    };
+
+    if (existing) {
+      await this.userModel.updateOne({ _id: existing._id }, { $set: update }).exec();
+      return;
+    }
+
+    await this.userModel.create({
+      publicId: generatePublicId('user', email),
+      ...update,
+    });
   }
 
   private generateSubscriptionId() {

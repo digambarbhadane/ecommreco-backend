@@ -2,13 +2,15 @@ import type { MarketplaceUploadKey } from './marketplace-upload.routes';
 
 /** Backend multipart / session slot names present in upload payloads. */
 export const MARKETPLACE_TRACKED_SLOTS: Record<MarketplaceUploadKey, string[]> = {
-  flipkart: ['file'],
+  flipkart: ['file', 'paymentReportFile'],
   amazon: ['mtrB2cFile', 'mtrB2bFile'],
   meesho: [
     'tcsSalesFile',
     'tcsSalesReturnFile',
     'orderReportFile',
-    'returnReportFile',
+    'returnInTransitReportFile',
+    'returnOutForDeliveryReportFile',
+    'returnDeliveryCompleteReportFile',
     'paymentReportFile',
   ],
   myntra: [
@@ -21,6 +23,14 @@ export const MARKETPLACE_TRACKED_SLOTS: Record<MarketplaceUploadKey, string[]> =
   ],
 };
 
+/** Primary import slot whose upload owns persisted import rows for a month. */
+export const PRIMARY_IMPORT_SLOT: Record<MarketplaceUploadKey, string> = {
+  flipkart: 'file',
+  amazon: 'mtrB2cFile',
+  meesho: 'tcsSalesFile',
+  myntra: 'gstrReportPackedFile',
+};
+
 /** Slots required before a month is marked complete in the UI. */
 export const MARKETPLACE_COMPLETION_SLOTS: Record<MarketplaceUploadKey, string[]> = {
   flipkart: ['file'],
@@ -29,7 +39,9 @@ export const MARKETPLACE_COMPLETION_SLOTS: Record<MarketplaceUploadKey, string[]
     'tcsSalesFile',
     'orderReportFile',
     'tcsSalesReturnFile',
-    'returnReportFile',
+    'returnInTransitReportFile',
+    'returnOutForDeliveryReportFile',
+    'returnDeliveryCompleteReportFile',
     'paymentReportFile',
   ],
   myntra: [
@@ -44,7 +56,10 @@ const FILE_HASH_SLOT_PREFIXES: Array<{ prefix: string; slot: string }> = [
   { prefix: 'tcsSales:', slot: 'tcsSalesFile' },
   { prefix: 'tcsSalesReturn:', slot: 'tcsSalesReturnFile' },
   { prefix: 'order:', slot: 'orderReportFile' },
-  { prefix: 'return:', slot: 'returnReportFile' },
+  { prefix: 'returnInTransit:', slot: 'returnInTransitReportFile' },
+  { prefix: 'returnOutForDelivery:', slot: 'returnOutForDeliveryReportFile' },
+  { prefix: 'returnDeliveryComplete:', slot: 'returnDeliveryCompleteReportFile' },
+  { prefix: 'return:', slot: 'returnDeliveryCompleteReportFile' },
   { prefix: 'payment:', slot: 'paymentReportFile' },
   { prefix: 'b2c:', slot: 'mtrB2cFile' },
   { prefix: 'b2b:', slot: 'mtrB2bFile' },
@@ -72,6 +87,23 @@ export function inferUploadedSlotsFromFileHash(fileHash: string): string[] {
 
   if (hash.startsWith('meesho-payment|')) {
     return ['paymentReportFile'];
+  }
+
+  if (hash.startsWith('flipkart-payment|')) {
+    return ['paymentReportFile'];
+  }
+
+  if (hash.startsWith('flipkart|')) {
+    const slots: string[] = [];
+    const salesHash = hashSegmentValue(hash, 'sales:');
+    const paymentHash = hashSegmentValue(hash, 'payment:');
+    if (salesHash && salesHash !== 'none') {
+      slots.push('file');
+    }
+    if (paymentHash && paymentHash !== 'none') {
+      slots.push('paymentReportFile');
+    }
+    return slots;
   }
 
   if (hash.startsWith('single:')) {
