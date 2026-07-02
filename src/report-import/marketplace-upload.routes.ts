@@ -10,7 +10,9 @@ export const REPORT_UPLOAD_FILE_FIELDS = [
   { name: 'tcsSalesFile', maxCount: 1 },
   { name: 'tcsSalesReturnFile', maxCount: 1 },
   { name: 'orderReportFile', maxCount: 1 },
-  { name: 'returnReportFile', maxCount: 1 },
+  { name: 'returnInTransitReportFile', maxCount: 1 },
+  { name: 'returnOutForDeliveryReportFile', maxCount: 1 },
+  { name: 'returnDeliveryCompleteReportFile', maxCount: 1 },
   { name: 'paymentReportFile', maxCount: 1 },
   { name: 'gstrReportPackedFile', maxCount: 1 },
   { name: 'mDirectOrdersReportFile', maxCount: 1 },
@@ -29,7 +31,15 @@ export type UploadedReportFiles = {
   tcsSalesFile?: Array<{ buffer: Buffer; originalname: string }>;
   tcsSalesReturnFile?: Array<{ buffer: Buffer; originalname: string }>;
   orderReportFile?: Array<{ buffer: Buffer; originalname: string }>;
-  returnReportFile?: Array<{ buffer: Buffer; originalname: string }>;
+  returnInTransitReportFile?: Array<{ buffer: Buffer; originalname: string }>;
+  returnOutForDeliveryReportFile?: Array<{
+    buffer: Buffer;
+    originalname: string;
+  }>;
+  returnDeliveryCompleteReportFile?: Array<{
+    buffer: Buffer;
+    originalname: string;
+  }>;
   paymentReportFile?: Array<{ buffer: Buffer; originalname: string }>;
   gstrReportPackedFile?: Array<{ buffer: Buffer; originalname: string }>;
   mDirectOrdersReportFile?: Array<{ buffer: Buffer; originalname: string }>;
@@ -52,7 +62,7 @@ export function ReportUploadMultipart() {
       FileFieldsInterceptor([...REPORT_UPLOAD_FILE_FIELDS], {
         limits: {
           fileSize: 100 * 1024 * 1024,
-          files: 12,
+          files: 14,
         },
       }),
     ),

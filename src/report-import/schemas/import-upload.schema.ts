@@ -48,6 +48,20 @@ export class ImportUpload {
   uploadedSlots?: string[];
 
   @Prop()
+  fileSize?: number;
+
+  @Prop()
+  uploadedBy?: string;
+
+  @Prop({ index: true })
+  importBatchId?: string;
+
+  @Prop({
+    enum: ['completed', 'processing', 'failed', 'deleted', 'reuploaded'],
+  })
+  lifecycleStatus?: 'completed' | 'processing' | 'failed' | 'deleted' | 'reuploaded';
+
+  @Prop()
   errorMessage?: string;
 }
 
@@ -62,4 +76,11 @@ ImportUploadSchema.index(
     totalRecords: 1,
   },
   { name: 'import_duplicate_guard_idx' },
+);
+// Fast fileHash duplicate detection
+ImportUploadSchema.index({ fileHash: 1 }, { name: 'import_file_hash_idx' });
+// Payment upload lookup: completed uploads for a seller+gst+marketplace+month
+ImportUploadSchema.index(
+  { sellerId: 1, gstId: 1, marketplace: 1, reportMonth: 1, status: 1 },
+  { name: 'import_upload_payment_lookup_idx' },
 );

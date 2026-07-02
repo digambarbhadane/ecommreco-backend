@@ -3,6 +3,10 @@ import { amazonImportMapping } from '../config/importMappings/amazon.mapping';
 import { flipkartImportMapping } from '../config/importMappings/flipkart.mapping';
 import { headerMatchesExcelColumn } from '../config/importMappings/gst-column.util';
 import {
+  flipkartPaymentFieldMappings,
+  type FlipkartPaymentFieldKey,
+} from '../config/importMappings/flipkart-payment.mapping';
+import {
   meeshoPaymentFieldMappings,
   type MeeshoPaymentFieldKey,
 } from '../config/importMappings/meesho-payment.mapping';
@@ -46,6 +50,12 @@ export type NormalizedImportRow = {
   returnQty?: number;
   returnReason?: string;
   detailedReturnReason?: string;
+  meeshoHasTcsReturn?: boolean;
+  meeshoIsGrossSale?: boolean;
+  meeshoIsPreviousMonthReturn?: boolean;
+  meeshoReturnSubType?: 'cancellation' | 'rto' | 'customer_return';
+  meeshoOrderStatus?: string;
+  meeshoTcsReturnStatus?: string;
   /** Meesho Order Payments sheet — matched on Sub Order No */
   liveOrderStatus?: string;
   transactionId?: string;
@@ -689,16 +699,19 @@ export class MappingService {
     const sku = asString(
       getRowCell(orderRow, 'SKU', 'SKU ID', 'sku'),
     );
-    const documentType = asString(
+    const orderStatus = asString(
       getRowCell(
         orderRow,
+        'Status',
+        'Order Status',
+        'Live Order Status',
+        'live order status',
         'Reason for Credit Entry',
-        'Document Type',
-        'document type',
+        'reason for credit entry',
       ),
     );
     if (sku) mapped.skuID = sku;
-    if (documentType) mapped.documentType = documentType;
+    if (orderStatus) mapped.meeshoOrderStatus = orderStatus;
     return mapped;
   }
 
@@ -707,14 +720,25 @@ export class MappingService {
     returnRow?: ParsedSheetRow,
   ): NormalizedImportRow {
     if (!returnRow) return mapped;
+    mapped.meeshoHasTcsReturn = true;
     const returnInvoiceDate = asDate(
       getRowCell(returnRow, 'cancel_return_date', 'Return Invoice Date'),
     );
     if (returnInvoiceDate) mapped.returnInvoiceDate = returnInvoiceDate;
+    const tcsReturnStatus = asString(
+      getRowCell(
+        returnRow,
+        'Status',
+        'Return Status',
+        'Order Status',
+        'status',
+      ),
+    );
+    if (tcsReturnStatus) mapped.meeshoTcsReturnStatus = tcsReturnStatus;
     return mapped;
   }
 
-  enrichMeeshoFromReturnReport(
+  enrichMeeshoFromLifecycleReturnReport(
     mapped: NormalizedImportRow,
     returnRow?: ParsedSheetRow,
   ): NormalizedImportRow {
@@ -771,6 +795,31 @@ export class MappingService {
     const out = {} as Pick<NormalizedImportRow, MeeshoPaymentFieldKey>;
 
     for (const mapping of meeshoPaymentFieldMappings) {
+      const raw = getRowCell(paymentRow, ...mapping.source);
+      if (raw === undefined) continue;
+      let value: string | number | undefined;
+      if (dateTargets.has(mapping.target)) {
+        value = asDate(raw);
+      } else if (numericTargets.has(mapping.target)) {
+        value = asNumber(raw);
+      } else {
+        value = asString(raw);
+      }
+      if (value !== undefined) {
+        out[mapping.target] = value as never;
+      }
+    }
+    return out;
+  }
+
+  mapFlipkartPaymentFields(
+    paymentRow: ParsedSheetRow,
+  ): Pick<NormalizedImportRow, FlipkartPaymentFieldKey> {
+    const numericTargets = new Set<FlipkartPaymentFieldKey>(['finalSettlementAmount']);
+    const dateTargets = new Set<FlipkartPaymentFieldKey>(['paymentDate']);
+    const out = {} as Pick<NormalizedImportRow, FlipkartPaymentFieldKey>;
+
+    for (const mapping of flipkartPaymentFieldMappings) {
       const raw = getRowCell(paymentRow, ...mapping.source);
       if (raw === undefined) continue;
       let value: string | number | undefined;

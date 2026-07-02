@@ -116,7 +116,7 @@ export class AccountManagerService {
     const update: Record<string, unknown> = {
       fullName: seller.fullName,
       email,
-      username: options?.username || seller.username || email,
+      username: email,
       mobile: seller.contactNumber,
       companyName,
       role: 'seller',
@@ -626,9 +626,7 @@ export class AccountManagerService {
       user,
     );
 
-    const username =
-      dto.username ||
-      seller.email.split('@')[0] + Math.floor(Math.random() * 1000);
+    const username = seller.email.trim().toLowerCase();
     const password =
       dto.password || Math.random().toString(36).slice(-8) + 'A1!';
 

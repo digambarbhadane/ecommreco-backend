@@ -8,6 +8,7 @@ import { UploadReportDto } from '../dto/upload-report.dto';
 import type { MarketplaceUploadKey } from '../marketplace-upload.routes';
 import { UploadService } from './upload.service';
 import { ValidationService } from './validation.service';
+import { ImportWorkflowService } from './import-workflow.service';
 
 type SessionFile = { buffer: Buffer; originalname: string };
 
@@ -24,7 +25,7 @@ const SESSION_TTL_MS = 60 * 60 * 1000;
 
 const REQUIRED_SLOTS: Record<MarketplaceUploadKey, string[]> = {
   flipkart: ['file'],
-  amazon: ['mtrB2cFile'],
+  amazon: [], // B2C is preferred but B2B-only is valid; checked in commit()
   meesho: [],
   myntra: [
     'gstrReportPackedFile',
@@ -35,12 +36,15 @@ const REQUIRED_SLOTS: Record<MarketplaceUploadKey, string[]> = {
 };
 
 const OPTIONAL_SLOTS: Partial<Record<MarketplaceUploadKey, string[]>> = {
+  flipkart: ['paymentReportFile'],
   amazon: ['mtrB2bFile'],
   meesho: [
     'tcsSalesFile',
     'tcsSalesReturnFile',
     'orderReportFile',
-    'returnReportFile',
+    'returnInTransitReportFile',
+    'returnOutForDeliveryReportFile',
+    'returnDeliveryCompleteReportFile',
     'paymentReportFile',
   ],
   myntra: ['mDirectOrdersReportFile', 'mDirectReturnsReportFile'],
@@ -50,7 +54,9 @@ const MEESHO_IMPORT_SLOTS = [
   'tcsSalesFile',
   'tcsSalesReturnFile',
   'orderReportFile',
-  'returnReportFile',
+  'returnInTransitReportFile',
+  'returnOutForDeliveryReportFile',
+  'returnDeliveryCompleteReportFile',
 ] as const;
 
 @Injectable()
@@ -60,6 +66,7 @@ export class ImportSessionService {
   constructor(
     private readonly validation: ValidationService,
     private readonly uploadService: UploadService,
+    private readonly importWorkflow: ImportWorkflowService,
   ) {}
 
   async createSession(
@@ -153,6 +160,36 @@ export class ImportSessionService {
       );
     }
 
+    if (session.marketplaceType === 'amazon') {
+      if (!session.files.has('mtrB2cFile') && !session.files.has('mtrB2bFile')) {
+        throw new BadRequestException(
+          'Amazon upload requires at least an MTR B2C or MTR B2B file',
+        );
+      }
+    }
+
+    if (session.marketplaceType === 'flipkart') {
+      if (session.files.size === 0) {
+        throw new BadRequestException('Upload at least one Flipkart report file');
+      }
+      const hasPaymentOnly =
+        session.files.has('paymentReportFile') && !session.files.has('file');
+      if (hasPaymentOnly) {
+        const salesAlreadyUploaded = await this.importWorkflow.hasCompletedSlot({
+          sellerId: dto.sellerId,
+          gstId: dto.gstId,
+          marketplaceId: dto.marketplaceId,
+          reportMonth: dto.reportMonth,
+          slot: 'file',
+        });
+        if (!salesAlreadyUploaded) {
+          throw new BadRequestException(
+            'Sales Report is required before uploading the payment report',
+          );
+        }
+      }
+    }
+
     if (session.marketplaceType === 'meesho') {
       if (session.files.size === 0) {
         throw new BadRequestException('Upload at least one Meesho report file');
@@ -166,9 +203,18 @@ export class ImportSessionService {
         throw new BadRequestException('Upload at least one Meesho report file');
       }
       if (hasImportFile && !session.files.has('tcsSalesFile')) {
-        throw new BadRequestException(
-          'TCS Sales Report is required when uploading sales or return reports',
-        );
+        const tcsAlreadyUploaded = await this.importWorkflow.hasCompletedSlot({
+          sellerId: dto.sellerId,
+          gstId: dto.gstId,
+          marketplaceId: dto.marketplaceId,
+          reportMonth: dto.reportMonth,
+          slot: 'tcsSalesFile',
+        });
+        if (!tcsAlreadyUploaded) {
+          throw new BadRequestException(
+            'TCS Sales Report is required when uploading sales or return reports',
+          );
+        }
       }
     }
 

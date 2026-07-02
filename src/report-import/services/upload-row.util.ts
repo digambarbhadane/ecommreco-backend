@@ -1,5 +1,6 @@
 import { meeshoPaymentFieldMappings } from '../config/importMappings/meesho-payment.mapping';
 import { NormalizedImportRow } from './mapping.service';
+import { yieldToEventLoop } from '../utils/import-performance.util';
 
 const pickMeeshoPaymentFields = (row: NormalizedImportRow) => {
   const payment: Record<string, unknown> = {};
@@ -12,7 +13,7 @@ const pickMeeshoPaymentFields = (row: NormalizedImportRow) => {
   return payment;
 };
 
-const INSERT_BATCH_SIZE = 5000;
+const INSERT_BATCH_SIZE = 2000;
 
 export type NormalizedRowWithMeta = NormalizedImportRow & {
   __sheetName: string;
@@ -26,6 +27,7 @@ export const toImportRowDocuments = (
     sellerId: string;
     gstin: string;
     marketplace: string;
+    reportMonth?: string;
   },
 ) =>
   rows.map((row) => ({
@@ -33,6 +35,7 @@ export const toImportRowDocuments = (
     sellerId: meta.sellerId,
     gstin: meta.gstin,
     marketplace: meta.marketplace,
+    reportMonth: meta.reportMonth,
     reportType: row.reportType,
     documentType: row.documentType,
     voucherType: row.voucherType,
@@ -63,6 +66,12 @@ export const toImportRowDocuments = (
     returnQty: row.returnQty,
     returnReason: row.returnReason,
     detailedReturnReason: row.detailedReturnReason,
+    meeshoHasTcsReturn: row.meeshoHasTcsReturn,
+    meeshoOrderStatus: row.meeshoOrderStatus,
+    meeshoTcsReturnStatus: row.meeshoTcsReturnStatus,
+    meeshoIsGrossSale: row.meeshoIsGrossSale,
+    meeshoIsPreviousMonthReturn: row.meeshoIsPreviousMonthReturn,
+    meeshoReturnSubType: row.meeshoReturnSubType,
     ...pickMeeshoPaymentFields(row),
   }));
 
@@ -76,16 +85,28 @@ export async function insertImportRowsInBatches(
   rows: NormalizedRowWithMeta[],
   meta: Parameters<typeof toImportRowDocuments>[1],
   onBatchSaved?: (savedCount: number) => void | Promise<void>,
+  options?: { progressThrottleMs?: number },
 ): Promise<void> {
   if (!rows.length) return;
-  const docs = toImportRowDocuments(rows, meta);
   let saved = 0;
-  for (let i = 0; i < docs.length; i += INSERT_BATCH_SIZE) {
-    const batch = docs.slice(i, i + INSERT_BATCH_SIZE);
+  let lastProgressAt = 0;
+  const throttleMs = options?.progressThrottleMs ?? 1500;
+
+  for (let i = 0; i < rows.length; i += INSERT_BATCH_SIZE) {
+    const rowBatch = rows.slice(i, i + INSERT_BATCH_SIZE);
+    const batch = toImportRowDocuments(rowBatch, meta);
     await rowModel.insertMany(batch, { ordered: false });
     saved += batch.length;
-    if (onBatchSaved) {
+
+    const now = Date.now();
+    const isLastBatch = i + INSERT_BATCH_SIZE >= rows.length;
+    if (
+      onBatchSaved &&
+      (isLastBatch || now - lastProgressAt >= throttleMs)
+    ) {
+      lastProgressAt = now;
       await onBatchSaved(saved);
     }
+    await yieldToEventLoop();
   }
 }

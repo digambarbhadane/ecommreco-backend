@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, PipelineStage, Types } from 'mongoose';
+import { TtlCache, cacheKey } from '../common/ttl-cache';
 import { ListImportedRowsDto } from './dto/list-imported-rows.dto';
 import {
   ImportUpload,
@@ -28,6 +29,11 @@ import {
 
 @Injectable()
 export class ReportImportService {
+  // Cache expensive read-only analytics aggregations for 60s.
+  private readonly dashboardCache = new TtlCache<string, unknown>(60_000);
+  private readonly profitLossCache = new TtlCache<string, unknown>(60_000);
+  private readonly platformAnalyticsCache = new TtlCache<string, unknown>(60_000);
+
   constructor(
     @InjectModel(ImportUpload.name)
     private readonly uploadModel: Model<ImportUploadDocument>,
@@ -263,11 +269,16 @@ export class ReportImportService {
       'sellerId' | 'gstin' | 'fromDate' | 'toDate'
     >,
   ) {
+    const ck = cacheKey(
+      `dash:${query.sellerId ?? ''}:${query.gstin ?? ''}:${query.fromDate ?? ''}:${query.toDate ?? ''}`,
+    );
+    const cached = this.dashboardCache.get(ck);
+    if (cached !== undefined) return { success: true, data: cached };
+
     const filter = await this.buildRowFilter(query);
-    return {
-      success: true,
-      data: await this.aggregateSellerDashboardData(filter, query),
-    };
+    const data = await this.aggregateSellerDashboardData(filter, query);
+    this.dashboardCache.set(ck, data);
+    return { success: true, data };
   }
 
   async getSellerAnalyticsBundle(
@@ -276,11 +287,32 @@ export class ReportImportService {
       'sellerId' | 'gstin' | 'fromDate' | 'toDate'
     >,
   ) {
+    const dashCk = cacheKey(
+      `dash:${query.sellerId ?? ''}:${query.gstin ?? ''}:${query.fromDate ?? ''}:${query.toDate ?? ''}`,
+    );
+    const plCk = cacheKey(
+      `pl:${query.sellerId ?? ''}:${query.gstin ?? ''}::${query.fromDate ?? ''}:${query.toDate ?? ''}`,
+    );
+    const cachedDash = this.dashboardCache.get(dashCk);
+    const cachedPl = this.profitLossCache.get(plCk);
+
+    if (cachedDash !== undefined && cachedPl !== undefined) {
+      return { success: true, data: { dashboard: cachedDash, profitLoss: cachedPl } };
+    }
+
     const filter = await this.buildRowFilter(query);
     const [dashboard, profitLoss] = await Promise.all([
-      this.aggregateSellerDashboardData(filter, query),
-      this.buildProfitLossPayload(filter, query),
+      cachedDash !== undefined
+        ? Promise.resolve(cachedDash)
+        : this.aggregateSellerDashboardData(filter, query),
+      cachedPl !== undefined
+        ? Promise.resolve(cachedPl)
+        : this.buildProfitLossPayload(filter, query),
     ]);
+
+    if (cachedDash === undefined) this.dashboardCache.set(dashCk, dashboard);
+    if (cachedPl === undefined) this.profitLossCache.set(plCk, profitLoss);
+
     return {
       success: true,
       data: { dashboard, profitLoss },
@@ -711,6 +743,10 @@ export class ReportImportService {
 
   async getPlatformAnalytics(query: { fromDate?: string; toDate?: string }) {
     const period = this.resolveAnalyticsDateRange(query);
+    const ck = cacheKey(`platform:${period.fromDate}:${period.toDate}`);
+    const cached = this.platformAnalyticsCache.get(ck);
+    if (cached !== undefined) return cached;
+
     const filter = await this.buildRowFilter({
       fromDate: period.fromDate,
       toDate: period.toDate,
@@ -901,7 +937,7 @@ export class ReportImportService {
       });
     };
 
-    return {
+    const result = {
       success: true,
       data: {
         period,
@@ -993,6 +1029,8 @@ export class ReportImportService {
         onboardingBreakdown: onboardingRows,
       },
     };
+    this.platformAnalyticsCache.set(ck, result);
+    return result;
   }
 
   private mapPlGroup(row: {
@@ -1023,11 +1061,16 @@ export class ReportImportService {
       'sellerId' | 'gstin' | 'marketplace' | 'fromDate' | 'toDate'
     >,
   ) {
+    const ck = cacheKey(
+      `pl:${query.sellerId ?? ''}:${query.gstin ?? ''}:${query.marketplace ?? ''}:${query.fromDate ?? ''}:${query.toDate ?? ''}`,
+    );
+    const cached = this.profitLossCache.get(ck);
+    if (cached !== undefined) return { success: true, data: cached };
+
     const filter = await this.buildRowFilter(query);
-    return {
-      success: true,
-      data: await this.buildProfitLossPayload(filter, query),
-    };
+    const data = await this.buildProfitLossPayload(filter, query);
+    this.profitLossCache.set(ck, data);
+    return { success: true, data };
   }
 
   private async buildProfitLossPayload(

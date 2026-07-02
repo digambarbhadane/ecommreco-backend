@@ -1,6 +1,10 @@
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PassportStrategy } from '@nestjs/passport';
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  Injectable,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
@@ -42,28 +46,30 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     const { sub: id, role } = payload;
     const { tokenVersion, sessionId } = payload;
 
-    if (role === 'seller') {
-      const seller = await this.sellerModel.findById(id).select('-password').lean().exec();
-      if (seller) {
-        return { ...seller, id: seller._id.toString(), role: 'seller', sessionId };
+    try {
+      if (role === 'seller') {
+        const seller = await this.sellerModel.findById(id).select('-password').lean().exec();
+        if (seller) {
+          return { ...seller, id: seller._id.toString(), role: 'seller', sessionId };
+        }
+
+        const sellerUser = await this.userModel
+          .findOne({ _id: id, role: 'seller' })
+          .select('-password')
+          .lean()
+          .exec();
+        if (sellerUser) {
+          return {
+            ...sellerUser,
+            id: sellerUser._id.toString(),
+            role: 'seller',
+            sessionId,
+          };
+        }
+
+        throw new UnauthorizedException();
       }
 
-      const sellerUser = await this.userModel
-        .findOne({ _id: id, role: 'seller' })
-        .select('-password')
-        .lean()
-        .exec();
-      if (sellerUser) {
-        return {
-          ...sellerUser,
-          id: sellerUser._id.toString(),
-          role: 'seller',
-          sessionId,
-        };
-      }
-
-      throw new UnauthorizedException();
-    } else {
       if (!role) {
         const user = await this.userModel.findById(id).select('-password').lean().exec();
         if (user) {
@@ -83,6 +89,13 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         throw new UnauthorizedException();
       }
       return { ...user, id: user._id.toString(), sessionId };
+    } catch (err) {
+      if (err instanceof UnauthorizedException) {
+        throw err;
+      }
+      throw new ServiceUnavailableException(
+        'Authentication service temporarily unavailable. Please retry in a moment.',
+      );
     }
   }
 }

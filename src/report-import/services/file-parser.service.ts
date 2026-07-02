@@ -13,11 +13,16 @@ import {
   MEESHO_PAYMENT_SHEET_NAMES,
 } from '../config/importMappings/meesho-payment.mapping';
 import {
+  FLIPKART_PAYMENT_HEADER_ALIASES,
+  FLIPKART_PAYMENT_SHEET_NAMES,
+} from '../config/importMappings/flipkart-payment.mapping';
+import {
   cellLooksLikeDataValue,
   headerAliasMatchesCell,
   normalizeHeader,
   rowLooksLikeHeaderRow,
 } from '../utils/header.util';
+import { runParseInWorkerThread } from '../utils/parse-worker.runner';
 
 type ParsedWorkbook = {
   salesRows: ParsedSheetRow[];
@@ -36,7 +41,9 @@ export type MeeshoFileKind =
   | 'tcsSales'
   | 'tcsSalesReturn'
   | 'orderReport'
-  | 'returnReport';
+  | 'returnInTransit'
+  | 'returnOutForDelivery'
+  | 'returnDeliveryComplete';
 
 export type MyntraFileKind =
   | 'gstrReportPacked'
@@ -45,6 +52,30 @@ export type MyntraFileKind =
   | 'gstrReportRto'
   | 'gstrReportRt'
   | 'mDirectReturns';
+
+const MEESHO_RETURN_LIFECYCLE_HEADER_ALIASES = [
+  'order number',
+  'sub order num',
+  'sub order no',
+  'type of return',
+  'return type',
+  'sub type',
+  'qty',
+  'return qty',
+  'return reason',
+  'reason for return',
+  'detailed return reason',
+  'detailed return',
+];
+
+/** Meesho return lifecycle exports place column headers on Excel row 8 (0-based index 7). */
+const MEESHO_RETURN_LIFECYCLE_HEADER_ROW_INDEX = 7;
+
+const MEESHO_RETURN_LIFECYCLE_FILE_KINDS: MeeshoFileKind[] = [
+  'returnInTransit',
+  'returnOutForDelivery',
+  'returnDeliveryComplete',
+];
 
 const MEESHO_FILE_HEADER_ALIASES: Record<MeeshoFileKind, string[]> = {
   tcsSales: [
@@ -70,22 +101,14 @@ const MEESHO_FILE_HEADER_ALIASES: Record<MeeshoFileKind, string[]> = {
     'sub order no',
     'sub order num',
     'sku',
+    'status',
+    'order status',
+    'live order status',
     'reason for credit entry',
   ],
-  returnReport: [
-    'order number',
-    'sub order num',
-    'sub order no',
-    'type of return',
-    'return type',
-    'sub type',
-    'qty',
-    'return qty',
-    'return reason',
-    'reason for return',
-    'detailed return reason',
-    'detailed return',
-  ],
+  returnInTransit: MEESHO_RETURN_LIFECYCLE_HEADER_ALIASES,
+  returnOutForDelivery: MEESHO_RETURN_LIFECYCLE_HEADER_ALIASES,
+  returnDeliveryComplete: MEESHO_RETURN_LIFECYCLE_HEADER_ALIASES,
 };
 
 const MYNTRA_FILE_HEADER_ALIASES: Record<MyntraFileKind, string[]> = {
@@ -178,10 +201,11 @@ const MYNTRA_FILE_HEADER_ALIASES: Record<MyntraFileKind, string[]> = {
 @Injectable()
 export class FileParserService {
   parseFlipkartWorkbook(buffer: Buffer): ParsedWorkbook {
+    // cellText omitted: sheet_to_json (used by parseSheetRowsFast) handles
+    // formatting internally, so pre-generating cell.w for every cell is waste.
     const workbook = XLSX.read(buffer, {
       type: 'buffer',
       cellDates: true,
-      cellText: true,
     });
 
     const salesSheet = this.findFlipkartSheet(workbook, [
@@ -205,17 +229,17 @@ export class FileParserService {
       cashback,
       'Cash Back Report',
     );
-    const salesRows = this.parseSheetRows(
+    // parseSheetRowsFast uses sheet_to_json (single O(n) pass) instead of
+    // sheetToMatrix + per-row getCellValue, cutting parse time by ~10-20x.
+    const salesRows = this.parseSheetRowsFast(
       sales,
       'Sales Report',
       salesHeaderRowIndex,
-      flipkartImportMapping.gstin.excelColumns,
     );
-    const cashbackRows = this.parseSheetRows(
+    const cashbackRows = this.parseSheetRowsFast(
       cashback,
       'Cash Back Report',
       cashbackHeaderRowIndex,
-      flipkartImportMapping.gstin.excelColumns,
     );
     const gstColumns = flipkartImportMapping.gstin.excelColumns;
     const salesGstins = this.extractGstinByColumnIndex(
@@ -248,6 +272,30 @@ export class FileParserService {
         ),
       },
       gstinValues,
+    };
+  }
+
+  parseFlipkartPaymentWorkbook(buffer: Buffer): ParsedSingleSheetWorkbook {
+    const workbook = XLSX.read(buffer, {
+      type: 'buffer',
+      cellDates: true,
+    });
+    if (!workbook.SheetNames.length) {
+      throw new BadRequestException('Payment workbook does not contain any sheet');
+    }
+
+    const resolved = this.resolveFlipkartPaymentSheet(workbook);
+    if (!resolved) {
+      throw new BadRequestException(
+        'Payment workbook must contain an "Orders" sheet or recognizable Flipkart settlement report headers',
+      );
+    }
+
+    const { sheet, sheetName, headerRowIndex } = resolved;
+    const rows = this.parseSheetData(sheet, sheetName, headerRowIndex, []);
+    return {
+      rows,
+      headers: this.resolveHeaders(sheet, headerRowIndex, rows),
     };
   }
 
@@ -392,12 +440,7 @@ export class FileParserService {
     const firstSheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[firstSheetName];
     const headerRowIndex = this.detectAmazonHeaderRowIndex(sheet);
-    const rows = this.parseSheetRows(
-      sheet,
-      firstSheetName,
-      headerRowIndex,
-      amazonImportMapping.gstin.excelColumns,
-    );
+    const rows = this.parseSheetRowsFast(sheet, firstSheetName, headerRowIndex);
     return {
       rows,
       headers: this.extractHeaders(sheet, headerRowIndex),
@@ -405,42 +448,22 @@ export class FileParserService {
   }
 
   private getSheetRange(sheet: XLSX.WorkSheet): XLSX.Range {
-    let minR = Number.POSITIVE_INFINITY;
-    let minC = Number.POSITIVE_INFINITY;
-    let maxR = 0;
-    let maxC = 0;
+    // Fast path: every worksheet written by XLSX.read has !ref set.
+    // Decoding it is O(1); the old key-scan was O(total_cells) and was called
+    // once per row in parseSheetRows, causing 20B+ iterations on large files.
+    if (sheet['!ref']) {
+      return XLSX.utils.decode_range(sheet['!ref']);
+    }
+    // Fallback for worksheets built in memory without !ref (extremely rare).
+    let minR = 0, minC = 0, maxR = 0, maxC = 0;
     let found = false;
-
     for (const key of Object.keys(sheet)) {
       if (key[0] === '!') continue;
       const { r, c } = XLSX.utils.decode_cell(key);
-      found = true;
-      minR = Math.min(minR, r);
-      minC = Math.min(minC, c);
-      maxR = Math.max(maxR, r);
-      maxC = Math.max(maxC, c);
+      if (!found) { minR = r; minC = c; maxR = r; maxC = c; found = true; }
+      else { minR = Math.min(minR, r); minC = Math.min(minC, c); maxR = Math.max(maxR, r); maxC = Math.max(maxC, c); }
     }
-
-    if (sheet['!ref']) {
-      const refRange = XLSX.utils.decode_range(sheet['!ref']);
-      if (!found) return refRange;
-      return {
-        s: {
-          r: Math.min(minR, refRange.s.r),
-          c: Math.min(minC, refRange.s.c),
-        },
-        e: {
-          r: Math.max(maxR, refRange.e.r),
-          c: Math.max(maxC, refRange.e.c),
-        },
-      };
-    }
-
-    if (!found) {
-      return { s: { r: 0, c: 0 }, e: { r: 0, c: 0 } };
-    }
-
-    return { s: { r: minR, c: minC }, e: { r: maxR, c: maxC } };
+    return found ? { s: { r: minR, c: minC }, e: { r: maxR, c: maxC } } : { s: { r: 0, c: 0 }, e: { r: 0, c: 0 } };
   }
 
   private toAbsoluteRow(sheet: XLSX.WorkSheet, matrixRowIndex: number): number {
@@ -627,11 +650,15 @@ export class FileParserService {
       return [];
     }
 
+    // blankrows: true keeps matrix indices in sync with the headerRowIndex that
+    // detectHeaderRowIndex computed (which also counts blank rows). Without this,
+    // files that have blank rows before the header would start data extraction at
+    // the wrong offset.
     const matrixRows = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
       header: 1,
       defval: null,
       raw: false,
-      blankrows: false,
+      blankrows: true,
     });
     const dataStartMatrixIndex = headerRowIndex + 1;
     const parsed: ParsedSheetRow[] = [];
@@ -644,17 +671,16 @@ export class FileParserService {
       const cells = matrixRows[matrixRowIndex];
       if (!Array.isArray(cells)) continue;
 
-      // Only check columns that actually map to data fields — avoids O(total-cols) scan
+      // Only check the mapped header columns — avoids O(total-cols) scan per row.
       const hasData = headerColumns.some(({ col }) => {
         const value = cells[col];
         return value !== null && value !== undefined && String(value).trim().length > 0;
       });
       if (!hasData) continue;
 
-      const absoluteRow = this.toAbsoluteRow(sheet, matrixRowIndex);
       const row: ParsedSheetRow = {
         __sheetName: sheetName,
-        __rowNumber: absoluteRow + 1,
+        __rowNumber: absoluteHeaderRow + (matrixRowIndex - headerRowIndex) + 1,
       };
       headerColumns.forEach(({ label, col }) => {
         const value = cells[col];
@@ -686,9 +712,11 @@ export class FileParserService {
     headerRowIndex: number,
     excelColumns: string[],
   ): string[] {
-    const matrix = this.sheetToMatrix(sheet);
-    if (!matrix.length) return [];
+    const range = this.getSheetRange(sheet);
+    if (range.e.r < range.s.r) return [];
 
+    // Only preview the first few rows to determine where data rows start.
+    const previewForStartRow = this.sheetPreviewMatrix(sheet, headerRowIndex + 4);
     const absoluteHeaderRow = this.toAbsoluteRow(sheet, headerRowIndex);
     const colIndex = this.resolveGstColumnIndexFromSheet(
       sheet,
@@ -697,11 +725,10 @@ export class FileParserService {
     );
     const values = new Set<string>();
     const dataStartMatrixRow = this.resolveDataStartRow(
-      matrix,
+      previewForStartRow,
       headerRowIndex,
       excelColumns,
     );
-    const range = this.getSheetRange(sheet);
     const dataStartAbsolute = this.toAbsoluteRow(sheet, dataStartMatrixRow);
 
     if (colIndex >= 0) {
@@ -734,11 +761,13 @@ export class FileParserService {
   ): string[] {
     const values = new Set<string>();
     const range = this.getSheetRange(sheet);
-    for (let row = afterAbsoluteHeaderRow + 1; row <= range.e.r; row += 1) {
+    const rowCap = Math.min(range.e.r, afterAbsoluteHeaderRow + 1000);
+    for (let row = afterAbsoluteHeaderRow + 1; row <= rowCap; row += 1) {
       for (let col = range.s.c; col <= range.e.c; col += 1) {
         const gstin = parseGstinFromCell(this.getCellValue(sheet, row, col));
         if (gstin) values.add(gstin);
       }
+      if (values.size >= 10) break;
     }
     return [...values];
   }
@@ -834,7 +863,7 @@ export class FileParserService {
     sheet: XLSX.WorkSheet,
     sheetName: 'Sales Report' | 'Cash Back Report',
   ) {
-    const matrix = this.sheetToMatrix(sheet);
+    const matrix = this.sheetPreviewMatrix(sheet, 80);
     const aliases =
       sheetName === 'Sales Report'
         ? [
@@ -931,6 +960,117 @@ export class FileParserService {
     }
 
     return bestIndex;
+  }
+
+  private isFlipkartPaymentSheetName(sheetName: string): boolean {
+    const normalized = normalizeHeader(sheetName);
+    if (
+      FLIPKART_PAYMENT_SHEET_NAMES.some(
+        (target) => normalizeHeader(target) === normalized,
+      )
+    ) {
+      return true;
+    }
+    return normalized.includes('order') || normalized.includes('settlement');
+  }
+
+  private flipkartPaymentRowHasAnchor(normalizedCells: string[]): boolean {
+    const headerLike = normalizedCells.filter((c) => !cellLooksLikeDataValue(c));
+    if (!headerLike.length) return false;
+
+    const hasOrderId = headerLike.some(
+      (cell) => cell === 'order id' || cell.includes('order id'),
+    );
+    const hasSettlementField = headerLike.some(
+      (cell) =>
+        cell.includes('settlement value') ||
+        cell.includes('settlement amount') ||
+        cell.includes('net settlement') ||
+        cell.includes('neft id') ||
+        cell.includes('payment date'),
+    );
+    return hasOrderId && hasSettlementField;
+  }
+
+  private scoreFlipkartPaymentHeaderRow(normalizedCells: string[]): number {
+    return this.scoreMeeshoHeaderRow(
+      normalizedCells,
+      [...FLIPKART_PAYMENT_HEADER_ALIASES],
+    );
+  }
+
+  private detectFlipkartPaymentHeaderRowIndex(sheet: XLSX.WorkSheet): number {
+    const matrix = this.sheetPreviewMatrix(sheet, 200);
+    let bestIndex = -1;
+    let bestScore = -1;
+    const scanLimit = Math.min(matrix.length, 200);
+    const minRequiredScore = 2;
+
+    for (let i = 0; i < scanLimit; i += 1) {
+      const row = matrix[i];
+      if (!Array.isArray(row)) continue;
+      const normalizedCells = this.normalizePreviewRow(row);
+      if (!normalizedCells.length || !rowLooksLikeHeaderRow(normalizedCells)) {
+        continue;
+      }
+      if (!this.flipkartPaymentRowHasAnchor(normalizedCells)) continue;
+      const score = this.scoreFlipkartPaymentHeaderRow(normalizedCells);
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = i;
+      }
+    }
+
+    if (bestIndex < 0 || bestScore < minRequiredScore) {
+      return -1;
+    }
+    return bestIndex;
+  }
+
+  private resolveFlipkartPaymentSheet(workbook: XLSX.WorkBook): {
+    sheet: XLSX.WorkSheet;
+    sheetName: string;
+    headerRowIndex: number;
+  } | null {
+    const namedCandidates = workbook.SheetNames.filter((name) =>
+      this.isFlipkartPaymentSheetName(name),
+    );
+    const scanOrder = [
+      ...namedCandidates,
+      ...workbook.SheetNames.filter((name) => !namedCandidates.includes(name)),
+    ];
+
+    let best:
+      | { sheetName: string; sheet: XLSX.WorkSheet; headerRowIndex: number; score: number }
+      | null = null;
+
+    for (const sheetName of scanOrder) {
+      const sheet = workbook.Sheets[sheetName];
+      if (!sheet) continue;
+
+      const headerRowIndex = this.detectFlipkartPaymentHeaderRowIndex(sheet);
+      if (headerRowIndex < 0) continue;
+
+      const matrix = this.sheetPreviewMatrix(sheet, headerRowIndex + 1);
+      const row = matrix[headerRowIndex];
+      const normalizedCells = Array.isArray(row)
+        ? this.normalizePreviewRow(row)
+        : [];
+      const score =
+        (this.isFlipkartPaymentSheetName(sheetName) ? 10 : 0) +
+        this.scoreFlipkartPaymentHeaderRow(normalizedCells);
+
+      if (!best || score > best.score) {
+        best = { sheetName, sheet, headerRowIndex, score };
+      }
+    }
+
+    if (!best) return null;
+    return {
+      sheetName: best.sheetName,
+      sheet: best.sheet,
+      headerRowIndex: best.headerRowIndex,
+    };
   }
 
   private isMeeshoPaymentSheetName(sheetName: string): boolean {
@@ -1071,7 +1211,23 @@ export class FileParserService {
     if (fileKind === 'orderReport') {
       return headerLike.some(
         (cell) =>
-          cell.includes('sub order') || cell.includes('reason for credit'),
+          cell.includes('sub order') ||
+          cell.includes('status') ||
+          cell.includes('sku') ||
+          cell.includes('reason for credit'),
+      );
+    }
+    if (MEESHO_RETURN_LIFECYCLE_FILE_KINDS.includes(fileKind)) {
+      return headerLike.some(
+        (cell) =>
+          cell.includes('order number') ||
+          cell.includes('sub order') ||
+          cell.includes('type of return') ||
+          cell.includes('return type') ||
+          cell.includes('return reason') ||
+          cell.includes('reason for return') ||
+          cell.includes('detailed return') ||
+          cell.includes('sub type'),
       );
     }
     return headerLike.some(
@@ -1100,6 +1256,13 @@ export class FileParserService {
     );
   }
 
+  private meeshoLifecycleReportLabel(fileKind: MeeshoFileKind): string {
+    if (fileKind === 'returnInTransit') return 'Return In-Transit Report';
+    if (fileKind === 'returnOutForDelivery') return 'Return Out for Delivery Report';
+    if (fileKind === 'returnDeliveryComplete') return 'Return Delivery Complete Report';
+    return 'Return Report';
+  }
+
   private detectMeeshoHeaderRowIndex(
     sheet: XLSX.WorkSheet,
     fileKind: MeeshoFileKind,
@@ -1123,6 +1286,22 @@ export class FileParserService {
       return this.scoreMeeshoHeaderRow(normalizedCells, aliases);
     };
 
+    if (MEESHO_RETURN_LIFECYCLE_FILE_KINDS.includes(fileKind)) {
+      const label = this.meeshoLifecycleReportLabel(fileKind);
+      if (matrix.length <= MEESHO_RETURN_LIFECYCLE_HEADER_ROW_INDEX) {
+        throw new BadRequestException(
+          `Meesho ${label} is too short — expected column headers on row 8.`,
+        );
+      }
+      const fixedRowScore = evaluateRow(MEESHO_RETURN_LIFECYCLE_HEADER_ROW_INDEX);
+      if (fixedRowScore >= minRequiredScore) {
+        return MEESHO_RETURN_LIFECYCLE_HEADER_ROW_INDEX;
+      }
+      throw new BadRequestException(
+        `Could not find expected column headers on row 8 in Meesho ${label}. Check column names in the file.`,
+      );
+    }
+
     for (let i = 0; i < scanLimit; i += 1) {
       const score = evaluateRow(i);
       if (score < 0) continue;
@@ -1140,7 +1319,7 @@ export class FileParserService {
             ? 'TCS Sales Return Report'
             : fileKind === 'orderReport'
               ? 'Order Report'
-              : 'Return Report';
+              : this.meeshoLifecycleReportLabel(fileKind);
       throw new BadRequestException(
         `Could not find header row in Meesho ${label}. Check column names in the file.`,
       );
@@ -1339,5 +1518,14 @@ export class FileParserService {
       }
     }
     return bestIndex;
+  }
+
+  /** Runs the same parse logic off the main thread so API requests stay responsive. */
+  parseFlipkartWorkbookInWorker(buffer: Buffer): Promise<ParsedWorkbook> {
+    return runParseInWorkerThread<ParsedWorkbook>('flipkart', buffer);
+  }
+
+  parseAmazonWorkbookInWorker(buffer: Buffer): Promise<ParsedSingleSheetWorkbook> {
+    return runParseInWorkerThread<ParsedSingleSheetWorkbook>('amazon', buffer);
   }
 }
