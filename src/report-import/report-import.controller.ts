@@ -17,6 +17,7 @@ import {
   Post,
   Query,
   Req,
+  StreamableFile,
   UploadedFile,
   UploadedFiles,
   UseGuards,
@@ -42,6 +43,8 @@ import {
   MarketplaceUploadKey,
   ReportUploadMultipart,
 } from './marketplace-upload.routes';
+import { StateWiseReportService } from './services/state-wise-report.service';
+import { StateWiseExportDto } from './dto/state-wise-export.dto';
 import type { Request } from 'express';
 import type { UploadedReportFiles } from './marketplace-upload.routes';
 
@@ -61,6 +64,7 @@ export class ReportImportController {
     private readonly importWorkflowService: ImportWorkflowService,
     private readonly importJobService: ImportJobService,
     private readonly reconciliationService: ReconciliationService,
+    private readonly stateWiseReportService: StateWiseReportService,
   ) {}
 
   @Post('import-session')
@@ -834,6 +838,53 @@ export class ReportImportController {
   @Roles('seller', 'super_admin', 'accounts_manager')
   deleteWorkflowSlot(@Body() body: DeleteSlotDto) {
     return this.importWorkflowService.deleteSlotData(body);
+  }
+
+  @Get('export/state-wise/preview')
+  @ApiOperation({
+    summary: 'Preview state-wise GST Excel export',
+    description:
+      'Returns sheet and row counts per marketplace for the state-wise GST report.',
+  })
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  previewStateWiseExport(@Query() query: StateWiseExportDto) {
+    if (!query.sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
+    if (!query.gstin?.trim()) {
+      throw new BadRequestException('gstin is required');
+    }
+    return this.stateWiseReportService.getPreview(query);
+  }
+
+  @Get('export/state-wise')
+  @ApiOperation({
+    summary: 'Download state-wise GST Excel report',
+    description:
+      'Multi-sheet Excel grouped by state and GST rate — one sheet per marketplace.',
+  })
+  @ApiProduces(
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  )
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  async downloadStateWiseExport(@Query() query: StateWiseExportDto) {
+    if (!query.sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
+    if (!query.gstin?.trim()) {
+      throw new BadRequestException('gstin is required');
+    }
+    const result =
+      query.format === 'csv'
+        ? await this.stateWiseReportService.generateCsv(query)
+        : await this.stateWiseReportService.generateWorkbook(query);
+    return new StreamableFile(result.buffer, {
+      type:
+        query.format === 'csv'
+          ? 'text/csv'
+          : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      disposition: `attachment; filename="${result.filename}"`,
+    });
   }
 
   @Get('errors-csv')

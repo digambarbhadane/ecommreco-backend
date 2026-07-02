@@ -74,6 +74,9 @@ export class ImportRow {
   @Prop()
   sgstAmount?: number;
 
+  @Prop({ index: true })
+  gstTransactionType?: 'intra' | 'inter';
+
   @Prop()
   invoiceNo?: string; // canonical: Invoice No
 
@@ -131,6 +134,21 @@ export class ImportRow {
 
   @Prop({ index: true })
   meeshoReturnSubType?: string;
+
+  @Prop()
+  meeshoReturnInvoiceAmount?: number;
+
+  @Prop()
+  meeshoReturnTaxableAmount?: number;
+
+  @Prop()
+  meeshoReturnIgstAmount?: number;
+
+  @Prop()
+  meeshoReturnCgstAmount?: number;
+
+  @Prop()
+  meeshoReturnSgstAmount?: number;
 
   /** Meesho Order Payments — enriched by Sub Order No */
   @Prop() liveOrderStatus?: string;

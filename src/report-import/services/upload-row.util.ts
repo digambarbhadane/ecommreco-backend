@@ -53,6 +53,7 @@ export const toImportRowDocuments = (
     cgstAmount: row.cgstAmount,
     sgstRate: row.sgstRate,
     sgstAmount: row.sgstAmount,
+    gstTransactionType: row.gstTransactionType,
     invoiceNo: row.invoiceNo,
     buyerInvoiceDate: row.buyerInvoiceDate,
     invoiceDate: row.invoiceDate,
@@ -72,6 +73,11 @@ export const toImportRowDocuments = (
     meeshoIsGrossSale: row.meeshoIsGrossSale,
     meeshoIsPreviousMonthReturn: row.meeshoIsPreviousMonthReturn,
     meeshoReturnSubType: row.meeshoReturnSubType,
+    meeshoReturnInvoiceAmount: row.meeshoReturnInvoiceAmount,
+    meeshoReturnTaxableAmount: row.meeshoReturnTaxableAmount,
+    meeshoReturnIgstAmount: row.meeshoReturnIgstAmount,
+    meeshoReturnCgstAmount: row.meeshoReturnCgstAmount,
+    meeshoReturnSgstAmount: row.meeshoReturnSgstAmount,
     ...pickMeeshoPaymentFields(row),
   }));
 

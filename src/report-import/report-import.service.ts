@@ -61,6 +61,29 @@ export class ReportImportService {
     };
   }
 
+  /** Meesho returns are enriched onto sales rows — hide legacy RETURN documents from list counts. */
+  private applyMeeshoImportedDataVisibilityFilter(
+    filter: Record<string, unknown>,
+    marketplace?: string,
+  ) {
+    const appliesToMeesho =
+      !marketplace || marketplace.trim().toLowerCase() === 'meesho';
+    if (!appliesToMeesho) return;
+
+    const visibility = {
+      $or: [
+        { marketplace: { $ne: 'meesho' } },
+        { documentType: { $not: /^RETURN$/i } },
+      ],
+    };
+
+    if (Array.isArray(filter.$and)) {
+      filter.$and.push(visibility);
+      return;
+    }
+    filter.$and = [visibility];
+  }
+
   async listImportedRows(query: ListImportedRowsDto) {
     const filter: Record<string, unknown> = {};
     await this.applySellerIdToFilter(filter, query.sellerId);
@@ -76,6 +99,7 @@ export class ReportImportService {
         (filter.invoiceDate as Record<string, unknown>).$lte = query.toDate;
       }
     }
+    this.applyMeeshoImportedDataVisibilityFilter(filter, query.marketplace);
 
     const limit = Math.max(0, Number(query.limit ?? '50'));
     const skip = Math.max(0, Number(query.skip ?? '0'));
@@ -134,6 +158,7 @@ export class ReportImportService {
         (filter.invoiceDate as Record<string, unknown>).$lte = query.toDate;
       }
     }
+    this.applyMeeshoImportedDataVisibilityFilter(filter, query.marketplace);
 
     const groups = await this.rowModel
       .aggregate<{

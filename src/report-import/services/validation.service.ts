@@ -148,6 +148,45 @@ export class ValidationService {
     return aliases.includes(String(recordSellerId));
   }
 
+  async getSellerGstStates(sellerIdAliases: string[]): Promise<string[]> {
+    const info = await this.getSellerGstRegistrationInfo(sellerIdAliases);
+    return info.states;
+  }
+
+  async getSellerGstRegistrationInfo(sellerIdAliases: string[]): Promise<{
+    states: string[];
+    gstins: string[];
+  }> {
+    if (!sellerIdAliases.length) {
+      return { states: [], gstins: [] };
+    }
+    const rows = await this.gstModel
+      .find({
+        sellerId: { $in: sellerIdAliases },
+      })
+      .select('state gstNumber')
+      .lean()
+      .exec();
+
+    const states = new Set<string>();
+    const gstins = new Set<string>();
+    for (const item of rows) {
+      const state = String(item.state ?? '').trim();
+      if (state.length > 0) {
+        states.add(state);
+      }
+      const gstNumber = String(item.gstNumber ?? '').trim();
+      if (gstNumber.length > 0) {
+        gstins.add(gstNumber);
+      }
+    }
+
+    return {
+      states: [...states],
+      gstins: [...gstins],
+    };
+  }
+
   validateRequiredHeaderGroups(
     headers: string[],
     requiredHeaderGroups: ReadonlyArray<readonly string[]>,

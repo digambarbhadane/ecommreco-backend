@@ -96,6 +96,8 @@ const MEESHO_FILE_HEADER_ALIASES: Record<MeeshoFileKind, string[]> = {
     'sub order no',
     'cancel return date',
     'return invoice date',
+    'type of return',
+    'return type',
   ],
   orderReport: [
     'sub order no',
@@ -590,6 +592,12 @@ export class FileParserService {
   ): unknown {
     const cell = this.getCellObject(sheet, row, col);
     if (!cell) return null;
+    if (cell.t === 'e') {
+      if (cell.w != null && String(cell.w).trim() !== '') {
+        return cell.w;
+      }
+      return '#N/A';
+    }
     if (cell.w != null && String(cell.w).trim() !== '') {
       return cell.w;
     }
