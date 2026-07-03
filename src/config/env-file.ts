@@ -1,8 +1,5 @@
-/**
- * Plain-JS entry for server.js / load-env.js (before Nest compiles).
- * Keep in sync with src/config/env-file.ts
- */
-function resolveEnvFile(nodeEnv) {
+/** Maps NODE_ENV to the dotenv file loaded by server.js and ConfigModule. */
+export function resolveEnvFile(nodeEnv?: string): string {
   const env = nodeEnv || 'development';
   if (env === 'production') return '.env.production';
   if (env === 'staging') return '.env.uat';
@@ -10,9 +7,8 @@ function resolveEnvFile(nodeEnv) {
   return '.env.development';
 }
 
-function usesTsNodeRuntime(nodeEnv) {
+/** Development and test run TypeScript via ts-node; UAT/prod use compiled dist. */
+export function usesTsNodeRuntime(nodeEnv?: string): boolean {
   const env = nodeEnv || 'development';
   return env === 'development' || env === 'test';
 }
-
-module.exports = { resolveEnvFile, usesTsNodeRuntime };
