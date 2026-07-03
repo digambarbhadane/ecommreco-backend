@@ -12,6 +12,7 @@ import { Model } from 'mongoose';
 import { UploadReportDto } from '../dto/upload-report.dto';
 import {
   collectUploadedSlotsFromFiles,
+  inferUploadedSlotsFromFileHash,
 } from '../import-slot.constants';
 import {
   ImportUpload,
@@ -25,6 +26,7 @@ import {
 import { FileParserService } from './file-parser.service';
 import { MeeshoImportService } from './meesho-import.service';
 import { FlipkartImportService } from './flipkart-import.service';
+import { applyFlipkartInvoiceAmount } from '../utils/flipkart-invoice.util';
 import { MyntraImportService } from './myntra-import.service';
 import {
   MappingService,
@@ -473,8 +475,28 @@ export class UploadService {
 
   private async markUploadFailed(uploadId: string, err: unknown) {
     const errorMessage = this.extractErrorMessage(err);
-    await this.uploadModel.findByIdAndUpdate(uploadId, {
-      $set: { status: 'failed', errorMessage },
+    const upload = await this.uploadModel
+      .findByIdAndUpdate(
+        uploadId,
+        { $set: { status: 'failed', errorMessage } },
+        { new: true },
+      )
+      .lean()
+      .exec();
+    if (!upload?.reportMonth) return;
+
+    const uploadedSlots =
+      Array.isArray(upload.uploadedSlots) && upload.uploadedSlots.length
+        ? upload.uploadedSlots
+        : inferUploadedSlotsFromFileHash(String(upload.fileHash ?? ''));
+    if (!uploadedSlots.length) return;
+
+    await this.importWorkflow.clearFailedSlotRecords({
+      sellerId: upload.sellerId,
+      gstId: upload.gstId,
+      marketplaceId: upload.marketplace,
+      reportMonth: upload.reportMonth,
+      slots: uploadedSlots,
     });
   }
 
@@ -975,6 +997,7 @@ export class UploadService {
     const isMeesho = marketplaceIdentifier.includes('meesho');
     const isMyntra = marketplaceIdentifier.includes('myntra');
     const isFlipkart = expectedMarketplace === 'flipkart';
+    let flipkartGstSkippedRows = 0;
     if (!existingUploadId) {
       const marketplaceId = marketplace._id?.toString?.() ?? dto.marketplaceId;
       await this.assertRequiredFiles(
@@ -1136,12 +1159,10 @@ export class UploadService {
         ['Order ID'],
         ['Invoice No', 'Buyer Invoice ID'],
         ['Buyer Invoice Date'],
-        [
-          'Invoice Amount',
-          'Final Invoice Amount',
-          'Final Invoice Amount (Price after discount+Shipping Charges)',
-        ],
         ['Taxable Amount', 'Taxable Value'],
+        ['IGST Amount'],
+        ['CGST Amount'],
+        ['SGST Amount', 'UTGST Amount'],
         ['Document Type', 'Event Type'],
       ];
       const requiredCashbackHeaderGroups = [
@@ -1154,8 +1175,10 @@ export class UploadService {
           'Credit Note ID / Debit Note ID',
         ],
         ['Invoice Date'],
-        ['Invoice Amount'],
         ['Taxable Amount', 'Taxable Value'],
+        ['IGST Amount'],
+        ['CGST Amount'],
+        ['SGST Amount', 'UTGST Amount'],
         ['Payment Mode', 'Document Type'],
       ];
       this.validation.validateRequiredHeaderGroups(
@@ -1168,17 +1191,13 @@ export class UploadService {
         requiredCashbackHeaderGroups,
         'Cash Back Report',
       );
-      this.validation.validateGstinMatch(
-        [...parsedFlipkart.salesRows, ...parsedFlipkart.cashbackRows],
+      const flipkartGstFilter = this.validation.filterFlipkartRowsBySelectedGstin(
+        parsedFlipkart,
         gst.gstNumber,
-        marketplaceIdentifier,
-        [
-          ...parsedFlipkart.headers['Sales Report'],
-          ...parsedFlipkart.headers['Cash Back Report'],
-        ],
-        parsedFlipkart.gstinValues,
-        flipkartImportMapping,
       );
+      parsedFlipkart.salesRows = flipkartGstFilter.salesRows;
+      parsedFlipkart.cashbackRows = flipkartGstFilter.cashbackRows;
+      flipkartGstSkippedRows = flipkartGstFilter.skippedCount;
     } else if (isMeesho && parsedMeesho) {
       const requiredTcsSalesHeaderGroups = [
         ['gstin', 'GST NO'],
@@ -1475,13 +1494,17 @@ export class UploadService {
       const enrichFlipkartRow = (
         mapped: NormalizedImportRow,
       ): NormalizedImportRow => {
-        if (!paymentByOrder || !mapped.orderID) return mapped;
-        const paymentRow = paymentByOrder.get(String(mapped.orderID));
-        if (!paymentRow) return mapped;
-        return {
-          ...mapped,
-          ...this.flipkartImport.mapPaymentFields(paymentRow),
-        };
+        let result = mapped;
+        if (paymentByOrder && mapped.orderID) {
+          const paymentRow = paymentByOrder.get(String(mapped.orderID));
+          if (paymentRow) {
+            result = {
+              ...mapped,
+              ...this.flipkartImport.mapPaymentFields(paymentRow),
+            };
+          }
+        }
+        return applyFlipkartInvoiceAmount(result);
       };
 
       const mapChunkSize = 1000;
@@ -1537,9 +1560,11 @@ export class UploadService {
     if (gst.gstNumber) {
       sellerGstins.push(gst.gstNumber);
     }
-    // Apply a single GST split rule to every marketplace before persistence/summary.
+    // Flipkart month summary must match the Excel pivot (raw file tax columns).
     for (const row of normalizedRows) {
-      this.mapping.normalizeTaxByState(row, sellerGstStates, sellerGstins);
+      if (!isFlipkart) {
+        this.mapping.normalizeTaxByState(row, sellerGstStates, sellerGstins);
+      }
     }
 
     timer?.endStage('dataTransformation');
@@ -1719,7 +1744,10 @@ export class UploadService {
     return {
       success: true,
       status: 'completed' as const,
-      message: 'File uploaded successfully',
+      message:
+        flipkartGstSkippedRows > 0
+          ? `Imported ${normalizedRows.length} record(s) for the selected GSTIN. ${flipkartGstSkippedRows} row(s) for other GSTINs were skipped.`
+          : 'File uploaded successfully',
       uploadId,
       count: normalizedRows.length,
       rowErrorCount: rowErrors.length,

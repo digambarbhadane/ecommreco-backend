@@ -27,9 +27,13 @@ import {
   resolveMarketplaceImportMapping,
 } from '../config/importMappings';
 import {
+  collectGstinRowFilterProblems,
   collectGstinValidationProblems,
+  enrichRowsWithForwardFilledGstin,
+  filterRowsBySelectedGstin,
   headerMatchesExcelColumn,
 } from '../config/importMappings/gst-column.util';
+import { flipkartImportMapping } from '../config/importMappings/flipkart.mapping';
 import { ParsedSheetRow } from './mapping.service';
 import {
   buildMeeshoGstinValidationMessage,
@@ -39,6 +43,7 @@ import {
   buildMyntraValidationMessage,
   MyntraReportValidationInput,
 } from '../utils/myntra-import.validation';
+import { sellerStateKeysFromRegistration } from '../utils/state-wise-gst-split.util';
 import { cacheKey, sellerAliasCache } from '../../common/ttl-cache';
 
 @Injectable()
@@ -187,6 +192,15 @@ export class ValidationService {
     };
   }
 
+  /** Seller registration state keys for a specific GST record (month/state-wise reports). */
+  async resolveSellerStateKeysForGst(
+    gstId: string,
+    sellerIdAliases: string[],
+  ): Promise<Set<string>> {
+    const gst = await this.findGstForSeller(gstId, sellerIdAliases);
+    return sellerStateKeysFromRegistration(gst?.state, gst?.gstNumber ?? gstId);
+  }
+
   validateRequiredHeaderGroups(
     headers: string[],
     requiredHeaderGroups: ReadonlyArray<readonly string[]>,
@@ -254,6 +268,75 @@ export class ValidationService {
         '\n',
       ),
     );
+  }
+
+  filterFlipkartRowsBySelectedGstin(
+    parsed: {
+      salesRows: ParsedSheetRow[];
+      cashbackRows: ParsedSheetRow[];
+      headers: Record<'Sales Report' | 'Cash Back Report', string[]>;
+      gstinValues: string[];
+    },
+    expectedGstin: string,
+  ): {
+    salesRows: ParsedSheetRow[];
+    cashbackRows: ParsedSheetRow[];
+    skippedCount: number;
+  } {
+    const fileHeaders = [
+      ...parsed.headers['Sales Report'],
+      ...parsed.headers['Cash Back Report'],
+    ];
+    const enrichedSales = enrichRowsWithForwardFilledGstin(
+      parsed.salesRows,
+      flipkartImportMapping,
+      parsed.headers['Sales Report'],
+    );
+    const enrichedCashback = enrichRowsWithForwardFilledGstin(
+      parsed.cashbackRows,
+      flipkartImportMapping,
+      parsed.headers['Cash Back Report'],
+    );
+    const sales = filterRowsBySelectedGstin(
+      enrichedSales,
+      flipkartImportMapping,
+      parsed.headers['Sales Report'],
+      expectedGstin,
+    );
+    const cashback = filterRowsBySelectedGstin(
+      enrichedCashback,
+      flipkartImportMapping,
+      parsed.headers['Cash Back Report'],
+      expectedGstin,
+    );
+    const fileGstins = new Set([...sales.fileGstins, ...cashback.fileGstins]);
+
+    const problems = collectGstinRowFilterProblems({
+      rows: [...enrichedSales, ...enrichedCashback],
+      expectedGstin,
+      mapping: flipkartImportMapping,
+      fileHeaders,
+      fallbackGstins: parsed.gstinValues,
+      matchedRowCount: sales.matchedCount + cashback.matchedCount,
+      fileGstins,
+    });
+
+    if (problems.length) {
+      throw new BadRequestException(
+        [
+          'GSTIN validation failed.',
+          'Marketplace: Flipkart',
+          '',
+          ...problems.map((p) => `• ${p}`),
+        ].join('\n'),
+      );
+    }
+
+    return {
+      salesRows: sales.rows,
+      cashbackRows: cashback.rows,
+      skippedCount: sales.skippedCount + cashback.skippedCount,
+    };
   }
 
   validateMeeshoGstinBundle(

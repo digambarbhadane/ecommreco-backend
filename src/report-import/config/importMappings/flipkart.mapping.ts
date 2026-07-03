@@ -7,6 +7,11 @@ export const flipkartImportMapping: MarketplaceImportMapping = {
     databaseField: 'sellerGSTIN',
     excelColumns: [
       'Seller GSTIN',
+      'Seller GSTIN Number',
+      'Supplier GSTIN',
+      'GSTIN of Seller',
+      'GST Registration No',
+      'GSTIN/UIN',
       'GST NO',
       'GST NO = Seller GSTIN',
       'GST NO= Seller GSTIN',

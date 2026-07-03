@@ -3,6 +3,8 @@ import * as XLSX from 'xlsx';
 import { amazonImportMapping } from '../config/importMappings/amazon.mapping';
 import { flipkartImportMapping } from '../config/importMappings/flipkart.mapping';
 import {
+  enrichRowsWithForwardFilledGstin,
+  extractGstinsFromRows,
   headerMatchesAnyExcelColumn,
   parseGstinFromCell,
 } from '../config/importMappings/gst-column.util';
@@ -231,19 +233,29 @@ export class FileParserService {
       cashback,
       'Cash Back Report',
     );
+    const gstColumns = flipkartImportMapping.gstin.excelColumns;
     // parseSheetRowsFast uses sheet_to_json (single O(n) pass) instead of
     // sheetToMatrix + per-row getCellValue, cutting parse time by ~10-20x.
-    const salesRows = this.parseSheetRowsFast(
-      sales,
-      'Sales Report',
-      salesHeaderRowIndex,
+    const salesRows = enrichRowsWithForwardFilledGstin(
+      this.parseSheetRowsFast(
+        sales,
+        'Sales Report',
+        salesHeaderRowIndex,
+        gstColumns,
+      ),
+      flipkartImportMapping,
+      this.extractHeaders(sales, salesHeaderRowIndex, { gstColumns }),
     );
-    const cashbackRows = this.parseSheetRowsFast(
-      cashback,
-      'Cash Back Report',
-      cashbackHeaderRowIndex,
+    const cashbackRows = enrichRowsWithForwardFilledGstin(
+      this.parseSheetRowsFast(
+        cashback,
+        'Cash Back Report',
+        cashbackHeaderRowIndex,
+        gstColumns,
+      ),
+      flipkartImportMapping,
+      this.extractHeaders(cashback, cashbackHeaderRowIndex, { gstColumns }),
     );
-    const gstColumns = flipkartImportMapping.gstin.excelColumns;
     const salesGstins = this.extractGstinByColumnIndex(
       sales,
       salesHeaderRowIndex,
@@ -254,24 +266,31 @@ export class FileParserService {
       cashbackHeaderRowIndex,
       gstColumns,
     );
-    const gstinValues = Array.from(new Set([...salesGstins, ...cashbackGstins]));
-
-    const salesRange = this.getSheetRange(sales);
-    const cashbackRange = this.getSheetRange(cashback);
-    // eslint-disable-next-line no-console
-    console.log(
-      `[GST_DEBUG_v3] salesSheet=${salesSheet.name} ref=${sales['!ref'] ?? 'none'} rows=${salesRange.e.r - salesRange.s.r + 1} hdr=${salesHeaderRowIndex} parsed=${salesRows.length} gstin=${gstinValues.join('|') || 'none'} | cashback ref=${cashback['!ref'] ?? 'none'} rows=${cashbackRange.e.r - cashbackRange.s.r + 1} hdr=${cashbackHeaderRowIndex} parsed=${cashbackRows.length}`,
-    );
+    const salesHeaders = this.extractHeaders(sales, salesHeaderRowIndex, {
+      gstColumns,
+    });
+    const cashbackHeaders = this.extractHeaders(cashback, cashbackHeaderRowIndex, {
+      gstColumns,
+    });
+    const gstinFromParsedRows = new Set([
+      ...salesGstins,
+      ...cashbackGstins,
+      ...extractGstinsFromRows(salesRows, flipkartImportMapping, salesHeaders)
+        .values,
+      ...extractGstinsFromRows(
+        cashbackRows,
+        flipkartImportMapping,
+        cashbackHeaders,
+      ).values,
+    ]);
+    const gstinValues = [...gstinFromParsedRows];
 
     return {
       salesRows,
       cashbackRows,
       headers: {
-        'Sales Report': this.extractHeaders(sales, salesHeaderRowIndex),
-        'Cash Back Report': this.extractHeaders(
-          cashback,
-          cashbackHeaderRowIndex,
-        ),
+        'Sales Report': salesHeaders,
+        'Cash Back Report': cashbackHeaders,
       },
       gstinValues,
     };
@@ -475,13 +494,29 @@ export class FileParserService {
   private getHeaderColumns(
     sheet: XLSX.WorkSheet,
     absoluteHeaderRow: number,
+    options?: { subHeaderRow?: number; gstColumns?: string[] },
   ): Array<{ label: string; col: number }> {
     const range = this.getSheetRange(sheet);
     const columns: Array<{ label: string; col: number }> = [];
     for (let col = range.s.c; col <= range.e.c; col += 1) {
-      const label = String(
+      let label = String(
         this.getCellValue(sheet, absoluteHeaderRow, col) ?? '',
       ).trim();
+      const subLabel =
+        options?.subHeaderRow != null
+          ? String(
+              this.getCellValue(sheet, options.subHeaderRow, col) ?? '',
+            ).trim()
+          : '';
+      if (
+        subLabel &&
+        options?.gstColumns?.length &&
+        headerMatchesAnyExcelColumn(subLabel, options.gstColumns)
+      ) {
+        label = subLabel;
+      } else if (!label && subLabel) {
+        label = subLabel;
+      }
       if (label) columns.push({ label, col });
     }
     return columns;
@@ -651,13 +686,8 @@ export class FileParserService {
     sheet: XLSX.WorkSheet,
     sheetName: string,
     headerRowIndex: number,
+    gstColumnsForDataStart: string[] = [],
   ): ParsedSheetRow[] {
-    const absoluteHeaderRow = this.toAbsoluteRow(sheet, headerRowIndex);
-    const headerColumns = this.getHeaderColumns(sheet, absoluteHeaderRow);
-    if (!headerColumns.length) {
-      return [];
-    }
-
     // blankrows: true keeps matrix indices in sync with the headerRowIndex that
     // detectHeaderRowIndex computed (which also counts blank rows). Without this,
     // files that have blank rows before the header would start data extraction at
@@ -668,7 +698,26 @@ export class FileParserService {
       raw: false,
       blankrows: true,
     });
-    const dataStartMatrixIndex = headerRowIndex + 1;
+    const dataStartMatrixIndex =
+      gstColumnsForDataStart.length > 0
+        ? this.resolveDataStartRow(
+            matrixRows,
+            headerRowIndex,
+            gstColumnsForDataStart,
+          )
+        : headerRowIndex + 1;
+    const absoluteHeaderRow = this.toAbsoluteRow(sheet, headerRowIndex);
+    const subHeaderRow =
+      dataStartMatrixIndex > headerRowIndex + 1
+        ? this.toAbsoluteRow(sheet, headerRowIndex + 1)
+        : undefined;
+    const headerColumns = this.getHeaderColumns(sheet, absoluteHeaderRow, {
+      subHeaderRow,
+      gstColumns: gstColumnsForDataStart,
+    });
+    if (!headerColumns.length) {
+      return [];
+    }
     const parsed: ParsedSheetRow[] = [];
 
     for (
@@ -676,13 +725,15 @@ export class FileParserService {
       matrixRowIndex < matrixRows.length;
       matrixRowIndex += 1
     ) {
-      const cells = matrixRows[matrixRowIndex];
-      if (!Array.isArray(cells)) continue;
+      const absoluteRow = this.toAbsoluteRow(sheet, matrixRowIndex);
 
-      // Only check the mapped header columns — avoids O(total-cols) scan per row.
       const hasData = headerColumns.some(({ col }) => {
-        const value = cells[col];
-        return value !== null && value !== undefined && String(value).trim().length > 0;
+        const value = this.getCellValue(sheet, absoluteRow, col);
+        return (
+          value !== null &&
+          value !== undefined &&
+          String(value).trim().length > 0
+        );
       });
       if (!hasData) continue;
 
@@ -691,8 +742,7 @@ export class FileParserService {
         __rowNumber: absoluteHeaderRow + (matrixRowIndex - headerRowIndex) + 1,
       };
       headerColumns.forEach(({ label, col }) => {
-        const value = cells[col];
-        row[label] = value === null || value === undefined ? null : value;
+        row[label] = this.getCellValue(sheet, absoluteRow, col) ?? null;
       });
       parsed.push(row);
     }
@@ -741,6 +791,18 @@ export class FileParserService {
 
     if (colIndex >= 0) {
       let lastGstin = '';
+      for (
+        let row = dataStartAbsolute - 1;
+        row >= absoluteHeaderRow;
+        row -= 1
+      ) {
+        const seed = parseGstinFromCell(this.getCellValue(sheet, row, colIndex));
+        if (seed) {
+          lastGstin = seed;
+          values.add(seed);
+          break;
+        }
+      }
       for (let row = dataStartAbsolute; row <= range.e.r; row += 1) {
         const raw = this.getCellValue(sheet, row, colIndex);
         let gstin = parseGstinFromCell(raw);
@@ -755,7 +817,7 @@ export class FileParserService {
     }
 
     if (!values.size) {
-      this.scanWorksheetForGstins(sheet, absoluteHeaderRow).forEach((item) =>
+      this.scanWorksheetForGstins(sheet, range.s.r).forEach((item) =>
         values.add(item),
       );
     }
@@ -765,17 +827,18 @@ export class FileParserService {
 
   private scanWorksheetForGstins(
     sheet: XLSX.WorkSheet,
-    afterAbsoluteHeaderRow: number,
+    startAbsoluteRow: number,
   ): string[] {
     const values = new Set<string>();
     const range = this.getSheetRange(sheet);
-    const rowCap = Math.min(range.e.r, afterAbsoluteHeaderRow + 1000);
-    for (let row = afterAbsoluteHeaderRow + 1; row <= rowCap; row += 1) {
+    const rowStart = Math.max(range.s.r, startAbsoluteRow);
+    const rowCap = Math.min(range.e.r, rowStart + 2000);
+    for (let row = rowStart; row <= rowCap; row += 1) {
       for (let col = range.s.c; col <= range.e.c; col += 1) {
         const gstin = parseGstinFromCell(this.getCellValue(sheet, row, col));
         if (gstin) values.add(gstin);
       }
-      if (values.size >= 10) break;
+      if (values.size >= 20) break;
     }
     return [...values];
   }
@@ -860,11 +923,25 @@ export class FileParserService {
   private extractHeaders(
     sheet: XLSX.WorkSheet,
     headerRowIndex: number,
+    options?: { gstColumns?: string[] },
   ): string[] {
     const absoluteHeaderRow = this.toAbsoluteRow(sheet, headerRowIndex);
-    return this.getHeaderColumns(sheet, absoluteHeaderRow).map(
-      (item) => item.label,
-    );
+    let subHeaderRow: number | undefined;
+    if (options?.gstColumns?.length) {
+      const preview = this.sheetPreviewMatrix(sheet, headerRowIndex + 4);
+      const dataStart = this.resolveDataStartRow(
+        preview,
+        headerRowIndex,
+        options.gstColumns,
+      );
+      if (dataStart > headerRowIndex + 1) {
+        subHeaderRow = this.toAbsoluteRow(sheet, headerRowIndex + 1);
+      }
+    }
+    return this.getHeaderColumns(sheet, absoluteHeaderRow, {
+      subHeaderRow,
+      gstColumns: options?.gstColumns,
+    }).map((item) => item.label);
   }
 
   private detectHeaderRowIndex(
