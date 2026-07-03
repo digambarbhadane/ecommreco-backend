@@ -125,4 +125,4 @@ Do **not** point PM2 at `dist/main.js` (wrong path) or `dist/src/main.js` (skips
 | `MONGODB_URI is not set` | Wrong env file / empty production env | Use `.env.production` with URI, or `NODE_ENV=development` + `.env.development` |
 | `Could not connect to MongoDB` | Atlas IP block / wrong URI | Atlas allowlist + `npm run db:test` on EC2 |
 | Env vars ignored | File named `.env.dev` | Rename to `.env.development` or `.env.production` |
-| CORS errors in browser | `FRONTEND_URL` still localhost | Set real site URL in env |
+| CORS errors in browser | `FRONTEND_URL` still localhost / dev origin missing | Set `FRONTEND_URL=https://dev.ecommreco.com` in `.env.development` on EC2; redeploy API. Code also allows all `https://*.ecommreco.com` origins. |
