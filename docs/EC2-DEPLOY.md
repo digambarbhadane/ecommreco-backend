@@ -97,6 +97,43 @@ curl http://127.0.0.1:5000/
 
 Open **security group** port `5000` (or proxy via Nginx on 80/443).
 
+## Nginx — fix `413 Request Entity Too Large` on large report uploads
+
+Dev/UAT API hosts (`api-dev.ecommreco.com`, etc.) sit behind **nginx**. Nginx defaults to **`client_max_body_size 1m`**, so Flipkart/Amazon Excel files larger than ~1 MB are rejected **before** they reach NestJS (local dev has no nginx, so uploads work there).
+
+Health check confirms nginx: `Server: nginx/1.24.0 (Ubuntu)`.
+
+### One-time fix on EC2
+
+```bash
+cd ~/ecommreco_dev/ecommreco-backend   # adjust path
+git pull
+chmod +x scripts/apply-nginx-upload-limits.sh
+./scripts/apply-nginx-upload-limits.sh
+```
+
+Or manually:
+
+```bash
+sudo cp deploy/nginx/snippets/upload-limits.conf /etc/nginx/snippets/ecommreco-upload-limits.conf
+```
+
+Add **inside** the `server { ... }` block for `api-dev.ecommreco.com`:
+
+```nginx
+include /etc/nginx/snippets/ecommreco-upload-limits.conf;
+```
+
+Then:
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+This sets `client_max_body_size 100m` (matches app multer limit) and longer proxy timeouts for slow uploads.
+
+Full example site file: `deploy/nginx/api-dev.ecommreco.com.conf`.
+
 ## PM2 (development on EC2)
 
 `ecosystem.config.js` only defines **`api-dev`** (`NODE_ENV=development` → `.env.development`).
@@ -128,3 +165,4 @@ If PM2 logs `Cannot find module '../config/env-file'`, rebuild after pulling lat
 | `Could not connect to MongoDB` | Atlas IP block / wrong URI | Atlas allowlist + `npm run db:test` on EC2 |
 | Env vars ignored | File named `.env.dev` | Rename to `.env.development` or `.env.production` |
 | CORS errors in browser | `FRONTEND_URL` still localhost / dev origin missing | Set `FRONTEND_URL=https://dev.ecommreco.com` in `.env.development` on EC2; redeploy API. Code also allows all `https://*.ecommreco.com` origins. |
+| `413 Request Entity Too Large` on file upload | Nginx `client_max_body_size` default 1m | Run `scripts/apply-nginx-upload-limits.sh` or add `deploy/nginx/snippets/upload-limits.conf` (see Nginx section above) |

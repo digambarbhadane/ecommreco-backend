@@ -36,8 +36,8 @@ const REQUIRED_SLOTS: Record<MarketplaceUploadKey, string[]> = {
 };
 
 const OPTIONAL_SLOTS: Partial<Record<MarketplaceUploadKey, string[]>> = {
-  flipkart: ['paymentReportFile'],
-  amazon: ['mtrB2bFile'],
+  flipkart: ['returnReportFile', 'paymentReportFile'],
+  amazon: ['mtrB2cFile', 'mtrB2bFile', 'amazonReturnReportFile'],
   meesho: [
     'tcsSalesFile',
     'tcsSalesReturnFile',
@@ -161,10 +161,38 @@ export class ImportSessionService {
     }
 
     if (session.marketplaceType === 'amazon') {
-      if (!session.files.has('mtrB2cFile') && !session.files.has('mtrB2bFile')) {
+      if (session.files.size === 0) {
+        throw new BadRequestException('Upload at least one Amazon report file');
+      }
+      const hasMtr =
+        session.files.has('mtrB2cFile') || session.files.has('mtrB2bFile');
+      const hasReturnOnly =
+        session.files.has('amazonReturnReportFile') && !hasMtr;
+      if (!hasMtr && !hasReturnOnly) {
         throw new BadRequestException(
           'Amazon upload requires at least an MTR B2C or MTR B2B file',
         );
+      }
+      if (hasReturnOnly) {
+        const b2cAlreadyUploaded = await this.importWorkflow.hasCompletedSlot({
+          sellerId: dto.sellerId,
+          gstId: dto.gstId,
+          marketplaceId: dto.marketplaceId,
+          reportMonth: dto.reportMonth,
+          slot: 'mtrB2cFile',
+        });
+        const b2bAlreadyUploaded = await this.importWorkflow.hasCompletedSlot({
+          sellerId: dto.sellerId,
+          gstId: dto.gstId,
+          marketplaceId: dto.marketplaceId,
+          reportMonth: dto.reportMonth,
+          slot: 'mtrB2bFile',
+        });
+        if (!b2cAlreadyUploaded && !b2bAlreadyUploaded) {
+          throw new BadRequestException(
+            'MTR B2C or B2B report is required before uploading the return report',
+          );
+        }
       }
     }
 
@@ -172,9 +200,12 @@ export class ImportSessionService {
       if (session.files.size === 0) {
         throw new BadRequestException('Upload at least one Flipkart report file');
       }
+      const hasSales = session.files.has('file');
       const hasPaymentOnly =
-        session.files.has('paymentReportFile') && !session.files.has('file');
-      if (hasPaymentOnly) {
+        session.files.has('paymentReportFile') && !hasSales && !session.files.has('returnReportFile');
+      const hasReturnOnly =
+        session.files.has('returnReportFile') && !hasSales && !session.files.has('paymentReportFile');
+      if ((hasPaymentOnly || hasReturnOnly) && !hasSales) {
         const salesAlreadyUploaded = await this.importWorkflow.hasCompletedSlot({
           sellerId: dto.sellerId,
           gstId: dto.gstId,
@@ -184,7 +215,7 @@ export class ImportSessionService {
         });
         if (!salesAlreadyUploaded) {
           throw new BadRequestException(
-            'Sales Report is required before uploading the payment report',
+            'Sales Report is required before uploading the return or payment report',
           );
         }
       }

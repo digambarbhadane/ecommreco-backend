@@ -36,7 +36,7 @@ import {
 import { flipkartImportMapping } from '../config/importMappings/flipkart.mapping';
 import { ParsedSheetRow } from './mapping.service';
 import {
-  buildMeeshoGstinValidationMessage,
+  filterMeeshoReportsBySelectedGstin,
   MeeshoReportValidationInput,
 } from '../utils/meesho-import.validation';
 import {
@@ -339,14 +339,22 @@ export class ValidationService {
     };
   }
 
+  filterMeeshoGstinBundle(
+    reports: MeeshoReportValidationInput[],
+    expectedGstin: string,
+  ): { reports: MeeshoReportValidationInput[]; skippedCount: number } {
+    const result = filterMeeshoReportsBySelectedGstin(reports, expectedGstin);
+    if (!result.ok) {
+      throw new BadRequestException(result.message);
+    }
+    return { reports: result.reports, skippedCount: result.skippedCount };
+  }
+
   validateMeeshoGstinBundle(
     reports: MeeshoReportValidationInput[],
     expectedGstin: string,
   ) {
-    const message = buildMeeshoGstinValidationMessage(reports, expectedGstin);
-    if (message) {
-      throw new BadRequestException(message);
-    }
+    this.filterMeeshoGstinBundle(reports, expectedGstin);
   }
 
   computeFileHash(buffer: Buffer) {

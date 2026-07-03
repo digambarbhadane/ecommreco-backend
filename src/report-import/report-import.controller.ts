@@ -49,6 +49,7 @@ import { StateWiseExportDto } from './dto/state-wise-export.dto';
 import { MulterExceptionFilter } from './filters/multer-exception.filter';
 import type { Request } from 'express';
 import type { UploadedReportFiles } from './marketplace-upload.routes';
+import { MULTER_UPLOAD_LIMITS } from '../config/upload-limits';
 
 type RequestWithUser = Request & {
   user?: { id?: string; email?: string; name?: string };
@@ -93,7 +94,7 @@ export class ReportImportController {
   @ApiConsumes('multipart/form-data')
   @UseInterceptors(
     FileInterceptor('file', {
-      limits: { fileSize: 100 * 1024 * 1024 },
+      limits: MULTER_UPLOAD_LIMITS,
     }),
   )
   @Roles('seller', 'super_admin', 'accounts_manager')
@@ -425,10 +426,12 @@ export class ReportImportController {
     const gstrReportRtoFile = files?.gstrReportRtoFile?.[0];
     const gstrReportRtFile = files?.gstrReportRtFile?.[0];
     const mDirectReturnsReportFile = files?.mDirectReturnsReportFile?.[0];
+    const amazonReturnReportFile = files?.amazonReturnReportFile?.[0];
     if (
       !singleFile &&
       !mtrB2bFile &&
       !mtrB2cFile &&
+      !amazonReturnReportFile &&
       !tcsSalesFile &&
       !tcsSalesReturnFile &&
       !orderReportFile &&
@@ -464,6 +467,7 @@ export class ReportImportController {
         gstrReportRtoFile,
         gstrReportRtFile,
         mDirectReturnsReportFile,
+        amazonReturnReportFile,
       },
       dto,
       {

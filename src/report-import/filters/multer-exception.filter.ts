@@ -5,6 +5,7 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { MulterError } from 'multer';
+import { UPLOAD_MAX_FILE_MB } from '../../config/upload-limits';
 
 @Catch(MulterError)
 export class MulterExceptionFilter implements ExceptionFilter {
@@ -13,7 +14,7 @@ export class MulterExceptionFilter implements ExceptionFilter {
     let message = 'File upload failed. Please try again.';
 
     if (exception.code === 'LIMIT_FILE_SIZE') {
-      message = 'File is too large. Each report file must be 100 MB or smaller.';
+      message = `File is too large. Each report file must be ${UPLOAD_MAX_FILE_MB} MB or smaller.`;
     } else if (exception.code === 'LIMIT_FILE_COUNT') {
       message = 'Too many files were uploaded in one request.';
     } else if (exception.code === 'LIMIT_UNEXPECTED_FILE') {

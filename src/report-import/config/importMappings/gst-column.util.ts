@@ -59,6 +59,23 @@ const parseGstinFromText = (raw: string): string | undefined => {
 export const normalizeGstinValue = (raw: unknown): string | undefined =>
   parseGstinFromCell(raw);
 
+/** Marketplace / TCS tax columns — not the seller GSTIN column. */
+const isExcludedNonSellerGstHeader = (normalizedHeader: string): boolean => {
+  if (!normalizedHeader) return false;
+  if (/\beco\s*tcs\b/.test(normalizedHeader)) return true;
+  if (/\bmarketplace\b/.test(normalizedHeader) && /\bgstin\b/.test(normalizedHeader)) {
+    return true;
+  }
+  if (
+    /\btcs\b/.test(normalizedHeader) &&
+    /\bgstin\b/.test(normalizedHeader) &&
+    !/\bseller\b/.test(normalizedHeader)
+  ) {
+    return true;
+  }
+  return false;
+};
+
 export const headerMatchesExcelColumn = (
   headerKey: string,
   excelColumn: string,
@@ -66,7 +83,13 @@ export const headerMatchesExcelColumn = (
   const norm = normalizeHeader(headerKey);
   const colNorm = normalizeHeader(excelColumn);
   if (!norm || !colNorm) return false;
+  if (isExcludedNonSellerGstHeader(norm)) return false;
   if (norm === colNorm) return true;
+
+  // Exact "gstin" column only — not eco_tcs_gstin or other compound headers.
+  if (colNorm === 'gstin') {
+    return norm === 'gstin';
+  }
 
   // "GST NO" must not match CGST/SGST/IGST number columns (substring "gst no").
   if (colNorm === 'gst no') {
@@ -116,11 +139,6 @@ export const extractGstinFromRow = (
   for (const [key, raw] of Object.entries(row)) {
     if (key.startsWith('__')) continue;
     if (!headerMatchesAnyExcelColumn(key, excelColumns)) continue;
-    const value = parseGstinFromCell(raw);
-    if (value) return value;
-  }
-  for (const [key, raw] of Object.entries(row)) {
-    if (key.startsWith('__')) continue;
     const value = parseGstinFromCell(raw);
     if (value) return value;
   }
@@ -196,27 +214,12 @@ export const extractGstinsFromRows = (
     mapping.gstin.excelColumns,
   );
 
-  const headersToScan = new Set<string>();
   if (primaryHeader) {
     foundColumn = true;
     matchedHeaders.add(primaryHeader);
-    headersToScan.add(primaryHeader);
-  }
-  for (const header of headerCandidates) {
-    if (!headerMatchesAnyExcelColumn(header, mapping.gstin.excelColumns)) {
-      continue;
-    }
-    foundColumn = true;
-    matchedHeaders.add(header);
-    headersToScan.add(header);
-  }
-
-  if (headersToScan.size) {
     rows.forEach((row) => {
-      for (const key of headersToScan) {
-        const value = parseGstinFromCell(row[key]);
-        if (value) values.add(value);
-      }
+      const value = parseGstinFromCell(row[primaryHeader]);
+      if (value) values.add(value);
     });
     return { values, foundColumn, matchedHeaders, primaryHeader };
   }

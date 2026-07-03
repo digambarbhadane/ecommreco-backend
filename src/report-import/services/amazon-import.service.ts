@@ -1,34 +1,33 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { getRowCell, MappingService, ParsedSheetRow } from './mapping.service';
 import { FileParserService } from './file-parser.service';
-import { flipkartImportMapping } from '../config/importMappings/flipkart.mapping';
-import { FLIPKART_RETURN_REQUIRED_HEADER_GROUPS } from '../config/importMappings/flipkart-return.mapping';
+import { amazonImportMapping } from '../config/importMappings/amazon.mapping';
 import {
-  buildFlipkartReturnDetailsByOrderId,
-  flipkartOrderIdLookupKey,
-  normalizeFlipkartOrderId,
-  type FlipkartReturnDetails,
-} from '../utils/flipkart-return.util';
+  AMAZON_RETURN_ORDER_ID_HEADER_GROUPS,
+  AMAZON_RETURN_REQUIRED_HEADER_GROUPS,
+} from '../config/importMappings/amazon-return.mapping';
+import {
+  buildAmazonReturnDetailsByOrderId,
+  amazonOrderIdLookupKey,
+  normalizeAmazonOrderId,
+  type AmazonReturnDetails,
+} from '../utils/amazon-return.util';
 
-const FLIPKART_ORDER_ID_ALIASES = [
-  ...(flipkartImportMapping.orderId?.excelColumns ?? ['Order ID']),
-  'Order Id',
+const AMAZON_ORDER_ID_ALIASES = [
+  ...(amazonImportMapping.orderId?.excelColumns ?? ['Order Id']),
+  'Order ID',
   'order_id',
 ];
 
 @Injectable()
-export class FlipkartImportService {
+export class AmazonImportService {
   constructor(
     private readonly parser: FileParserService,
     private readonly mapping: MappingService,
   ) {}
 
-  parsePaymentFile(file: { buffer: Buffer; originalname: string }) {
-    return this.parser.parseFlipkartPaymentWorkbook(file.buffer);
-  }
-
   parseReturnFile(file: { buffer: Buffer; originalname: string }) {
-    return this.parser.parseFlipkartReturnWorkbook(file.buffer);
+    return this.parser.parseAmazonReturnWorkbook(file.buffer);
   }
 
   validateReturnFile(file: { buffer: Buffer; originalname: string }) {
@@ -48,39 +47,23 @@ export class FlipkartImportService {
     return parsed;
   }
 
-  indexByOrderId(rows: ParsedSheetRow[]): Map<string, ParsedSheetRow> {
-    const index = new Map<string, ParsedSheetRow>();
-    rows.forEach((row) => {
-      const orderId = normalizeFlipkartOrderId(
-        getRowCell(row, ...FLIPKART_ORDER_ID_ALIASES),
-      );
-      if (!orderId) return;
-      index.set(orderId, row);
-    });
-    return index;
-  }
-
   indexReturnDetailsByOrderId(
     rows: ParsedSheetRow[],
-  ): Map<string, FlipkartReturnDetails> {
-    return buildFlipkartReturnDetailsByOrderId(
+  ): Map<string, AmazonReturnDetails> {
+    return buildAmazonReturnDetailsByOrderId(
       rows,
       (row) => this.mapReturnFields(row),
       (row) =>
-        normalizeFlipkartOrderId(getRowCell(row, ...FLIPKART_ORDER_ID_ALIASES)),
+        normalizeAmazonOrderId(getRowCell(row, ...AMAZON_ORDER_ID_ALIASES)),
     );
   }
 
-  mapPaymentFields(row: ParsedSheetRow) {
-    return this.mapping.mapFlipkartPaymentFields(row);
-  }
-
-  mapReturnFields(row: ParsedSheetRow): FlipkartReturnDetails {
-    return this.mapping.mapFlipkartReturnFields(row);
+  mapReturnFields(row: ParsedSheetRow): AmazonReturnDetails {
+    return this.mapping.mapAmazonReturnFields(row);
   }
 
   validateReturnHeaders(headers: string[]) {
-    for (const group of FLIPKART_RETURN_REQUIRED_HEADER_GROUPS) {
+    for (const group of AMAZON_RETURN_REQUIRED_HEADER_GROUPS) {
       const hasColumn = group.some((alias) =>
         headers.some((header) => {
           const normalized = String(header ?? '').trim().toLowerCase();
@@ -96,7 +79,19 @@ export class FlipkartImportService {
     }
   }
 
+  hasOrderIdColumn(headers: string[]): boolean {
+    return AMAZON_RETURN_ORDER_ID_HEADER_GROUPS.some((group) =>
+      group.some((alias) =>
+        headers.some((header) => {
+          const normalized = String(header ?? '').trim().toLowerCase();
+          const target = String(alias).trim().toLowerCase();
+          return normalized === target || normalized.includes(target);
+        }),
+      ),
+    );
+  }
+
   orderIdLookupKey(orderId: unknown): string {
-    return flipkartOrderIdLookupKey(orderId);
+    return amazonOrderIdLookupKey(orderId);
   }
 }

@@ -2,8 +2,8 @@ import type { MarketplaceUploadKey } from './marketplace-upload.routes';
 
 /** Backend multipart / session slot names present in upload payloads. */
 export const MARKETPLACE_TRACKED_SLOTS: Record<MarketplaceUploadKey, string[]> = {
-  flipkart: ['file', 'paymentReportFile'],
-  amazon: ['mtrB2cFile', 'mtrB2bFile'],
+  flipkart: ['file', 'returnReportFile', 'paymentReportFile'],
+  amazon: ['mtrB2cFile', 'mtrB2bFile', 'amazonReturnReportFile'],
   meesho: [
     'tcsSalesFile',
     'tcsSalesReturnFile',
@@ -61,8 +61,10 @@ const FILE_HASH_SLOT_PREFIXES: Array<{ prefix: string; slot: string }> = [
   { prefix: 'returnDeliveryComplete:', slot: 'returnDeliveryCompleteReportFile' },
   { prefix: 'return:', slot: 'returnDeliveryCompleteReportFile' },
   { prefix: 'payment:', slot: 'paymentReportFile' },
+  { prefix: 'return:', slot: 'returnReportFile' },
   { prefix: 'b2c:', slot: 'mtrB2cFile' },
   { prefix: 'b2b:', slot: 'mtrB2bFile' },
+  { prefix: 'amazonReturn:', slot: 'amazonReturnReportFile' },
   { prefix: 'gstr:', slot: 'gstrReportPackedFile' },
   { prefix: 'mdirect:', slot: 'mDirectOrdersReportFile' },
   { prefix: 'sales:', slot: 'salesRevenuePackedB2cFile' },
@@ -93,12 +95,24 @@ export function inferUploadedSlotsFromFileHash(fileHash: string): string[] {
     return ['paymentReportFile'];
   }
 
+  if (hash.startsWith('flipkart-return|')) {
+    return ['returnReportFile'];
+  }
+
+  if (hash.startsWith('amazon-return|')) {
+    return ['amazonReturnReportFile'];
+  }
+
   if (hash.startsWith('flipkart|')) {
     const slots: string[] = [];
     const salesHash = hashSegmentValue(hash, 'sales:');
+    const returnHash = hashSegmentValue(hash, 'return:');
     const paymentHash = hashSegmentValue(hash, 'payment:');
     if (salesHash && salesHash !== 'none') {
       slots.push('file');
+    }
+    if (returnHash && returnHash !== 'none') {
+      slots.push('returnReportFile');
     }
     if (paymentHash && paymentHash !== 'none') {
       slots.push('paymentReportFile');
