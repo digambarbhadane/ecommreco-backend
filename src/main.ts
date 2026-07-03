@@ -39,6 +39,20 @@ const isRenderOrigin = (origin: string) => {
   }
 };
 
+/** Any HTTPS origin on ecommreco.com or its subdomains (dev, uat, www, etc.). */
+const isEcommRecoHttpsOrigin = (origin: string) => {
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== 'https:') {
+      return false;
+    }
+    const host = url.hostname.toLowerCase();
+    return host === 'ecommreco.com' || host.endsWith('.ecommreco.com');
+  } catch {
+    return false;
+  }
+};
+
 const isLocalOrPrivateHostname = (hostname: string) => {
   const host = hostname.toLowerCase();
   if (
@@ -118,6 +132,7 @@ async function bootstrap() {
       'https://ecommreco.com',
       'https://www.ecommreco.com',
       'https://uat.ecommreco.com',
+      'https://dev.ecommreco.com',
       ...configuredOrigins,
     ].map(normalizeOrigin),
   );
@@ -134,6 +149,9 @@ async function bootstrap() {
       return origin;
     }
     if (allowRenderOrigins && isRenderOrigin(normalizedOrigin)) {
+      return origin;
+    }
+    if (isEcommRecoHttpsOrigin(normalizedOrigin)) {
       return origin;
     }
     if (whitelist.has(normalizedOrigin)) {
