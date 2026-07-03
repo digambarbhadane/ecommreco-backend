@@ -30,9 +30,17 @@ import {
   resolveSlotSummary,
 } from '../utils/slot-summary-resolver';
 import {
+  aggregateFlipkartMonthSummaryFromRows,
   buildMeeshoWorkflowMonthSummaryPipeline,
   buildWorkflowMonthSummaryPipeline,
+  computeFlipkartReturnsNetTotal,
+  computeFlipkartGrossSale,
+  computeFlipkartNetSale,
+  flipkartBucketLabel,
+  mapFlipkartVoucherTypeSummaryRows,
   PAYMENT_AMOUNT_FIELDS,
+  type FlipkartMonthTotalsRow,
+  type FlipkartVoucherTypeSummaryRow,
   type MeeshoMonthTotalsRow,
   type WorkflowMonthTotalsRow,
 } from '../utils/workflow-month-summary.aggregation';
@@ -99,6 +107,7 @@ type SlotUploadInfo = {
   uploadedBy?: string;
   uploadedAt?: string;
   importBatchId?: string;
+  errorMessage?: string;
 };
 
 @Injectable()
@@ -116,6 +125,26 @@ export class ImportWorkflowService {
     private readonly adjustmentModel: Model<ReconAdjustment>,
     private readonly validationService: ValidationService,
   ) {}
+
+  async clearFailedSlotRecords(params: {
+    sellerId: string;
+    gstId: string;
+    marketplaceId: string;
+    reportMonth: string;
+    slots: string[];
+  }) {
+    if (!params.slots.length) return;
+    await this.slotRecordModel
+      .deleteMany({
+        sellerId: params.sellerId,
+        gstId: params.gstId,
+        marketplaceId: params.marketplaceId,
+        reportMonth: params.reportMonth,
+        slot: { $in: params.slots },
+        status: 'failed',
+      })
+      .exec();
+  }
 
   getRequiredReports(marketplace: string) {
     if (!isSupportedMarketplaceKey(marketplace)) {
@@ -259,12 +288,21 @@ export class ImportWorkflowService {
     const sellerAliases =
       await this.validationService.resolveSellerIdAliases(sellerId);
 
+    await this.slotRecordModel
+      .deleteMany({
+        sellerId: { $in: sellerAliases },
+        gstId,
+        reportMonth,
+        status: 'failed',
+      })
+      .exec();
+
     const slotRecords = await this.slotRecordModel
       .find({
         sellerId: { $in: sellerAliases },
         gstId,
         reportMonth,
-        status: { $in: ['completed', 'processing', 'failed'] },
+        status: { $in: ['completed', 'processing'] },
         ...(query.marketplaceId ? { marketplaceId: query.marketplaceId } : {}),
       })
       .sort({ updatedAt: -1 })
@@ -283,7 +321,7 @@ export class ImportWorkflowService {
         sellerId: { $in: sellerAliases },
         gstId,
         reportMonth,
-        status: { $in: ['completed', 'processing', 'failed'] },
+        status: { $in: ['completed', 'processing'] },
         ...(query.marketplaceId ? { marketplaceId: query.marketplaceId } : {}),
       })
       .sort({ updatedAt: -1 })
@@ -291,10 +329,13 @@ export class ImportWorkflowService {
       .exec();
 
     if (query.marketplaceId && query.marketplace) {
+      const slotRecords = refreshedRecords.filter(
+        (r) => r.marketplaceId === query.marketplaceId,
+      );
       const detail = this.buildMarketplaceStatus(
         query.marketplace,
         query.marketplaceId,
-        refreshedRecords.filter((r) => r.marketplaceId === query.marketplaceId),
+        slotRecords,
       );
       return { success: true, data: { reportMonth, marketplace: detail } };
     }
@@ -311,7 +352,7 @@ export class ImportWorkflowService {
           sellerId: { $in: sellerAliases },
           gstId,
           reportMonth,
-          status: { $in: ['completed', 'processing', 'failed'] },
+          status: { $in: ['completed', 'processing'] },
         })
         .sort({ updatedAt: -1 })
         .lean()
@@ -319,11 +360,15 @@ export class ImportWorkflowService {
 
       const marketplaces = query.marketplaces.map(({ marketplaceId, marketplaceKey }) => {
         const records = allRecords.filter((r) => r.marketplaceId === marketplaceId);
-        return this.buildMarketplaceStatus(marketplaceKey, marketplaceId, records);
+        return { marketplaceId, marketplaceKey, records };
       });
 
-      const summary = this.buildMonthSummary(marketplaces);
-      return { success: true, data: { reportMonth, summary, marketplaces } };
+      const enriched = marketplaces.map(({ marketplaceId, marketplaceKey, records }) =>
+        this.buildMarketplaceStatus(marketplaceKey, marketplaceId, records),
+      );
+
+      const summary = this.buildMonthSummary(enriched);
+      return { success: true, data: { reportMonth, summary, marketplaces: enriched } };
     }
 
     const byMarketplace = new Map<string, typeof refreshedRecords>();
@@ -380,23 +425,81 @@ export class ImportWorkflowService {
       .lean()
       .exec();
 
+    const uploadIds = records.map((record) => record.uploadId).filter(Boolean);
+    const uploadMeta = await this.loadUploadMeta(uploadIds);
+
+    const historyItems = records.map((record) => ({
+      id: String(record._id),
+      slot: record.slot,
+      marketplaceId: record.marketplaceId,
+      reportMonth: record.reportMonth,
+      fileName: record.fileName,
+      fileSize: record.fileSize,
+      uploadedBy: record.uploadedBy,
+      uploadedAt: (record as { updatedAt?: Date }).updatedAt
+        ? new Date((record as { updatedAt?: Date }).updatedAt!).toISOString()
+        : undefined,
+      status: record.status,
+      uploadId: record.uploadId,
+      importBatchId: record.importBatchId,
+      errorMessage: uploadMeta.get(record.uploadId)?.errorMessage,
+    }));
+
+    const failedUploads = await this.uploadModel
+      .find({
+        sellerId: { $in: sellerAliases },
+        gstId,
+        status: 'failed',
+        ...(query.reportMonth ? { reportMonth: query.reportMonth } : {}),
+        ...(query.marketplaceId ? { marketplace: query.marketplaceId } : {}),
+      })
+      .sort({ updatedAt: -1 })
+      .limit(50)
+      .lean()
+      .exec();
+
+    const seen = new Set(
+      historyItems.map((item) => `${item.uploadId}:${item.slot}`),
+    );
+    for (const upload of failedUploads) {
+      const slots =
+        Array.isArray(upload.uploadedSlots) && upload.uploadedSlots.length
+          ? upload.uploadedSlots
+          : inferUploadedSlotsFromFileHash(String(upload.fileHash ?? ''));
+      const uploadId = String(upload._id);
+      const updatedAt = (upload as { updatedAt?: Date }).updatedAt;
+      for (const slot of slots) {
+        const key = `${uploadId}:${slot}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        historyItems.push({
+          id: `failed:${uploadId}:${slot}`,
+          slot,
+          marketplaceId: upload.marketplace,
+          reportMonth: upload.reportMonth ?? '',
+          fileName: upload.fileName,
+          fileSize: upload.fileSize,
+          uploadedBy: upload.uploadedBy,
+          uploadedAt: updatedAt
+            ? new Date(updatedAt).toISOString()
+            : undefined,
+          status: 'failed',
+          uploadId,
+          importBatchId: upload.importBatchId ?? uploadId,
+          errorMessage: upload.errorMessage,
+        });
+      }
+    }
+
+    historyItems.sort((a, b) => {
+      const aTime = a.uploadedAt ? new Date(a.uploadedAt).getTime() : 0;
+      const bTime = b.uploadedAt ? new Date(b.uploadedAt).getTime() : 0;
+      return bTime - aTime;
+    });
+
     return {
       success: true,
-      data: records.map((record) => ({
-        id: String(record._id),
-        slot: record.slot,
-        marketplaceId: record.marketplaceId,
-        reportMonth: record.reportMonth,
-        fileName: record.fileName,
-        fileSize: record.fileSize,
-        uploadedBy: record.uploadedBy,
-        uploadedAt: (record as { updatedAt?: Date }).updatedAt
-          ? new Date((record as { updatedAt?: Date }).updatedAt!).toISOString()
-          : undefined,
-        status: record.status,
-        uploadId: record.uploadId,
-        importBatchId: record.importBatchId,
-      })),
+      data: historyItems.slice(0, 100),
     };
   }
 
@@ -644,7 +747,8 @@ export class ImportWorkflowService {
       (r) => r.slot === 'paymentReportFile',
     );
 
-    let totals: WorkflowMonthTotalsRow | MeeshoMonthTotalsRow = {};
+    let totals: WorkflowMonthTotalsRow | MeeshoMonthTotalsRow | FlipkartMonthTotalsRow =
+      {};
     let byDocumentType: Array<{
       documentType: string;
       count: number;
@@ -657,6 +761,27 @@ export class ImportWorkflowService {
       invoiceAmount: number;
       taxableAmount: number;
     }> = [];
+    let byVoucherType: FlipkartVoucherTypeSummaryRow[] = [];
+    let flipkartNotes = {
+      creditNote: {
+        totalRows: 0,
+        pcs: 0,
+        taxableValue: 0,
+        igst: 0,
+        cgst: 0,
+        sgst: 0,
+        invoiceAmount: 0,
+      },
+      debitNote: {
+        totalRows: 0,
+        pcs: 0,
+        taxableValue: 0,
+        igst: 0,
+        cgst: 0,
+        sgst: 0,
+        invoiceAmount: 0,
+      },
+    };
     let rowErrorCount = 0;
     let hasImportedData = false;
 
@@ -667,6 +792,76 @@ export class ImportWorkflowService {
         marketplace: marketplaceId,
       };
 
+      const sellerStateKeys =
+        await this.validationService.resolveSellerStateKeysForGst(
+          gstId,
+          sellerAliases,
+        );
+
+      if (marketplace === 'flipkart') {
+        const flipkartRowSelect: Record<string, 1> = {
+          documentType: 1,
+          voucherType: 1,
+          stateName: 1,
+          igstRate: 1,
+          cgstRate: 1,
+          sgstRate: 1,
+          igstAmount: 1,
+          cgstAmount: 1,
+          sgstAmount: 1,
+          taxableAmount: 1,
+          invoiceAmount: 1,
+          quantity: 1,
+          orderID: 1,
+          reportType: 1,
+          invoiceDate: 1,
+          finalSettlementAmount: 1,
+        };
+        for (const { key } of PAYMENT_AMOUNT_FIELDS) {
+          flipkartRowSelect[key] = 1;
+        }
+
+        const [importRows, errors] = await Promise.all([
+          this.rowModel.find(rowFilter).select(flipkartRowSelect).lean().exec(),
+          this.rowErrorModel.countDocuments({ uploadId: primaryUploadId }).exec(),
+        ]);
+
+        const flipkartSummary = aggregateFlipkartMonthSummaryFromRows(
+          importRows,
+          sellerStateKeys,
+        );
+
+        totals = flipkartSummary.totals;
+        rowErrorCount = errors;
+        hasImportedData = Number(totals.totalRows ?? 0) > 0;
+
+        byDocumentType = flipkartSummary.byDocumentType.map((item) => ({
+          documentType: String(item._id ?? 'Unknown'),
+          count: item.count,
+          invoiceAmount: Number(item.invoiceAmount ?? 0),
+          taxableAmount: Number(item.taxableAmount ?? 0),
+        }));
+        byReportType = flipkartSummary.byReportType.map((item) => ({
+          reportType: String(item._id ?? 'unknown'),
+          count: item.count,
+          invoiceAmount: Number(item.invoiceAmount ?? 0),
+          taxableAmount: Number(item.taxableAmount ?? 0),
+        }));
+        byVoucherType = mapFlipkartVoucherTypeSummaryRows(
+          flipkartSummary.byVoucherType.map((item) => ({
+            bucket: String(item._id ?? 'other'),
+            label: flipkartBucketLabel(String(item._id ?? 'other')),
+            count: item.count,
+            pcs: Number(item.pcs ?? 0),
+            invoiceAmount: Number(item.invoiceAmount ?? 0),
+            taxableAmount: Number(item.taxableAmount ?? 0),
+            igst: Number(item.igst ?? 0),
+            cgst: Number(item.cgst ?? 0),
+            sgst: Number(item.sgst ?? 0),
+          })),
+        );
+        flipkartNotes = flipkartSummary.flipkartNotes;
+      } else {
       const summaryPipeline =
         marketplace === 'meesho'
           ? buildMeeshoWorkflowMonthSummaryPipeline(rowFilter)
@@ -675,12 +870,35 @@ export class ImportWorkflowService {
       const [agg, errors] = await Promise.all([
         this.rowModel
           .aggregate<{
-            totals: Array<WorkflowMonthTotalsRow | MeeshoMonthTotalsRow>;
+            totals: Array<
+              WorkflowMonthTotalsRow | MeeshoMonthTotalsRow | FlipkartMonthTotalsRow
+            >;
             byDocumentType: Array<{
               _id: string;
               count: number;
               invoiceAmount: number;
               taxableAmount: number;
+            }>;
+            byVoucherType?: Array<{
+              _id: string;
+              count: number;
+              pcs: number;
+              invoiceAmount: number;
+              taxableAmount: number;
+              igst: number;
+              cgst: number;
+              sgst: number;
+            }>;
+            noteTotals?: Array<{
+              _id: 'credit' | 'debit';
+              orderCount: number;
+              rowCount: number;
+              pcs: number;
+              invoiceAmount: number;
+              taxableAmount: number;
+              igst: number;
+              cgst: number;
+              sgst: number;
             }>;
             byReportType: Array<{
               _id: string;
@@ -696,6 +914,8 @@ export class ImportWorkflowService {
       const facet = agg[0] ?? {
         totals: [],
         byDocumentType: [],
+        byVoucherType: [],
+        noteTotals: [],
         byReportType: [],
       };
       totals = facet.totals[0] ?? {};
@@ -714,6 +934,7 @@ export class ImportWorkflowService {
         invoiceAmount: Number(item.invoiceAmount ?? 0),
         taxableAmount: Number(item.taxableAmount ?? 0),
       }));
+      }
     }
 
     const totalTax =
@@ -765,6 +986,8 @@ export class ImportWorkflowService {
     }));
 
     const meeshoTotals = marketplace === 'meesho' ? (totals as MeeshoMonthTotalsRow) : null;
+    const flipkartTotals =
+      marketplace === 'flipkart' ? (totals as FlipkartMonthTotalsRow) : null;
     const meeshoReturnTotalRows = Number(meeshoTotals?.meeshoTcsReturnRows ?? 0);
     const meeshoReturnTotalPcs = Number(meeshoTotals?.meeshoTcsReturnPcs ?? 0);
     const meeshoReturnTotalTaxable = Number(meeshoTotals?.meeshoTcsReturnTaxable ?? 0);
@@ -774,7 +997,92 @@ export class ImportWorkflowService {
     const meeshoReturnTotalInvoice = Number(meeshoTotals?.meeshoTcsReturnInvoice ?? 0);
 
     const salesReturnTable =
-      marketplace === 'meesho' && meeshoTotals
+      marketplace === 'flipkart' && flipkartTotals
+        ? (() => {
+            const flipkartReturn = {
+              totalRows: Number(flipkartTotals.flipkartReturnRows ?? 0),
+              pcs: Number(flipkartTotals.flipkartReturnPcs ?? 0),
+              taxableValue: Number(flipkartTotals.flipkartReturnTaxable ?? 0),
+              igst: Number(flipkartTotals.flipkartReturnIgst ?? 0),
+              cgst: Number(flipkartTotals.flipkartReturnCgst ?? 0),
+              sgst: Number(flipkartTotals.flipkartReturnSgst ?? 0),
+              invoiceAmount: Number(flipkartTotals.flipkartReturnInvoice ?? 0),
+            };
+            const flipkartCancellation = {
+              totalRows: Number(flipkartTotals.flipkartCancellationRows ?? 0),
+              pcs: Number(flipkartTotals.flipkartCancellationPcs ?? 0),
+              taxableValue: Number(flipkartTotals.flipkartCancellationTaxable ?? 0),
+              igst: Number(flipkartTotals.flipkartCancellationIgst ?? 0),
+              cgst: Number(flipkartTotals.flipkartCancellationCgst ?? 0),
+              sgst: Number(flipkartTotals.flipkartCancellationSgst ?? 0),
+              invoiceAmount: Number(flipkartTotals.flipkartCancellationInvoice ?? 0),
+            };
+            const flipkartReturnCancellation = {
+              totalRows: Number(flipkartTotals.flipkartReturnCancellationRows ?? 0),
+              pcs: Number(flipkartTotals.flipkartReturnCancellationPcs ?? 0),
+              taxableValue: Number(
+                flipkartTotals.flipkartReturnCancellationTaxable ?? 0,
+              ),
+              igst: Number(flipkartTotals.flipkartReturnCancellationIgst ?? 0),
+              cgst: Number(flipkartTotals.flipkartReturnCancellationCgst ?? 0),
+              sgst: Number(flipkartTotals.flipkartReturnCancellationSgst ?? 0),
+              invoiceAmount: Number(
+                flipkartTotals.flipkartReturnCancellationInvoice ?? 0,
+              ),
+            };
+            const creditNoteRow = {
+              totalRows: Number(flipkartNotes.creditNote.totalRows ?? 0),
+              pcs: Number(flipkartNotes.creditNote.pcs ?? 0),
+              taxableValue: Number(flipkartNotes.creditNote.taxableValue ?? 0),
+              igst: Number(flipkartNotes.creditNote.igst ?? 0),
+              cgst: Number(flipkartNotes.creditNote.cgst ?? 0),
+              sgst: Number(flipkartNotes.creditNote.sgst ?? 0),
+              invoiceAmount: Number(flipkartNotes.creditNote.invoiceAmount ?? 0),
+            };
+            const debitNoteRow = {
+              totalRows: Number(flipkartNotes.debitNote.totalRows ?? 0),
+              pcs: Number(flipkartNotes.debitNote.pcs ?? 0),
+              taxableValue: Number(flipkartNotes.debitNote.taxableValue ?? 0),
+              igst: Number(flipkartNotes.debitNote.igst ?? 0),
+              cgst: Number(flipkartNotes.debitNote.cgst ?? 0),
+              sgst: Number(flipkartNotes.debitNote.sgst ?? 0),
+              invoiceAmount: Number(flipkartNotes.debitNote.invoiceAmount ?? 0),
+            };
+            const saleRow = {
+              totalRows: Number(flipkartTotals.flipkartGrossSalesRows ?? 0),
+              pcs: Number(flipkartTotals.flipkartGrossSalesPcs ?? 0),
+              taxableValue: Number(flipkartTotals.flipkartGrossSalesTaxable ?? 0),
+              igst: Number(flipkartTotals.flipkartGrossSalesIgst ?? 0),
+              cgst: Number(flipkartTotals.flipkartGrossSalesCgst ?? 0),
+              sgst: Number(flipkartTotals.flipkartGrossSalesSgst ?? 0),
+              invoiceAmount: Number(flipkartTotals.flipkartGrossSalesInvoice ?? 0),
+            };
+            const returnsNet = computeFlipkartReturnsNetTotal(
+              flipkartReturn,
+              flipkartCancellation,
+              flipkartReturnCancellation,
+              debitNoteRow,
+            );
+            const grossSales = computeFlipkartGrossSale(saleRow, creditNoteRow);
+            const netSales = computeFlipkartNetSale(grossSales, returnsNet);
+
+            return {
+            sales: saleRow,
+            grossSales,
+            returns: returnsNet,
+            netSales,
+            flipkartReturns: {
+              return: flipkartReturn,
+              cancellation: flipkartCancellation,
+              returnCancellation: flipkartReturnCancellation,
+            },
+            flipkartNotes: {
+              creditNote: creditNoteRow,
+              debitNote: debitNoteRow,
+            },
+          };
+          })()
+        : marketplace === 'meesho' && meeshoTotals
         ? {
             sales: {
               totalRows: Number(meeshoTotals.meeshoGrossSalesRows ?? 0),
@@ -906,6 +1214,7 @@ export class ImportWorkflowService {
         salesReturnTable,
         paymentAmounts,
         byDocumentType,
+        byVoucherType,
         byReportType,
         alerts,
       },
@@ -1226,6 +1535,26 @@ export class ImportWorkflowService {
     }
   }
 
+  private async loadUploadMeta(uploadIds: string[]) {
+    const uniqueIds = [...new Set(uploadIds.filter(Boolean))];
+    const meta = new Map<string, { status?: string; errorMessage?: string }>();
+    if (!uniqueIds.length) return meta;
+
+    const uploads = await this.uploadModel
+      .find({ _id: { $in: uniqueIds } })
+      .select('status errorMessage')
+      .lean()
+      .exec();
+
+    for (const upload of uploads) {
+      meta.set(String(upload._id), {
+        status: upload.status,
+        errorMessage: upload.errorMessage,
+      });
+    }
+    return meta;
+  }
+
   private buildMarketplaceStatus(
     marketplace: MarketplaceUploadKey,
     marketplaceId: string,
@@ -1242,7 +1571,11 @@ export class ImportWorkflowService {
   ) {
     const definitions = getReportDefinitions(marketplace);
     const requiredSlots = getRequiredReportSlots(marketplace);
-    const recordBySlot = new Map(records.map((r) => [r.slot, r]));
+    const recordBySlot = new Map(
+      records
+        .filter((record) => record.status !== 'failed')
+        .map((r) => [r.slot, r]),
+    );
 
     const reports: SlotUploadInfo[] = definitions.map((def) => {
       const record = recordBySlot.get(def.slot);
@@ -1253,11 +1586,9 @@ export class ImportWorkflowService {
         required: def.required,
         status: record?.status === 'processing'
           ? 'processing'
-          : record?.status === 'failed'
-            ? 'failed'
-            : uploaded
-              ? 'uploaded'
-              : 'pending',
+          : uploaded
+            ? 'uploaded'
+            : 'pending',
         uploadId: record?.uploadId,
         fileName: record?.fileName,
         fileSize: record?.fileSize,

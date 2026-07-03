@@ -11,6 +11,7 @@ import {
   type MeeshoPaymentFieldKey,
 } from '../config/importMappings/meesho-payment.mapping';
 import { normalizeHeader as normalizeHeaderUtil } from '../utils/header.util';
+import { applyFlipkartInvoiceAmount } from '../utils/flipkart-invoice.util';
 import {
   collectSellerRegistrationStateKeys,
   isSameIndianState,
@@ -301,15 +302,6 @@ const SALES_MAPPINGS: MappingConfig[] = [
     transform: asNumber,
   },
   {
-    source: [
-      'Invoice Amount',
-      'Final Invoice Amount',
-      'Final Invoice Amount (Price after discount+Shipping Charges)',
-    ],
-    target: 'invoiceAmount',
-    transform: asNumber,
-  },
-  {
     source: ['Taxable Amount', 'Taxable Value'],
     target: 'taxableAmount',
     transform: asNumber,
@@ -381,7 +373,6 @@ const CASHBACK_MAPPINGS: MappingConfig[] = [
     transform: asString,
   },
   { source: ['Payment Mode'], target: 'paymentMode', transform: asString },
-  { source: ['Invoice Amount'], target: 'invoiceAmount', transform: asNumber },
   {
     source: ['Taxable Amount', 'Taxable Value'],
     target: 'taxableAmount',
@@ -965,11 +956,13 @@ export class MappingService {
   }
 
   mapSalesRow(row: ParsedSheetRow): NormalizedImportRow {
-    return this.mapRow(row, 'sales', SALES_MAPPINGS);
+    return applyFlipkartInvoiceAmount(this.mapRow(row, 'sales', SALES_MAPPINGS));
   }
 
   mapCashbackRow(row: ParsedSheetRow): NormalizedImportRow {
-    return this.mapRow(row, 'cashback', CASHBACK_MAPPINGS);
+    return applyFlipkartInvoiceAmount(
+      this.mapRow(row, 'cashback', CASHBACK_MAPPINGS),
+    );
   }
 
   mapAmazonRow(row: ParsedSheetRow): NormalizedImportRow {

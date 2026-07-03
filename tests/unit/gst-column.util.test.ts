@@ -2,7 +2,9 @@ import { flipkartImportMapping } from '../../src/report-import/config/importMapp
 import { amazonImportMapping } from '../../src/report-import/config/importMappings/amazon.mapping';
 import { meeshoImportMapping } from '../../src/report-import/config/importMappings/meesho.mapping';
 import {
+  collectGstinRowFilterProblems,
   extractGstinsFromRows,
+  filterRowsBySelectedGstin,
   headerMatchesExcelColumn,
   headersHaveGstColumn,
   normalizeGstinValue,
@@ -47,7 +49,7 @@ describe('gst-column.util', () => {
     );
   });
 
-  it('reads GSTIN from a single primary column when multiple aliases match', () => {
+  it('collects GSTIN values from every matching GST column alias', () => {
     const rows: ParsedSheetRow[] = [
       {
         __sheetName: 'TCS Sales',
@@ -66,7 +68,10 @@ describe('gst-column.util', () => {
       'gstin',
       'GST NO',
     ]);
-    expect([...values]).toEqual(['27AAAAA0000A1Z5']);
+    expect([...values].sort()).toEqual([
+      '27AAAAA0000A1Z5',
+      '29BBBBB0000B1Z5',
+    ]);
   });
 
   it('extracts Flipkart GSTIN from Seller GSTIN column', () => {
@@ -110,5 +115,84 @@ describe('gst-column.util', () => {
         flipkartImportMapping.gstin.excelColumns,
       ),
     ).toBe(true);
+  });
+
+  it('filters rows to only the selected GSTIN', () => {
+    const rows: ParsedSheetRow[] = [
+      {
+        __sheetName: 'Sales Report',
+        __rowNumber: 2,
+        'Seller GSTIN': '27AAAAA0000A1Z5',
+        'Order ID': 'O1',
+      },
+      {
+        __sheetName: 'Sales Report',
+        __rowNumber: 3,
+        'Seller GSTIN': '29BBBBB0000B1Z5',
+        'Order ID': 'O2',
+      },
+      {
+        __sheetName: 'Sales Report',
+        __rowNumber: 4,
+        'Seller GSTIN': '27AAAAA0000A1Z5',
+        'Order ID': 'O3',
+      },
+    ];
+    const result = filterRowsBySelectedGstin(
+      rows,
+      flipkartImportMapping,
+      ['Seller GSTIN', 'Order ID'],
+      '27AAAAA0000A1Z5',
+    );
+    expect(result.matchedCount).toBe(2);
+    expect(result.skippedCount).toBe(1);
+    expect(result.rows.map((r) => r['Order ID'])).toEqual(['O1', 'O3']);
+    expect([...result.fileGstins].sort()).toEqual([
+      '27AAAAA0000A1Z5',
+      '29BBBBB0000B1Z5',
+    ]);
+  });
+
+  it('reports no matching rows when file has other GSTINs only', () => {
+    const problems = collectGstinRowFilterProblems({
+      rows: [
+        {
+          __sheetName: 'Sales Report',
+          __rowNumber: 2,
+          'Seller GSTIN': '29BBBBB0000B1Z5',
+        },
+      ],
+      expectedGstin: '27AAAAA0000A1Z5',
+      mapping: flipkartImportMapping,
+      fileHeaders: ['Seller GSTIN'],
+      matchedRowCount: 0,
+      fileGstins: new Set(['29BBBBB0000B1Z5']),
+    });
+    expect(problems.some((p) => p.includes('No rows found for selected GSTIN'))).toBe(
+      true,
+    );
+  });
+
+  it('does not reject files with multiple GSTINs when filtering', () => {
+    const problems = collectGstinRowFilterProblems({
+      rows: [
+        {
+          __sheetName: 'Sales Report',
+          __rowNumber: 2,
+          'Seller GSTIN': '27AAAAA0000A1Z5',
+        },
+        {
+          __sheetName: 'Sales Report',
+          __rowNumber: 3,
+          'Seller GSTIN': '29BBBBB0000B1Z5',
+        },
+      ],
+      expectedGstin: '27AAAAA0000A1Z5',
+      mapping: flipkartImportMapping,
+      fileHeaders: ['Seller GSTIN'],
+      matchedRowCount: 1,
+      fileGstins: new Set(['27AAAAA0000A1Z5', '29BBBBB0000B1Z5']),
+    });
+    expect(problems).toEqual([]);
   });
 });

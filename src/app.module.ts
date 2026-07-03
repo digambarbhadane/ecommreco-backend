@@ -29,6 +29,11 @@ import {
   mongoConnectionHint,
 } from './config/mongo-uri';
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { resolveEnvFile } = require('../config/env-file') as {
+  resolveEnvFile: (nodeEnv?: string) => string;
+};
+
 const mongoLogger = new Logger('MongoDB');
 
 const maskMongoUri = (uri: string) =>
@@ -40,7 +45,7 @@ const DEFAULT_LOCAL_MONGODB_URI = 'mongodb://127.0.0.1:27017/sellerspl';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: `.env.${process.env.NODE_ENV || 'development'}`,
+      envFilePath: resolveEnvFile(process.env.NODE_ENV),
     }),
     ThrottlerModule.forRoot([
       {

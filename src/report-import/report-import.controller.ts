@@ -20,6 +20,7 @@ import {
   StreamableFile,
   UploadedFile,
   UploadedFiles,
+  UseFilters,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
@@ -45,6 +46,7 @@ import {
 } from './marketplace-upload.routes';
 import { StateWiseReportService } from './services/state-wise-report.service';
 import { StateWiseExportDto } from './dto/state-wise-export.dto';
+import { MulterExceptionFilter } from './filters/multer-exception.filter';
 import type { Request } from 'express';
 import type { UploadedReportFiles } from './marketplace-upload.routes';
 
@@ -56,6 +58,7 @@ type RequestWithUser = Request & {
 @ApiBearerAuth()
 @Controller('report-imports')
 @UseGuards(AuthGuard('jwt'), RolesGuard)
+@UseFilters(MulterExceptionFilter)
 export class ReportImportController {
   constructor(
     private readonly uploadService: UploadService,

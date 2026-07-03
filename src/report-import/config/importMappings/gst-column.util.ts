@@ -23,7 +23,17 @@ export const parseGstinFromCell = (raw: unknown): string | undefined => {
   if (raw === null || raw === undefined) return undefined;
   if (typeof raw === 'object') return undefined;
 
-  let text = String(raw).trim().toUpperCase();
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    const asText = String(raw);
+    if (/E[+-]?/i.test(asText)) return undefined;
+    return parseGstinFromText(asText);
+  }
+
+  return parseGstinFromText(String(raw));
+};
+
+const parseGstinFromText = (raw: string): string | undefined => {
+  let text = raw.trim().toUpperCase();
   if (!text) return undefined;
 
   // Excel text prefix apostrophe or backtick
@@ -109,7 +119,56 @@ export const extractGstinFromRow = (
     const value = parseGstinFromCell(raw);
     if (value) return value;
   }
+  for (const [key, raw] of Object.entries(row)) {
+    if (key.startsWith('__')) continue;
+    const value = parseGstinFromCell(raw);
+    if (value) return value;
+  }
   return undefined;
+};
+
+export const resolveGstHeaderKeys = (
+  headers: string[],
+  excelColumns: string[],
+): string[] =>
+  headers.filter((header) => headerMatchesAnyExcelColumn(header, excelColumns));
+
+/** Forward-fill empty GSTIN cells from the previous row (common in Flipkart exports). */
+export const enrichRowsWithForwardFilledGstin = (
+  rows: ParsedSheetRow[],
+  mapping: MarketplaceImportMapping,
+  fileHeaders: string[] = [],
+): ParsedSheetRow[] => {
+  const gstKeys = resolveGstHeaderKeys(
+    fileHeaders.length
+      ? fileHeaders
+      : rows.length
+        ? Object.keys(rows[0]).filter((key) => !key.startsWith('__'))
+        : [],
+    mapping.gstin.excelColumns,
+  );
+  if (!gstKeys.length) return rows;
+
+  let lastGstin: string | undefined;
+  return rows.map((row) => {
+    const next: ParsedSheetRow = { ...row };
+    let rowGstin = extractGstinFromRow(next, mapping.gstin.excelColumns);
+
+    if (!rowGstin && lastGstin) {
+      for (const key of gstKeys) {
+        if (key in next) {
+          next[key] = lastGstin;
+        }
+      }
+      rowGstin = lastGstin;
+    }
+
+    if (rowGstin) {
+      lastGstin = rowGstin;
+    }
+
+    return next;
+  });
 };
 
 export const extractGstinsFromRows = (
@@ -137,12 +196,27 @@ export const extractGstinsFromRows = (
     mapping.gstin.excelColumns,
   );
 
+  const headersToScan = new Set<string>();
   if (primaryHeader) {
     foundColumn = true;
     matchedHeaders.add(primaryHeader);
+    headersToScan.add(primaryHeader);
+  }
+  for (const header of headerCandidates) {
+    if (!headerMatchesAnyExcelColumn(header, mapping.gstin.excelColumns)) {
+      continue;
+    }
+    foundColumn = true;
+    matchedHeaders.add(header);
+    headersToScan.add(header);
+  }
+
+  if (headersToScan.size) {
     rows.forEach((row) => {
-      const value = parseGstinFromCell(row[primaryHeader]);
-      if (value) values.add(value);
+      for (const key of headersToScan) {
+        const value = parseGstinFromCell(row[key]);
+        if (value) values.add(value);
+      }
     });
     return { values, foundColumn, matchedHeaders, primaryHeader };
   }
@@ -182,6 +256,121 @@ export const resolveExpectedGstin = (expectedGstin: string): string => {
     return compact;
   }
   return '';
+};
+
+export type FilterRowsByGstinResult = {
+  rows: ParsedSheetRow[];
+  matchedCount: number;
+  skippedCount: number;
+  fileGstins: Set<string>;
+};
+
+/** Keep only rows whose GSTIN column matches the selected profile GSTIN. */
+export const filterRowsBySelectedGstin = (
+  rows: ParsedSheetRow[],
+  mapping: MarketplaceImportMapping,
+  fileHeaders: string[] = [],
+  expectedGstin: string,
+): FilterRowsByGstinResult => {
+  const enrichedRows = enrichRowsWithForwardFilledGstin(
+    rows,
+    mapping,
+    fileHeaders,
+  );
+  const selectedGSTIN = resolveExpectedGstin(expectedGstin);
+  const matching: ParsedSheetRow[] = [];
+  let skippedCount = 0;
+  const fileGstins = new Set<string>();
+
+  for (const row of enrichedRows) {
+    const rowGstin = extractGstinFromRow(row, mapping.gstin.excelColumns);
+    if (rowGstin) {
+      fileGstins.add(rowGstin);
+    }
+    if (!selectedGSTIN || rowGstin !== selectedGSTIN) {
+      skippedCount += 1;
+      continue;
+    }
+    matching.push(row);
+  }
+
+  return {
+    rows: matching,
+    matchedCount: matching.length,
+    skippedCount,
+    fileGstins,
+  };
+};
+
+export type GstinRowFilterValidationInput = GstinValidationInput & {
+  matchedRowCount: number;
+  fileGstins?: Set<string>;
+};
+
+/** Validates GST column presence and that at least one row matches the selected GSTIN. */
+export const collectGstinRowFilterProblems = (
+  input: GstinRowFilterValidationInput,
+): string[] => {
+  const problems: string[] = [];
+  const fileHeaders = input.fileHeaders ?? [];
+  const fallbackGstins = input.fallbackGstins ?? [];
+  const selectedGSTIN = resolveExpectedGstin(input.expectedGstin);
+  const gstColumn = input.mapping.gstin.excelColumns[0];
+
+  const { values, foundColumn } = extractGstinsFromRows(
+    input.rows,
+    input.mapping,
+    fileHeaders,
+  );
+  fallbackGstins.forEach((raw) => {
+    const gstin = parseGstinFromCell(raw);
+    if (gstin) values.add(gstin);
+  });
+
+  const fileGstins = input.fileGstins ?? values;
+  fallbackGstins.forEach((raw) => {
+    const gstin = parseGstinFromCell(raw);
+    if (gstin) fileGstins.add(gstin);
+  });
+
+  const headerHasGstColumn = headersHaveGstColumn(
+    fileHeaders,
+    input.mapping.gstin.excelColumns,
+  );
+  const gstColumnFound =
+    foundColumn || headerHasGstColumn || fallbackGstins.length > 0;
+
+  if (!gstColumnFound) {
+    problems.push(
+      `GSTIN column not found. Expected one of: ${input.mapping.gstin.excelColumns.map((c) => `"${c}"`).join(', ')}.`,
+    );
+    return problems;
+  }
+
+  if (!selectedGSTIN) {
+    problems.push(
+      `Selected GST profile has no valid GSTIN stored ("${String(input.expectedGstin ?? '').trim()}"). Re-verify the GST profile and try again.`,
+    );
+    return problems;
+  }
+
+  if (input.matchedRowCount <= 0) {
+    if (fileGstins.size > 0) {
+      problems.push(
+        `No rows found for selected GSTIN "${selectedGSTIN}". File contains: ${[...fileGstins].join(', ')}. Only rows matching the selected GST profile are imported.`,
+      );
+    } else {
+      const fillHint =
+        input.mapping.key === 'flipkart'
+          ? 'Ensure the Seller GSTIN column is filled on the Sales Report and Cash Back Report sheets.'
+          : 'Check that the GSTIN column is filled in your report.';
+      problems.push(
+        `GSTIN column "${gstColumn}" was found but contains no valid GSTIN values. ${fillHint}`,
+      );
+    }
+  }
+
+  return problems;
 };
 
 export const collectGstinValidationProblems = (

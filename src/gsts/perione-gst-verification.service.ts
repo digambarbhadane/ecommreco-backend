@@ -20,6 +20,7 @@ import {
   isActiveGstStatus,
   isValidGstinFormat,
   normalizeGstin,
+  parsePerioneRegistrationDate,
 } from './gst-verification.constants';
 
 export type VerifiedGstPreview = {
@@ -49,64 +50,98 @@ export class PerioneGstVerificationService {
   ) {}
 
   async verifyGstNumber(gstNumber: string, sellerId?: string) {
-    const gstin = normalizeGstin(gstNumber);
-    if (!isValidGstinFormat(gstin)) {
-      throw new BadRequestException({
-        success: false,
-        message: 'Please enter a valid GST number.',
-        errorCode: 'INVALID_GST_FORMAT',
-      });
-    }
+    try {
+      const gstin = normalizeGstin(gstNumber);
+      if (!isValidGstinFormat(gstin)) {
+        throw new BadRequestException({
+          success: false,
+          message: 'Please enter a valid GST number.',
+          errorCode: 'INVALID_GST_FORMAT',
+        });
+      }
 
-    const credentials = this.getCredentials();
-    const raw = await this.callPerioneApi(gstin, credentials);
-    const parsed = this.parsePerioneResponse(raw, gstin);
+      const credentials = this.getCredentials();
+      const raw = await this.callPerioneApi(gstin, credentials);
+      const parsed = this.parsePerioneResponse(raw, gstin);
 
-    if (!parsed.found) {
-      throw new BadRequestException({
+      if (!parsed.found) {
+        throw new BadRequestException({
+          success: false,
+          message:
+            'GST number not found. Please verify the GST number and try again.',
+          errorCode: 'GST_NOT_FOUND',
+        });
+      }
+
+      if (!isActiveGstStatus(parsed.status)) {
+        throw new BadRequestException({
+          success: false,
+          message:
+            'GST found but status is inactive. Only active GST registrations can be added.',
+          errorCode: 'GST_INACTIVE',
+          data: this.toPreviewPayload(parsed, ''),
+        });
+      }
+
+      const verifiedAt = new Date();
+      const update: Record<string, unknown> = {
+        gstin,
+        valid: true,
+        legalName: parsed.businessName,
+        tradeName: parsed.tradeName,
+        status: parsed.status,
+        taxpayerType: parsed.taxpayerType,
+        principalAddress: parsed.address,
+        lastVerifiedAt: verifiedAt,
+        rawResponse: this.sanitizeRawResponse(raw),
+        sellerId: sellerId ?? null,
+      };
+      if (parsed.registrationDate) {
+        const registrationDate = parsePerioneRegistrationDate(
+          parsed.registrationDate,
+        );
+        if (registrationDate) {
+          update.registrationDate = registrationDate;
+        }
+      }
+
+      const saved = await this.verificationModel.findOneAndUpdate(
+        { gstin },
+        { $set: update },
+        { returnDocument: 'after', upsert: true, setDefaultsOnInsert: true },
+      );
+
+      if (!saved) {
+        throw new ServiceUnavailableException({
+          success: false,
+          message:
+            'Unable to save GST verification result. Please try again.',
+          errorCode: 'VERIFICATION_SAVE_FAILED',
+        });
+      }
+
+      const verificationId = String(saved._id);
+      return {
+        success: true,
+        data: this.toPreviewPayload(parsed, verificationId, verifiedAt),
+      };
+    } catch (error: unknown) {
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      const detail =
+        error instanceof Error ? error.message : String(error ?? 'unknown');
+      this.logger.error(
+        `Unexpected GST verification failure for ${gstNumber}: ${detail}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      throw new ServiceUnavailableException({
         success: false,
         message:
-          'GST number not found. Please verify the GST number and try again.',
-        errorCode: 'GST_NOT_FOUND',
+          'Unable to verify GST number right now. Please try again in a moment.',
+        errorCode: 'VERIFICATION_FAILED',
       });
     }
-
-    if (!isActiveGstStatus(parsed.status)) {
-      throw new BadRequestException({
-        success: false,
-        message:
-          'GST found but status is inactive. Only active GST registrations can be added.',
-        errorCode: 'GST_INACTIVE',
-        data: this.toPreviewPayload(parsed, ''),
-      });
-    }
-
-    const verifiedAt = new Date();
-    const saved = await this.verificationModel.findOneAndUpdate(
-      { gstin },
-      {
-        $set: {
-          gstin,
-          valid: true,
-          legalName: parsed.businessName,
-          tradeName: parsed.tradeName,
-          status: parsed.status,
-          taxpayerType: parsed.taxpayerType,
-          registrationDate: parsed.registrationDate,
-          principalAddress: parsed.address,
-          lastVerifiedAt: verifiedAt,
-          rawResponse: this.sanitizeRawResponse(raw),
-          sellerId: sellerId ?? null,
-        },
-      },
-      { new: true, upsert: true, setDefaultsOnInsert: true },
-    );
-
-    const verificationId = String(saved._id);
-    return {
-      success: true,
-      data: this.toPreviewPayload(parsed, verificationId, verifiedAt),
-    };
   }
 
   async getRecentVerification(verificationId: string, gstNumber?: string) {
@@ -271,9 +306,10 @@ export class PerioneGstVerificationService {
     const statusCd = String(root.status_cd ?? root.statusCd ?? '').trim();
 
     if (statusCd && statusCd !== '1' && statusCd.toLowerCase() !== 'success') {
-      const rootMessage = this.readString(root, ['message', 'error', 'status_desc']);
+      const rootMessage = this.readApiMessage(root);
       if (
         rootMessage.toLowerCase().includes('not found') ||
+        rootMessage.toLowerCase().includes('invalid gstin') ||
         statusCd === '0'
       ) {
         return this.emptyParseResult(gstin, false);
@@ -299,6 +335,7 @@ export class PerioneGstVerificationService {
     ]);
     const tradeName = this.readString(record, [
       'trdnm',
+      'tradeNam',
       'trade_name',
       'tradeName',
       'trade_name_of_business',
@@ -329,9 +366,7 @@ export class PerioneGstVerificationService {
 
     const explicitNotFound =
       this.readBoolean(record, ['found', 'exists', 'valid']) === false ||
-      String(this.readString(root, ['message', 'error', 'status_desc']) ?? '')
-        .toLowerCase()
-        .includes('not found');
+      this.readApiMessage(root).toLowerCase().includes('not found');
 
     const found =
       !explicitNotFound &&
@@ -392,16 +427,33 @@ export class PerioneGstVerificationService {
     return '';
   }
 
-  private readPerioneErrorMessage(data: unknown) {
-    if (!data || typeof data !== 'object') return '';
-    const record = data as PerioneRecord;
-    return this.readString(record, [
+  private readApiMessage(record: PerioneRecord) {
+    const direct = this.readString(record, [
       'message',
-      'error',
       'status_desc',
       'statusDesc',
       'error_message',
     ]);
+    if (direct) return direct;
+
+    const errorValue = record.error;
+    if (typeof errorValue === 'string' && errorValue.trim()) {
+      return errorValue.trim();
+    }
+    if (errorValue && typeof errorValue === 'object' && !Array.isArray(errorValue)) {
+      return this.readString(errorValue as PerioneRecord, [
+        'message',
+        'error_message',
+        'status_desc',
+        'statusDesc',
+      ]);
+    }
+    return '';
+  }
+
+  private readPerioneErrorMessage(data: unknown) {
+    if (!data || typeof data !== 'object') return '';
+    return this.readApiMessage(data as PerioneRecord);
   }
 
   private pickRecord(payload: PerioneRecord, gstin: string): PerioneRecord {
@@ -477,18 +529,22 @@ export class PerioneGstVerificationService {
     if (!raw || typeof raw !== 'object') {
       return { value: raw };
     }
-    const clone = JSON.parse(JSON.stringify(raw)) as Record<string, unknown>;
-    for (const key of [
-      'client_secret',
-      'clientSecret',
-      'client_id',
-      'clientId',
-    ]) {
-      if (key in clone) {
-        delete clone[key];
+    try {
+      const clone = JSON.parse(JSON.stringify(raw)) as Record<string, unknown>;
+      for (const key of [
+        'client_secret',
+        'clientSecret',
+        'client_id',
+        'clientId',
+      ]) {
+        if (key in clone) {
+          delete clone[key];
+        }
       }
+      return clone;
+    } catch {
+      return { serialized: false };
     }
-    return clone;
   }
 
   private toPreviewPayload(

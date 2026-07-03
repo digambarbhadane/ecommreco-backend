@@ -31,3 +31,34 @@ export function isActiveGstStatus(status?: string | null) {
   }
   return normalized.includes('active') || normalized === 'regular';
 }
+
+/** Perione returns registration dates as DD/MM/YYYY (Indian format). */
+export function parsePerioneRegistrationDate(
+  value?: string | null,
+): Date | undefined {
+  const trimmed = String(value ?? '').trim();
+  if (!trimmed) return undefined;
+
+  const ddMmYyyy = trimmed.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (ddMmYyyy) {
+    const day = Number(ddMmYyyy[1]);
+    const month = Number(ddMmYyyy[2]);
+    const year = Number(ddMmYyyy[3]);
+    const date = new Date(year, month - 1, day);
+    if (
+      !Number.isNaN(date.getTime()) &&
+      date.getFullYear() === year &&
+      date.getMonth() === month - 1 &&
+      date.getDate() === day
+    ) {
+      return date;
+    }
+    return undefined;
+  }
+
+  const iso = new Date(trimmed);
+  if (!Number.isNaN(iso.getTime())) {
+    return iso;
+  }
+  return undefined;
+}

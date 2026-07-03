@@ -11,11 +11,13 @@ import { Gst, GstDocument } from '../../gsts/schemas/gst.schema';
 import { ValidationService } from './validation.service';
 import { StateWiseExportDto } from '../dto/state-wise-export.dto';
 import {
-  buildStateWiseAggregationPipeline,
   buildStateWiseSalesMatch,
-  mapAggregationResults,
   StateWiseAggregatedRow,
 } from '../utils/state-wise-report.aggregation';
+import {
+  aggregateStateWiseRows,
+  sellerStateKeysFromRegistration,
+} from '../utils/state-wise-gst-split.util';
 
 type MarketplaceTarget = {
   id: string;
@@ -331,6 +333,24 @@ export class StateWiseReportService {
     return groups.map((g) => this.groupToTarget(g));
   }
 
+  private async resolveSellerStateKeysForGstin(
+    ctx: ReportContext,
+  ): Promise<Set<string>> {
+    const gstRecord = await this.gstModel
+      .findOne({
+        gstNumber: ctx.gstin,
+        sellerId: { $in: ctx.sellerAliases },
+      })
+      .select('state gstNumber')
+      .lean()
+      .exec();
+
+    return sellerStateKeysFromRegistration(
+      gstRecord?.state,
+      gstRecord?.gstNumber ?? ctx.gstin,
+    );
+  }
+
   private async aggregateForMarketplace(
     ctx: ReportContext,
     target: MarketplaceTarget,
@@ -341,20 +361,33 @@ export class StateWiseReportService {
       marketplace: { $in: target.matchKeys },
     };
 
+    const sellerStateKeys = await this.resolveSellerStateKeysForGstin(ctx);
+    if (sellerStateKeys.size === 0) {
+      this.logger.warn(
+        `State-wise report: no seller registration state resolved for GSTIN ${ctx.gstin}`,
+      );
+    }
+
     const rows = await this.rowModel
-      .aggregate<{
-        _id: { stateName: string; gstRate: number };
-        qty: number;
-        taxableValue: number;
-        igst: number;
-        cgst: number;
-        sgst: number;
-        invoiceAmount: number;
-      }>(buildStateWiseAggregationPipeline(match))
-      .option({ allowDiskUse: true, maxTimeMS: 120_000 })
+      .find(match)
+      .select({
+        stateName: 1,
+        igstRate: 1,
+        cgstRate: 1,
+        sgstRate: 1,
+        igstAmount: 1,
+        cgstAmount: 1,
+        sgstAmount: 1,
+        taxableAmount: 1,
+        invoiceAmount: 1,
+        quantity: 1,
+        returnQty: 1,
+        meeshoIsGrossSale: 1,
+      })
+      .lean()
       .exec();
 
-    return mapAggregationResults(rows);
+    return aggregateStateWiseRows(rows, sellerStateKeys);
   }
 
   private async buildReportData(query: StateWiseExportDto) {
