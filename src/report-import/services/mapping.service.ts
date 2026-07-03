@@ -7,6 +7,17 @@ import {
   type FlipkartPaymentFieldKey,
 } from '../config/importMappings/flipkart-payment.mapping';
 import {
+  flipkartReturnFieldMappings,
+  type FlipkartReturnFieldKey,
+} from '../config/importMappings/flipkart-return.mapping';
+import {
+  amazonReturnFieldMappings,
+  type AmazonReturnFieldKey,
+} from '../config/importMappings/amazon-return.mapping';
+import {
+  resolveAmazonReturnDetails,
+} from '../utils/amazon-return.util';
+import {
   meeshoPaymentFieldMappings,
   type MeeshoPaymentFieldKey,
 } from '../config/importMappings/meesho-payment.mapping';
@@ -61,6 +72,7 @@ export type NormalizedImportRow = {
   meeshoIsGrossSale?: boolean;
   meeshoIsPreviousMonthReturn?: boolean;
   meeshoReturnSubType?: 'cancellation' | 'rto' | 'customer_return' | 'na';
+  amazonReturnSubType?: 'customer_return' | 'rto' | 'na';
   meeshoOrderStatus?: string;
   meeshoTcsReturnStatus?: string;
   /** Return line amounts from TCS Sales Return (kept separate from gross sales amounts on the row). */
@@ -945,6 +957,67 @@ export class MappingService {
       }
     }
     return out;
+  }
+
+  mapFlipkartReturnFields(
+    returnRow: ParsedSheetRow,
+  ): Pick<
+    NormalizedImportRow,
+    FlipkartReturnFieldKey
+  > {
+    const out = {} as Pick<NormalizedImportRow, FlipkartReturnFieldKey>;
+
+    for (const mapping of flipkartReturnFieldMappings) {
+      const raw = getRowCell(returnRow, ...mapping.source);
+      const value = asString(raw);
+      if (value !== undefined) {
+        out[mapping.target] = value as never;
+      }
+    }
+    const hasOtherReturnDetail =
+      Boolean(out.returnReason) || Boolean(out.detailedReturnReason);
+    if (hasOtherReturnDetail && !out.typeOfReturn) {
+      out.typeOfReturn = '#N/A';
+    }
+    return out;
+  }
+
+  mapAmazonReturnFields(
+    returnRow: ParsedSheetRow,
+  ): Pick<NormalizedImportRow, AmazonReturnFieldKey | 'amazonReturnSubType'> {
+    let returnType = '';
+    for (const mapping of amazonReturnFieldMappings) {
+      const raw = getRowCell(returnRow, ...mapping.source);
+      const value = asString(raw);
+      if (value !== undefined) {
+        returnType = value;
+      }
+    }
+
+    const orderId = asString(
+      getRowCell(returnRow, 'Order Id', 'Order ID', 'order_id', 'Order Number'),
+    ) ?? '';
+
+    return resolveAmazonReturnDetails(returnType, orderId);
+  }
+
+  enrichAmazonFromReturnReport(
+    mapped: NormalizedImportRow,
+    returnDetails?: Pick<
+      NormalizedImportRow,
+      'typeOfReturn' | 'amazonReturnSubType'
+    > | null,
+  ): NormalizedImportRow {
+    if (!returnDetails) return mapped;
+    return {
+      ...mapped,
+      ...(returnDetails.typeOfReturn
+        ? { typeOfReturn: returnDetails.typeOfReturn }
+        : {}),
+      ...(returnDetails.amazonReturnSubType
+        ? { amazonReturnSubType: returnDetails.amazonReturnSubType }
+        : {}),
+    };
   }
 
   enrichMeeshoFromPaymentReport(

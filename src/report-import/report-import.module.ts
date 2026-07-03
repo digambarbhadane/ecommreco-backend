@@ -26,6 +26,7 @@ import { FileParserService } from './services/file-parser.service';
 import { MappingService } from './services/mapping.service';
 import { MeeshoImportService } from './services/meesho-import.service';
 import { FlipkartImportService } from './services/flipkart-import.service';
+import { AmazonImportService } from './services/amazon-import.service';
 import { MyntraImportService } from './services/myntra-import.service';
 import { UploadService } from './services/upload.service';
 import { ValidationService } from './services/validation.service';
@@ -84,6 +85,7 @@ import { StateWiseReportService } from './services/state-wise-report.service';
     MappingService,
     MeeshoImportService,
     FlipkartImportService,
+    AmazonImportService,
     MyntraImportService,
     UploadService,
     ImportSessionService,

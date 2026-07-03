@@ -30,15 +30,18 @@ import {
   resolveSlotSummary,
 } from '../utils/slot-summary-resolver';
 import {
-  aggregateFlipkartMonthSummaryFromRows,
+  buildAmazonWorkflowMonthSummaryPipeline,
+  buildFlipkartWorkflowMonthSummaryPipeline,
   buildMeeshoWorkflowMonthSummaryPipeline,
   buildWorkflowMonthSummaryPipeline,
   computeFlipkartReturnsNetTotal,
   computeFlipkartGrossSale,
   computeFlipkartNetSale,
   flipkartBucketLabel,
+  mapFlipkartNoteFacetRows,
   mapFlipkartVoucherTypeSummaryRows,
   PAYMENT_AMOUNT_FIELDS,
+  type AmazonMonthTotalsRow,
   type FlipkartMonthTotalsRow,
   type FlipkartVoucherTypeSummaryRow,
   type MeeshoMonthTotalsRow,
@@ -85,6 +88,14 @@ const FLIPKART_PAYMENT_FIELDS = [
   'transactionId',
   'paymentDate',
 ] as const;
+
+const FLIPKART_RETURN_DETAIL_FIELDS = [
+  'typeOfReturn',
+  'returnReason',
+  'detailedReturnReason',
+] as const;
+
+const AMAZON_RETURN_DETAIL_FIELDS = ['typeOfReturn', 'amazonReturnSubType'] as const;
 
 const PAYMENT_FIELDS_BY_MARKETPLACE: Record<
   MarketplaceUploadKey,
@@ -743,12 +754,19 @@ export class ImportWorkflowService {
     ).length;
 
     const primaryUploadId = this.resolvePrimaryUploadId(marketplace, slotRecords);
+    const amazonUploadIds =
+      marketplace === 'amazon'
+        ? this.resolveAmazonUploadIds(slotRecords)
+        : [];
     const paymentUploaded = uploadedReports.some(
       (r) => r.slot === 'paymentReportFile',
     );
 
-    let totals: WorkflowMonthTotalsRow | MeeshoMonthTotalsRow | FlipkartMonthTotalsRow =
-      {};
+    let totals:
+      | WorkflowMonthTotalsRow
+      | MeeshoMonthTotalsRow
+      | FlipkartMonthTotalsRow
+      | AmazonMonthTotalsRow = {};
     let byDocumentType: Array<{
       documentType: string;
       count: number;
@@ -785,93 +803,44 @@ export class ImportWorkflowService {
     let rowErrorCount = 0;
     let hasImportedData = false;
 
-    if (primaryUploadId) {
-      const rowFilter = {
-        uploadId: primaryUploadId,
-        sellerId: { $in: sellerAliases },
-        marketplace: marketplaceId,
-      };
+    if (primaryUploadId || amazonUploadIds.length) {
+      const rowFilter =
+        marketplace === 'amazon' && amazonUploadIds.length
+          ? {
+              uploadId: { $in: amazonUploadIds },
+              sellerId: { $in: sellerAliases },
+              marketplace: marketplaceId,
+            }
+          : {
+              uploadId: primaryUploadId!,
+              sellerId: { $in: sellerAliases },
+              marketplace: marketplaceId,
+            };
 
-      const sellerStateKeys =
-        await this.validationService.resolveSellerStateKeysForGst(
-          gstId,
-          sellerAliases,
-        );
-
-      if (marketplace === 'flipkart') {
-        const flipkartRowSelect: Record<string, 1> = {
-          documentType: 1,
-          voucherType: 1,
-          stateName: 1,
-          igstRate: 1,
-          cgstRate: 1,
-          sgstRate: 1,
-          igstAmount: 1,
-          cgstAmount: 1,
-          sgstAmount: 1,
-          taxableAmount: 1,
-          invoiceAmount: 1,
-          quantity: 1,
-          orderID: 1,
-          reportType: 1,
-          invoiceDate: 1,
-          finalSettlementAmount: 1,
-        };
-        for (const { key } of PAYMENT_AMOUNT_FIELDS) {
-          flipkartRowSelect[key] = 1;
-        }
-
-        const [importRows, errors] = await Promise.all([
-          this.rowModel.find(rowFilter).select(flipkartRowSelect).lean().exec(),
-          this.rowErrorModel.countDocuments({ uploadId: primaryUploadId }).exec(),
-        ]);
-
-        const flipkartSummary = aggregateFlipkartMonthSummaryFromRows(
-          importRows,
-          sellerStateKeys,
-        );
-
-        totals = flipkartSummary.totals;
-        rowErrorCount = errors;
-        hasImportedData = Number(totals.totalRows ?? 0) > 0;
-
-        byDocumentType = flipkartSummary.byDocumentType.map((item) => ({
-          documentType: String(item._id ?? 'Unknown'),
-          count: item.count,
-          invoiceAmount: Number(item.invoiceAmount ?? 0),
-          taxableAmount: Number(item.taxableAmount ?? 0),
-        }));
-        byReportType = flipkartSummary.byReportType.map((item) => ({
-          reportType: String(item._id ?? 'unknown'),
-          count: item.count,
-          invoiceAmount: Number(item.invoiceAmount ?? 0),
-          taxableAmount: Number(item.taxableAmount ?? 0),
-        }));
-        byVoucherType = mapFlipkartVoucherTypeSummaryRows(
-          flipkartSummary.byVoucherType.map((item) => ({
-            bucket: String(item._id ?? 'other'),
-            label: flipkartBucketLabel(String(item._id ?? 'other')),
-            count: item.count,
-            pcs: Number(item.pcs ?? 0),
-            invoiceAmount: Number(item.invoiceAmount ?? 0),
-            taxableAmount: Number(item.taxableAmount ?? 0),
-            igst: Number(item.igst ?? 0),
-            cgst: Number(item.cgst ?? 0),
-            sgst: Number(item.sgst ?? 0),
-          })),
-        );
-        flipkartNotes = flipkartSummary.flipkartNotes;
-      } else {
       const summaryPipeline =
-        marketplace === 'meesho'
-          ? buildMeeshoWorkflowMonthSummaryPipeline(rowFilter)
-          : buildWorkflowMonthSummaryPipeline(rowFilter);
+        marketplace === 'flipkart'
+          ? buildFlipkartWorkflowMonthSummaryPipeline(rowFilter)
+          : marketplace === 'meesho'
+            ? buildMeeshoWorkflowMonthSummaryPipeline(rowFilter)
+            : marketplace === 'amazon'
+              ? buildAmazonWorkflowMonthSummaryPipeline(rowFilter)
+              : buildWorkflowMonthSummaryPipeline(rowFilter);
+
+      const summaryUploadIds =
+        marketplace === 'amazon' && amazonUploadIds.length
+          ? amazonUploadIds
+          : primaryUploadId
+            ? [primaryUploadId]
+            : [];
 
       const [agg, errors] = await Promise.all([
         this.rowModel
           .aggregate<{
             totals: Array<
-              WorkflowMonthTotalsRow | MeeshoMonthTotalsRow | FlipkartMonthTotalsRow
+              | WorkflowMonthTotalsRow
+              | MeeshoMonthTotalsRow
+              | FlipkartMonthTotalsRow
+              | AmazonMonthTotalsRow
             >;
             byDocumentType: Array<{
               _id: string;
@@ -907,8 +876,13 @@ export class ImportWorkflowService {
               taxableAmount: number;
             }>;
           }>(summaryPipeline)
+          .allowDiskUse(true)
           .exec(),
-        this.rowErrorModel.countDocuments({ uploadId: primaryUploadId }).exec(),
+        summaryUploadIds.length
+          ? this.rowErrorModel
+              .countDocuments({ uploadId: { $in: summaryUploadIds } })
+              .exec()
+          : Promise.resolve(0),
       ]);
 
       const facet = agg[0] ?? {
@@ -934,6 +908,22 @@ export class ImportWorkflowService {
         invoiceAmount: Number(item.invoiceAmount ?? 0),
         taxableAmount: Number(item.taxableAmount ?? 0),
       }));
+
+      if (marketplace === 'flipkart') {
+        byVoucherType = mapFlipkartVoucherTypeSummaryRows(
+          (facet.byVoucherType ?? []).map((item) => ({
+            bucket: String(item._id ?? 'other'),
+            label: flipkartBucketLabel(String(item._id ?? 'other')),
+            count: item.count,
+            pcs: Number(item.pcs ?? 0),
+            invoiceAmount: Number(item.invoiceAmount ?? 0),
+            taxableAmount: Number(item.taxableAmount ?? 0),
+            igst: Number(item.igst ?? 0),
+            cgst: Number(item.cgst ?? 0),
+            sgst: Number(item.sgst ?? 0),
+          })),
+        );
+        flipkartNotes = mapFlipkartNoteFacetRows(facet.noteTotals ?? []);
       }
     }
 
@@ -988,6 +978,8 @@ export class ImportWorkflowService {
     const meeshoTotals = marketplace === 'meesho' ? (totals as MeeshoMonthTotalsRow) : null;
     const flipkartTotals =
       marketplace === 'flipkart' ? (totals as FlipkartMonthTotalsRow) : null;
+    const amazonTotals =
+      marketplace === 'amazon' ? (totals as AmazonMonthTotalsRow) : null;
     const meeshoReturnTotalRows = Number(meeshoTotals?.meeshoTcsReturnRows ?? 0);
     const meeshoReturnTotalPcs = Number(meeshoTotals?.meeshoTcsReturnPcs ?? 0);
     const meeshoReturnTotalTaxable = Number(meeshoTotals?.meeshoTcsReturnTaxable ?? 0);
@@ -1007,6 +999,33 @@ export class ImportWorkflowService {
               cgst: Number(flipkartTotals.flipkartReturnCgst ?? 0),
               sgst: Number(flipkartTotals.flipkartReturnSgst ?? 0),
               invoiceAmount: Number(flipkartTotals.flipkartReturnInvoice ?? 0),
+              customerReturn: {
+                totalRows: Number(flipkartTotals.flipkartReturnCustomerRows ?? 0),
+                pcs: Number(flipkartTotals.flipkartReturnCustomerPcs ?? 0),
+                taxableValue: Number(flipkartTotals.flipkartReturnCustomerTaxable ?? 0),
+                igst: Number(flipkartTotals.flipkartReturnCustomerIgst ?? 0),
+                cgst: Number(flipkartTotals.flipkartReturnCustomerCgst ?? 0),
+                sgst: Number(flipkartTotals.flipkartReturnCustomerSgst ?? 0),
+                invoiceAmount: Number(flipkartTotals.flipkartReturnCustomerInvoice ?? 0),
+              },
+              courierReturn: {
+                totalRows: Number(flipkartTotals.flipkartReturnCourierRows ?? 0),
+                pcs: Number(flipkartTotals.flipkartReturnCourierPcs ?? 0),
+                taxableValue: Number(flipkartTotals.flipkartReturnCourierTaxable ?? 0),
+                igst: Number(flipkartTotals.flipkartReturnCourierIgst ?? 0),
+                cgst: Number(flipkartTotals.flipkartReturnCourierCgst ?? 0),
+                sgst: Number(flipkartTotals.flipkartReturnCourierSgst ?? 0),
+                invoiceAmount: Number(flipkartTotals.flipkartReturnCourierInvoice ?? 0),
+              },
+              naReturn: {
+                totalRows: Number(flipkartTotals.flipkartReturnNaRows ?? 0),
+                pcs: Number(flipkartTotals.flipkartReturnNaPcs ?? 0),
+                taxableValue: Number(flipkartTotals.flipkartReturnNaTaxable ?? 0),
+                igst: Number(flipkartTotals.flipkartReturnNaIgst ?? 0),
+                cgst: Number(flipkartTotals.flipkartReturnNaCgst ?? 0),
+                sgst: Number(flipkartTotals.flipkartReturnNaSgst ?? 0),
+                invoiceAmount: Number(flipkartTotals.flipkartReturnNaInvoice ?? 0),
+              },
             };
             const flipkartCancellation = {
               totalRows: Number(flipkartTotals.flipkartCancellationRows ?? 0),
@@ -1141,6 +1160,71 @@ export class ImportWorkflowService {
               },
             },
           }
+        : marketplace === 'amazon' && amazonTotals
+          ? (() => {
+              const sales = {
+                totalRows: Number(amazonTotals.amazonShipmentRows ?? 0),
+                pcs: Number(amazonTotals.amazonShipmentPcs ?? 0),
+                taxableValue: Number(amazonTotals.amazonShipmentTaxable ?? 0),
+                igst: Number(amazonTotals.amazonShipmentIgst ?? 0),
+                cgst: Number(amazonTotals.amazonShipmentCgst ?? 0),
+                sgst: Number(amazonTotals.amazonShipmentSgst ?? 0),
+                invoiceAmount: Number(amazonTotals.amazonShipmentInvoice ?? 0),
+              };
+              const returns = {
+                totalRows: Number(amazonTotals.amazonReturnTotalRows ?? 0),
+                pcs: Number(amazonTotals.amazonReturnTotalPcs ?? 0),
+                taxableValue: Number(amazonTotals.amazonReturnTotalTaxable ?? 0),
+                igst: Number(amazonTotals.amazonReturnTotalIgst ?? 0),
+                cgst: Number(amazonTotals.amazonReturnTotalCgst ?? 0),
+                sgst: Number(amazonTotals.amazonReturnTotalSgst ?? 0),
+                invoiceAmount: Number(amazonTotals.amazonReturnTotalInvoice ?? 0),
+              };
+              return {
+                sales,
+                grossSales: sales,
+                returns,
+                netSales: {
+                  totalRows: sales.totalRows - returns.totalRows,
+                  pcs: sales.pcs - returns.pcs,
+                  taxableValue: sales.taxableValue - returns.taxableValue,
+                  igst: sales.igst - returns.igst,
+                  cgst: sales.cgst - returns.cgst,
+                  sgst: sales.sgst - returns.sgst,
+                  invoiceAmount: sales.invoiceAmount - returns.invoiceAmount,
+                },
+                amazonReturns: {
+                  shipment: sales,
+                  customerReturn: {
+                    totalRows: Number(amazonTotals.amazonCustomerReturnRows ?? 0),
+                    pcs: Number(amazonTotals.amazonCustomerReturnPcs ?? 0),
+                    taxableValue: Number(amazonTotals.amazonCustomerReturnTaxable ?? 0),
+                    igst: Number(amazonTotals.amazonCustomerReturnIgst ?? 0),
+                    cgst: Number(amazonTotals.amazonCustomerReturnCgst ?? 0),
+                    sgst: Number(amazonTotals.amazonCustomerReturnSgst ?? 0),
+                    invoiceAmount: Number(amazonTotals.amazonCustomerReturnInvoice ?? 0),
+                  },
+                  rto: {
+                    totalRows: Number(amazonTotals.amazonRtoRows ?? 0),
+                    pcs: Number(amazonTotals.amazonRtoPcs ?? 0),
+                    taxableValue: Number(amazonTotals.amazonRtoTaxable ?? 0),
+                    igst: Number(amazonTotals.amazonRtoIgst ?? 0),
+                    cgst: Number(amazonTotals.amazonRtoCgst ?? 0),
+                    sgst: Number(amazonTotals.amazonRtoSgst ?? 0),
+                    invoiceAmount: Number(amazonTotals.amazonRtoInvoice ?? 0),
+                  },
+                  na: {
+                    totalRows: Number(amazonTotals.amazonNaRows ?? 0),
+                    pcs: Number(amazonTotals.amazonNaPcs ?? 0),
+                    taxableValue: Number(amazonTotals.amazonNaTaxable ?? 0),
+                    igst: Number(amazonTotals.amazonNaIgst ?? 0),
+                    cgst: Number(amazonTotals.amazonNaCgst ?? 0),
+                    sgst: Number(amazonTotals.amazonNaSgst ?? 0),
+                    invoiceAmount: Number(amazonTotals.amazonNaInvoice ?? 0),
+                  },
+                },
+              };
+            })()
         : {
             sales: {
               totalRows: Number(totals.salesDocRows ?? 0),
@@ -1238,6 +1322,25 @@ export class ImportWorkflowService {
     return null;
   }
 
+  private resolveAmazonUploadIds(
+    slotRecords: Array<{ slot: string; uploadId: string; status: string }>,
+  ): string[] {
+    return [
+      ...new Set(
+        slotRecords
+          .filter(
+            (record) =>
+              record.status === 'completed' &&
+              (record.slot === 'mtrB2cFile' ||
+                record.slot === 'mtrB2bFile' ||
+                record.slot === 'amazonReturnReportFile'),
+          )
+          .map((record) => record.uploadId)
+          .filter(Boolean),
+      ),
+    ];
+  }
+
   private isPaymentOnlyUpload(upload: {
     fileHash?: string;
     uploadedSlots?: string[];
@@ -1251,6 +1354,30 @@ export class ImportWorkflowService {
     }
     const slots = Array.isArray(upload.uploadedSlots) ? upload.uploadedSlots : [];
     return slots.length === 1 && slots[0] === 'paymentReportFile';
+  }
+
+  private isReturnOnlyUpload(upload: {
+    fileHash?: string;
+    uploadedSlots?: string[];
+  }): boolean {
+    const hash = String(upload.fileHash ?? '');
+    if (hash.startsWith('flipkart-return|')) {
+      return true;
+    }
+    const slots = Array.isArray(upload.uploadedSlots) ? upload.uploadedSlots : [];
+    return slots.length === 1 && slots[0] === 'returnReportFile';
+  }
+
+  private isAmazonReturnOnlyUpload(upload: {
+    fileHash?: string;
+    uploadedSlots?: string[];
+  }): boolean {
+    const hash = String(upload.fileHash ?? '');
+    if (hash.startsWith('amazon-return|')) {
+      return true;
+    }
+    const slots = Array.isArray(upload.uploadedSlots) ? upload.uploadedSlots : [];
+    return slots.length === 1 && slots[0] === 'amazonReturnReportFile';
   }
 
   async deleteSlotData(query: {
@@ -1350,6 +1477,109 @@ export class ImportWorkflowService {
             status: 'failed',
             lifecycleStatus: 'deleted',
             errorMessage: 'Payment report deleted for re-upload',
+          },
+        });
+      }
+    } else if (slot === 'returnReportFile' && this.isReturnOnlyUpload(upload)) {
+      const salesUploads = await this.uploadModel
+        .find({
+          sellerId: { $in: sellerAliases },
+          gstId,
+          marketplace: marketplaceId,
+          reportMonth,
+          status: 'completed',
+        })
+        .select('_id uploadedSlots fileHash')
+        .lean()
+        .exec();
+
+      const salesUploadIds = salesUploads
+        .filter((item) => {
+          const slots = Array.isArray(item.uploadedSlots) && item.uploadedSlots.length
+            ? item.uploadedSlots
+            : inferUploadedSlotsFromFileHash(String(item.fileHash ?? ''));
+          return slots.some((s) => s !== 'returnReportFile' && s !== 'paymentReportFile');
+        })
+        .map((item) => String(item._id));
+
+      if (salesUploadIds.length) {
+        const unset: Record<string, 1> = {};
+        for (const field of FLIPKART_RETURN_DETAIL_FIELDS) {
+          unset[field] = 1;
+        }
+        await this.rowModel
+          .updateMany(
+            {
+              uploadId: { $in: salesUploadIds },
+              voucherType: { $regex: /^return$/i },
+            },
+            { $unset: unset },
+          )
+          .exec();
+      }
+
+      if (upload) {
+        await this.uploadModel.findByIdAndUpdate(upload._id, {
+          $set: {
+            status: 'failed',
+            lifecycleStatus: 'deleted',
+            errorMessage: 'Return report deleted for re-upload',
+          },
+        });
+      }
+    } else if (
+      slot === 'amazonReturnReportFile' &&
+      this.isAmazonReturnOnlyUpload(upload)
+    ) {
+      const salesUploads = await this.uploadModel
+        .find({
+          sellerId: { $in: sellerAliases },
+          gstId,
+          marketplace: marketplaceId,
+          reportMonth,
+          status: 'completed',
+        })
+        .select('_id uploadedSlots fileHash')
+        .lean()
+        .exec();
+
+      const salesUploadIds = salesUploads
+        .filter((item) => {
+          const slots = Array.isArray(item.uploadedSlots) && item.uploadedSlots.length
+            ? item.uploadedSlots
+            : inferUploadedSlotsFromFileHash(String(item.fileHash ?? ''));
+          return slots.some(
+            (s) =>
+              s !== 'amazonReturnReportFile' && s !== 'paymentReportFile',
+          );
+        })
+        .map((item) => String(item._id));
+
+      if (salesUploadIds.length) {
+        const unset: Record<string, 1> = {};
+        for (const field of AMAZON_RETURN_DETAIL_FIELDS) {
+          unset[field] = 1;
+        }
+        await this.rowModel
+          .updateMany(
+            {
+              uploadId: { $in: salesUploadIds },
+              amazonReturnSubType: { $exists: true },
+            },
+            { $unset: unset },
+          )
+          .exec();
+      }
+
+      await this.rowModel.deleteMany({ uploadId: String(upload._id) }).exec();
+      await this.rowErrorModel.deleteMany({ uploadId: String(upload._id) }).exec();
+
+      if (upload) {
+        await this.uploadModel.findByIdAndUpdate(upload._id, {
+          $set: {
+            status: 'failed',
+            lifecycleStatus: 'deleted',
+            errorMessage: 'Amazon return report deleted for re-upload',
           },
         });
       }

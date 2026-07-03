@@ -27,7 +27,8 @@ describe('gst-column.util', () => {
       true,
     );
     expect(headerMatchesExcelColumn('Seller Gstin', 'Seller Gstin')).toBe(true);
-    expect(headerMatchesExcelColumn('Seller GSTIN', 'GSTIN')).toBe(true);
+    expect(headerMatchesExcelColumn('Seller GSTIN', 'Seller GSTIN')).toBe(true);
+    expect(headerMatchesExcelColumn('Seller GSTIN', 'gstin')).toBe(false);
   });
 
   it('does not match a shorter header when the alias is more specific', () => {
@@ -49,29 +50,77 @@ describe('gst-column.util', () => {
     );
   });
 
-  it('collects GSTIN values from every matching GST column alias', () => {
+  it('does not match eco_tcs_gstin or other non-seller GST columns to gstin alias', () => {
+    expect(headerMatchesExcelColumn('eco_tcs_gstin', 'gstin')).toBe(false);
+    expect(headerMatchesExcelColumn('eco tcs gstin', 'gstin')).toBe(false);
+    expect(headerMatchesExcelColumn('gstin', 'gstin')).toBe(true);
+    expect(
+      headersHaveGstColumn(
+        ['gstin', 'eco_tcs_gstin', 'sub_order_num'],
+        meeshoImportMapping.gstin.excelColumns,
+      ),
+    ).toBe(true);
+  });
+
+  it('collects GSTIN values from the primary seller GST column only', () => {
     const rows: ParsedSheetRow[] = [
       {
         __sheetName: 'TCS Sales',
         __rowNumber: 2,
         gstin: '27AAAAA0000A1Z5',
         'GST NO': '29BBBBB0000B1Z5',
+        eco_tcs_gstin: '07AARCM9332R1CQ',
       },
       {
         __sheetName: 'TCS Sales',
         __rowNumber: 3,
         gstin: '27AAAAA0000A1Z5',
         'GST NO': '29BBBBB0000B1Z5',
+        eco_tcs_gstin: '07AARCM9332R1CQ',
       },
     ];
-    const { values } = extractGstinsFromRows(rows, meeshoImportMapping, [
+    const { values, primaryHeader } = extractGstinsFromRows(rows, meeshoImportMapping, [
       'gstin',
       'GST NO',
+      'eco_tcs_gstin',
     ]);
-    expect([...values].sort()).toEqual([
-      '27AAAAA0000A1Z5',
-      '29BBBBB0000B1Z5',
-    ]);
+    expect(primaryHeader).toBe('gstin');
+    expect([...values]).toEqual(['27AAAAA0000A1Z5']);
+  });
+
+  it('filters Meesho rows by selected GSTIN when file has multiple seller GSTINs', () => {
+    const rows: ParsedSheetRow[] = [
+      {
+        __sheetName: 'TCS Sales',
+        __rowNumber: 2,
+        gstin: '07BSGPB0667M2ZL',
+        eco_tcs_gstin: '07AARCM9332R1CQ',
+        sub_order_num: 'O1',
+      },
+      {
+        __sheetName: 'TCS Sales',
+        __rowNumber: 3,
+        gstin: '07AARCM9332R1CQ',
+        eco_tcs_gstin: '07AARCM9332R1CQ',
+        sub_order_num: 'O2',
+      },
+      {
+        __sheetName: 'TCS Sales',
+        __rowNumber: 4,
+        gstin: '07BSGPB0667M2ZL',
+        eco_tcs_gstin: '07AARCM9332R1CQ',
+        sub_order_num: 'O3',
+      },
+    ];
+    const result = filterRowsBySelectedGstin(
+      rows,
+      meeshoImportMapping,
+      ['gstin', 'eco_tcs_gstin', 'sub_order_num'],
+      '07BSGPB0667M2ZL',
+    );
+    expect(result.matchedCount).toBe(2);
+    expect(result.skippedCount).toBe(1);
+    expect(result.rows.map((r) => r.sub_order_num)).toEqual(['O1', 'O3']);
   });
 
   it('extracts Flipkart GSTIN from Seller GSTIN column', () => {

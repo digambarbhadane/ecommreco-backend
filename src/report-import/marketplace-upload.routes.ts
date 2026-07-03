@@ -2,6 +2,7 @@ import { applyDecorators, UseInterceptors } from '@nestjs/common';
 import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import { ApiConsumes } from '@nestjs/swagger';
 import { Roles } from '../auth/roles.decorator';
+import { MULTER_UPLOAD_LIMITS } from '../config/upload-limits';
 
 export const REPORT_UPLOAD_FILE_FIELDS = [
   { name: 'file', maxCount: 1 },
@@ -14,6 +15,8 @@ export const REPORT_UPLOAD_FILE_FIELDS = [
   { name: 'returnOutForDeliveryReportFile', maxCount: 1 },
   { name: 'returnDeliveryCompleteReportFile', maxCount: 1 },
   { name: 'paymentReportFile', maxCount: 1 },
+  { name: 'returnReportFile', maxCount: 1 },
+  { name: 'amazonReturnReportFile', maxCount: 1 },
   { name: 'gstrReportPackedFile', maxCount: 1 },
   { name: 'mDirectOrdersReportFile', maxCount: 1 },
   { name: 'salesRevenuePackedB2cFile', maxCount: 1 },
@@ -41,6 +44,8 @@ export type UploadedReportFiles = {
     originalname: string;
   }>;
   paymentReportFile?: Array<{ buffer: Buffer; originalname: string }>;
+  returnReportFile?: Array<{ buffer: Buffer; originalname: string }>;
+  amazonReturnReportFile?: Array<{ buffer: Buffer; originalname: string }>;
   gstrReportPackedFile?: Array<{ buffer: Buffer; originalname: string }>;
   mDirectOrdersReportFile?: Array<{ buffer: Buffer; originalname: string }>;
   salesRevenuePackedB2cFile?: Array<{
@@ -60,10 +65,7 @@ export function ReportUploadMultipart() {
     ApiConsumes('multipart/form-data'),
     UseInterceptors(
       FileFieldsInterceptor([...REPORT_UPLOAD_FILE_FIELDS], {
-        limits: {
-          fileSize: 100 * 1024 * 1024,
-          files: 14,
-        },
+        limits: MULTER_UPLOAD_LIMITS,
       }),
     ),
     Roles('seller', 'super_admin', 'accounts_manager'),

@@ -19,6 +19,14 @@ import {
   FLIPKART_PAYMENT_SHEET_NAMES,
 } from '../config/importMappings/flipkart-payment.mapping';
 import {
+  FLIPKART_RETURN_HEADER_ALIASES,
+  FLIPKART_RETURN_SHEET_NAMES,
+} from '../config/importMappings/flipkart-return.mapping';
+import {
+  AMAZON_RETURN_HEADER_ALIASES,
+  AMAZON_RETURN_SHEET_NAMES,
+} from '../config/importMappings/amazon-return.mapping';
+import {
   cellLooksLikeDataValue,
   headerAliasMatchesCell,
   normalizeHeader,
@@ -309,6 +317,54 @@ export class FileParserService {
     if (!resolved) {
       throw new BadRequestException(
         'Payment workbook must contain an "Orders" sheet or recognizable Flipkart settlement report headers',
+      );
+    }
+
+    const { sheet, sheetName, headerRowIndex } = resolved;
+    const rows = this.parseSheetData(sheet, sheetName, headerRowIndex, []);
+    return {
+      rows,
+      headers: this.resolveHeaders(sheet, headerRowIndex, rows),
+    };
+  }
+
+  parseFlipkartReturnWorkbook(buffer: Buffer): ParsedSingleSheetWorkbook {
+    const workbook = XLSX.read(buffer, {
+      type: 'buffer',
+      cellDates: true,
+    });
+    if (!workbook.SheetNames.length) {
+      throw new BadRequestException('Return workbook does not contain any sheet');
+    }
+
+    const resolved = this.resolveFlipkartReturnSheet(workbook);
+    if (!resolved) {
+      throw new BadRequestException(
+        'Return workbook must contain a return report sheet with Order ID and return detail columns',
+      );
+    }
+
+    const { sheet, sheetName, headerRowIndex } = resolved;
+    const rows = this.parseSheetData(sheet, sheetName, headerRowIndex, []);
+    return {
+      rows,
+      headers: this.resolveHeaders(sheet, headerRowIndex, rows),
+    };
+  }
+
+  parseAmazonReturnWorkbook(buffer: Buffer): ParsedSingleSheetWorkbook {
+    const workbook = XLSX.read(buffer, {
+      type: 'buffer',
+      cellDates: true,
+    });
+    if (!workbook.SheetNames.length) {
+      throw new BadRequestException('Return workbook does not contain any sheet');
+    }
+
+    const resolved = this.resolveAmazonReturnSheet(workbook);
+    if (!resolved) {
+      throw new BadRequestException(
+        'Return workbook must contain a return report sheet with Return Type column',
       );
     }
 
@@ -1144,6 +1200,196 @@ export class FileParserService {
       const score =
         (this.isFlipkartPaymentSheetName(sheetName) ? 10 : 0) +
         this.scoreFlipkartPaymentHeaderRow(normalizedCells);
+
+      if (!best || score > best.score) {
+        best = { sheetName, sheet, headerRowIndex, score };
+      }
+    }
+
+    if (!best) return null;
+    return {
+      sheetName: best.sheetName,
+      sheet: best.sheet,
+      headerRowIndex: best.headerRowIndex,
+    };
+  }
+
+  private isFlipkartReturnSheetName(sheetName: string): boolean {
+    const normalized = normalizeHeader(sheetName);
+    if (
+      FLIPKART_RETURN_SHEET_NAMES.some(
+        (target) => normalizeHeader(target) === normalized,
+      )
+    ) {
+      return true;
+    }
+    return normalized.includes('return');
+  }
+
+  private flipkartReturnRowHasAnchor(normalizedCells: string[]): boolean {
+    const headerLike = normalizedCells.filter((c) => !cellLooksLikeDataValue(c));
+    if (!headerLike.length) return false;
+
+    const hasOrderId = headerLike.some(
+      (cell) => cell === 'order id' || cell.includes('order id'),
+    );
+    const hasReturnField = headerLike.some(
+      (cell) =>
+        cell.includes('return type') ||
+        cell.includes('type of return') ||
+        cell.includes('return reason') ||
+        cell.includes('return sub'),
+    );
+    return hasOrderId && hasReturnField;
+  }
+
+  private scoreFlipkartReturnHeaderRow(normalizedCells: string[]): number {
+    return this.scoreMeeshoHeaderRow(
+      normalizedCells,
+      [...FLIPKART_RETURN_HEADER_ALIASES],
+    );
+  }
+
+  private detectFlipkartReturnHeaderRowIndex(sheet: XLSX.WorkSheet): number {
+    const matrix = this.sheetPreviewMatrix(sheet, 200);
+    let bestIndex = -1;
+    let bestScore = -1;
+    const scanLimit = Math.min(matrix.length, 200);
+    const minRequiredScore = 2;
+
+    for (let i = 0; i < scanLimit; i += 1) {
+      const row = matrix[i];
+      if (!Array.isArray(row)) continue;
+      const normalizedCells = this.normalizePreviewRow(row);
+      if (!normalizedCells.length || !rowLooksLikeHeaderRow(normalizedCells)) {
+        continue;
+      }
+      if (!this.flipkartReturnRowHasAnchor(normalizedCells)) continue;
+      const score = this.scoreFlipkartReturnHeaderRow(normalizedCells);
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = i;
+      }
+    }
+
+    if (bestIndex < 0 || bestScore < minRequiredScore) {
+      return -1;
+    }
+    return bestIndex;
+  }
+
+  private resolveFlipkartReturnSheet(workbook: XLSX.WorkBook): {
+    sheet: XLSX.WorkSheet;
+    sheetName: string;
+    headerRowIndex: number;
+  } | null {
+    const namedCandidates = workbook.SheetNames.filter((name) =>
+      this.isFlipkartReturnSheetName(name),
+    );
+    const scanOrder = [
+      ...namedCandidates,
+      ...workbook.SheetNames.filter((name) => !namedCandidates.includes(name)),
+    ];
+
+    let best:
+      | { sheetName: string; sheet: XLSX.WorkSheet; headerRowIndex: number; score: number }
+      | null = null;
+
+    for (const sheetName of scanOrder) {
+      const sheet = workbook.Sheets[sheetName];
+      if (!sheet) continue;
+
+      const headerRowIndex = this.detectFlipkartReturnHeaderRowIndex(sheet);
+      if (headerRowIndex < 0) continue;
+
+      const matrix = this.sheetPreviewMatrix(sheet, headerRowIndex + 1);
+      const row = matrix[headerRowIndex];
+      const normalizedCells = Array.isArray(row)
+        ? this.normalizePreviewRow(row)
+        : [];
+      const score =
+        (this.isFlipkartReturnSheetName(sheetName) ? 10 : 0) +
+        this.scoreFlipkartReturnHeaderRow(normalizedCells);
+
+      if (!best || score > best.score) {
+        best = { sheetName, sheet, headerRowIndex, score };
+      }
+    }
+
+    if (!best) return null;
+    return {
+      sheetName: best.sheetName,
+      sheet: best.sheet,
+      headerRowIndex: best.headerRowIndex,
+    };
+  }
+
+  private isAmazonReturnSheetName(sheetName: string): boolean {
+    const normalized = normalizeHeader(sheetName);
+    return AMAZON_RETURN_SHEET_NAMES.some(
+      (target) => normalizeHeader(target) === normalized,
+    );
+  }
+
+  private scoreAmazonReturnHeaderRow(normalizedCells: string[]): number {
+    return normalizedCells.reduce((score, cell) => {
+      if (AMAZON_RETURN_HEADER_ALIASES.some((alias) => cell.includes(alias))) {
+        return score + 1;
+      }
+      return score;
+    }, 0);
+  }
+
+  private detectAmazonReturnHeaderRowIndex(sheet: XLSX.WorkSheet): number {
+    const matrix = this.sheetPreviewMatrix(sheet, 30);
+    let bestIndex = -1;
+    let bestScore = 0;
+    for (let i = 0; i < matrix.length; i += 1) {
+      const row = matrix[i];
+      if (!Array.isArray(row)) continue;
+      const normalizedCells = this.normalizePreviewRow(row);
+      if (!rowLooksLikeHeaderRow(normalizedCells)) continue;
+      const score = this.scoreAmazonReturnHeaderRow(normalizedCells);
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = i;
+      }
+    }
+    return bestScore > 0 ? bestIndex : -1;
+  }
+
+  private resolveAmazonReturnSheet(workbook: XLSX.WorkBook): {
+    sheet: XLSX.WorkSheet;
+    sheetName: string;
+    headerRowIndex: number;
+  } | null {
+    const namedCandidates = workbook.SheetNames.filter((name) =>
+      this.isAmazonReturnSheetName(name),
+    );
+    const scanOrder = [
+      ...namedCandidates,
+      ...workbook.SheetNames.filter((name) => !namedCandidates.includes(name)),
+    ];
+
+    let best:
+      | { sheetName: string; sheet: XLSX.WorkSheet; headerRowIndex: number; score: number }
+      | null = null;
+
+    for (const sheetName of scanOrder) {
+      const sheet = workbook.Sheets[sheetName];
+      if (!sheet) continue;
+
+      const headerRowIndex = this.detectAmazonReturnHeaderRowIndex(sheet);
+      if (headerRowIndex < 0) continue;
+
+      const matrix = this.sheetPreviewMatrix(sheet, headerRowIndex + 1);
+      const row = matrix[headerRowIndex];
+      const normalizedCells = Array.isArray(row)
+        ? this.normalizePreviewRow(row)
+        : [];
+      const score =
+        (this.isAmazonReturnSheetName(sheetName) ? 10 : 0) +
+        this.scoreAmazonReturnHeaderRow(normalizedCells);
 
       if (!best || score > best.score) {
         best = { sheetName, sheet, headerRowIndex, score };

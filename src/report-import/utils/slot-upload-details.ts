@@ -13,6 +13,8 @@ export type MarketplaceFilesInput = {
   returnOutForDeliveryReportFile?: UploadedFileInput;
   returnDeliveryCompleteReportFile?: UploadedFileInput;
   paymentReportFile?: UploadedFileInput;
+  returnReportFile?: UploadedFileInput;
+  amazonReturnReportFile?: UploadedFileInput;
   gstrReportPackedFile?: UploadedFileInput;
   mDirectOrdersReportFile?: UploadedFileInput;
   salesRevenuePackedB2cFile?: UploadedFileInput;
@@ -72,6 +74,7 @@ export function buildSlotUploadDetails(input: {
   parsedFlipkart?: { salesRows: ParsedSheetRow[]; cashbackRows: ParsedSheetRow[] } | null;
   parsedAmazonB2c?: { rows: ParsedSheetRow[] } | null;
   parsedAmazonB2b?: { rows: ParsedSheetRow[] } | null;
+  parsedAmazonReturn?: { rows: ParsedSheetRow[] } | null;
   parsedMyntra?: ParsedMyntraBundle | null;
   paymentSourceRowCount?: number;
 }): Record<string, SlotUploadDetail> {
@@ -147,6 +150,9 @@ export function buildSlotUploadDetails(input: {
     });
     if (salesFile) details.file = salesFile;
 
+    const returnReport = fileDetail(input.files.returnReportFile, 0, false);
+    if (returnReport) details.returnReportFile = returnReport;
+
     const payment = fileDetail(
       input.files.paymentReportFile,
       input.paymentSourceRowCount ?? 0,
@@ -187,6 +193,14 @@ export function buildSlotUploadDetails(input: {
         : undefined,
     );
     if (b2b) details.mtrB2bFile = b2b;
+
+    const returnCount = input.parsedAmazonReturn?.rows.length ?? 0;
+    const returnReport = fileDetail(
+      input.files.amazonReturnReportFile,
+      returnCount,
+      false,
+    );
+    if (returnReport) details.amazonReturnReportFile = returnReport;
 
     return details;
   }

@@ -135,6 +135,9 @@ export class ImportRow {
   @Prop({ index: true })
   meeshoReturnSubType?: string;
 
+  @Prop({ index: true })
+  amazonReturnSubType?: string;
+
   @Prop()
   meeshoReturnInvoiceAmount?: number;
 

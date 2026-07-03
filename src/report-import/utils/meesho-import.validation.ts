@@ -1,6 +1,7 @@
 import { meeshoImportMapping } from '../config/importMappings/meesho.mapping';
 import {
-  collectGstinValidationProblems,
+  collectGstinRowFilterProblems,
+  filterRowsBySelectedGstin,
   headersHaveGstColumn,
 } from '../config/importMappings/gst-column.util';
 import { ParsedSheetRow } from '../services/mapping.service';
@@ -26,31 +27,45 @@ const formatReportBlock = (
   return lines.join('\n');
 };
 
+export type MeeshoGstinFilterResult =
+  | { ok: true; reports: MeeshoReportValidationInput[]; skippedCount: number }
+  | { ok: false; message: string };
+
 /**
- * Returns a multi-line error message, or null if all GSTIN checks pass.
- * Only reports that contain a GSTIN column are validated.
+ * Keeps only rows matching the selected seller GSTIN and validates at least one row matches.
+ * Reports without a GSTIN column are passed through unchanged.
  */
-export const buildMeeshoGstinValidationMessage = (
+export const filterMeeshoReportsBySelectedGstin = (
   reports: MeeshoReportValidationInput[],
   expectedGstin: string,
-): string | null => {
+): MeeshoGstinFilterResult => {
   const blocks: string[] = [];
+  let skippedCount = 0;
 
-  reports.forEach((report) => {
+  const filteredReports = reports.map((report) => {
     const hasGstColumn = headersHaveGstColumn(
       report.headers,
       meeshoImportMapping.gstin.excelColumns,
     );
     if (!hasGstColumn) {
-      return;
+      return report;
     }
 
-    const problems = collectGstinValidationProblems({
+    const filtered = filterRowsBySelectedGstin(
+      report.rows,
+      meeshoImportMapping,
+      report.headers,
+      expectedGstin,
+    );
+    skippedCount += filtered.skippedCount;
+
+    const problems = collectGstinRowFilterProblems({
       rows: report.rows,
       expectedGstin,
       mapping: meeshoImportMapping,
       fileHeaders: report.headers,
-      fallbackGstins: [],
+      matchedRowCount: filtered.matchedCount,
+      fileGstins: filtered.fileGstins,
     });
 
     if (problems.length > 0) {
@@ -63,15 +78,31 @@ export const buildMeeshoGstinValidationMessage = (
         ),
       );
     }
+
+    return { ...report, rows: filtered.rows };
   });
 
-  if (!blocks.length) return null;
+  if (!blocks.length) {
+    return { ok: true, reports: filteredReports, skippedCount };
+  }
 
-  return [
-    `Meesho import failed — GSTIN mismatch in ${blocks.length} file(s):`,
-    '',
-    ...blocks,
-    '',
-    'Ensure the GSTIN in each report matches the GST profile you selected (seller GSTIN, not marketplace or tax columns).',
-  ].join('\n');
+  return {
+    ok: false,
+    message: [
+      `Meesho import failed — GSTIN mismatch in ${blocks.length} file(s):`,
+      '',
+      ...blocks,
+      '',
+      'Ensure the GSTIN in each report matches the GST profile you selected (seller GSTIN, not marketplace or tax columns).',
+    ].join('\n'),
+  };
+};
+
+/** @deprecated Use filterMeeshoReportsBySelectedGstin — kept for tests referencing strict validation. */
+export const buildMeeshoGstinValidationMessage = (
+  reports: MeeshoReportValidationInput[],
+  expectedGstin: string,
+): string | null => {
+  const result = filterMeeshoReportsBySelectedGstin(reports, expectedGstin);
+  return result.ok ? null : result.message;
 };

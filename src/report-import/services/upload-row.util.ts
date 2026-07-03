@@ -73,6 +73,7 @@ export const toImportRowDocuments = (
     meeshoIsGrossSale: row.meeshoIsGrossSale,
     meeshoIsPreviousMonthReturn: row.meeshoIsPreviousMonthReturn,
     meeshoReturnSubType: row.meeshoReturnSubType,
+    amazonReturnSubType: row.amazonReturnSubType,
     meeshoReturnInvoiceAmount: row.meeshoReturnInvoiceAmount,
     meeshoReturnTaxableAmount: row.meeshoReturnTaxableAmount,
     meeshoReturnIgstAmount: row.meeshoReturnIgstAmount,

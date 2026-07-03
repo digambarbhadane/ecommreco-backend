@@ -25,6 +25,13 @@ export const MARKETPLACE_REPORT_DEFINITIONS: Record<
       description: 'Flipkart sales workbook with Sales Report and Cash Back sheets',
     },
     {
+      slot: 'returnReportFile',
+      label: 'Return Report',
+      required: false,
+      description:
+        'Flipkart return report — upload alongside sales or add later for the same month',
+    },
+    {
       slot: 'paymentReportFile',
       label: 'Payment Report',
       required: false,
@@ -35,15 +42,22 @@ export const MARKETPLACE_REPORT_DEFINITIONS: Record<
   amazon: [
     {
       slot: 'mtrB2cFile',
-      label: 'Settlement Report',
+      label: 'MTR B2C Report',
       required: true,
-      description: 'Amazon MTR B2C settlement report',
+      description: 'Amazon Merchant Tax Report (B2C)',
     },
     {
       slot: 'mtrB2bFile',
-      label: 'B2B Settlement Report',
+      label: 'MTR B2B Report',
       required: false,
-      description: 'Optional Amazon MTR B2B report',
+      description: 'Amazon Merchant Tax Report (B2B) — optional if you have B2B orders',
+    },
+    {
+      slot: 'amazonReturnReportFile',
+      label: 'Return Report',
+      required: false,
+      description:
+        'Amazon return report — enriches return transactions with Customer Return / RTO classification',
     },
   ],
   meesho: [
