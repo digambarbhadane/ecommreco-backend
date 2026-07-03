@@ -28,11 +28,7 @@ import {
   getMongoUriCandidates,
   mongoConnectionHint,
 } from './config/mongo-uri';
-
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const { resolveEnvFile } = require('../config/env-file') as {
-  resolveEnvFile: (nodeEnv?: string) => string;
-};
+import { resolveEnvFile } from './config/env-file';
 
 const mongoLogger = new Logger('MongoDB');
 

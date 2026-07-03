@@ -117,6 +117,8 @@ pm2 save
 
 Do **not** point PM2 at `dist/main.js` (wrong path) or `dist/src/main.js` (skips dotenv).
 
+If PM2 logs `Cannot find module '../config/env-file'`, rebuild after pulling latest code (`npm run build`) — env resolution now lives in `src/config/env-file.ts` and compiles to `dist/src/config/env-file.js`.
+
 ## Common errors
 
 | Symptom | Cause | Fix |
