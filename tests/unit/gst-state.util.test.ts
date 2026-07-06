@@ -1,8 +1,12 @@
 import {
+  buildCustomerIndianStateCodeExpr,
   collectSellerRegistrationStateKeys,
   isSameIndianState,
+  isSameIndianStateByCode,
+  resolveCustomerIndianStateCode,
   resolveIndianStateKey,
   resolveIndianStateKeyFromGstin,
+  resolveIndianStateCode,
 } from '../../src/report-import/utils/gst-state.util';
 
 describe('gst-state.util', () => {
@@ -24,5 +28,26 @@ describe('gst-state.util', () => {
     expect(isSameIndianState('GJ', sellerKeys)).toBe(true);
     expect(isSameIndianState('24', sellerKeys)).toBe(true);
     expect(isSameIndianState('Maharashtra', sellerKeys)).toBe(false);
+  });
+
+  it('resolves single-digit state codes and compares by GSTIN prefix', () => {
+    expect(resolveIndianStateKey(7)).toBe('delhi');
+    expect(resolveIndianStateKey('7')).toBe('delhi');
+    expect(resolveIndianStateCode(7)).toBe('07');
+    expect(isSameIndianStateByCode('07', '07AAAAA0000A1Z5')).toBe(true);
+    expect(isSameIndianStateByCode('7', '07AAAAA0000A1Z5')).toBe(true);
+    expect(isSameIndianStateByCode('27', '07AAAAA0000A1Z5')).toBe(false);
+  });
+
+  it('resolveCustomerIndianStateCode prefers code field then state name', () => {
+    expect(resolveCustomerIndianStateCode('7', 'maharashtra')).toBe('07');
+    expect(resolveCustomerIndianStateCode('', 'Gujarat')).toBe('24');
+    expect(resolveCustomerIndianStateCode('GJ', '')).toBe('24');
+    expect(resolveCustomerIndianStateCode(null, 'delhi')).toBe('07');
+  });
+
+  it('buildCustomerIndianStateCodeExpr is a MongoDB switch expression', () => {
+    const expr = buildCustomerIndianStateCodeExpr();
+    expect(expr).toHaveProperty('$let');
   });
 });

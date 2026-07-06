@@ -47,4 +47,8 @@ export class ListImportedRowsDto {
   @IsOptional()
   @IsString()
   skip?: string;
+
+  @IsOptional()
+  @IsString()
+  search?: string;
 }

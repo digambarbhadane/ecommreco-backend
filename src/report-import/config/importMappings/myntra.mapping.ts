@@ -5,10 +5,30 @@ export const myntraImportMapping: MarketplaceImportMapping = {
   displayName: 'Myntra',
   gstin: {
     databaseField: 'sellerGSTIN',
-    excelColumns: ['seller_gstin', 'tax_seller_gstin', 'GST NO'],
+    excelColumns: [
+      'seller_gstin',
+      'Seller Gstin',
+      'tax_seller_gstin',
+      'Tax Seller Gstin',
+      'GST NO',
+      'GSTIN',
+    ],
   },
   orderId: {
     databaseField: 'orderID',
-    excelColumns: ['order_id', 'order_release_id', 'Sale_Order_Code'],
+    excelColumns: [
+      'order_id',
+      'Order ID',
+      'Sale_Order_Code',
+      'sale_order_code',
+      'order_release_id',
+      'packet_id',
+      'Packet ID',
+      'shipment_id',
+    ],
+  },
+  sku: {
+    databaseField: 'skuID',
+    excelColumns: ['seller_sku_code', 'seller sku code', 'SKU ID', 'SKU'],
   },
 };

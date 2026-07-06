@@ -828,7 +828,7 @@ export class ImportWorkflowService {
             : marketplace === 'amazon'
               ? buildAmazonWorkflowMonthSummaryPipeline(rowFilter)
               : marketplace === 'myntra'
-                ? buildMyntraWorkflowMonthSummaryPipeline(rowFilter)
+                ? buildMyntraWorkflowMonthSummaryPipeline(rowFilter, reportMonth)
                 : buildWorkflowMonthSummaryPipeline(rowFilter);
 
       const summaryUploadIds =

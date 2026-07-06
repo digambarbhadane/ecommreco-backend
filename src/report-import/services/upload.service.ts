@@ -1496,7 +1496,6 @@ export class UploadService {
           })
         : null;
     await yieldToEventLoop();
-    // parseFiles is async — yields the event loop between each of the 6 XLSX.read() calls
     const parsedMyntra =
       isMyntra &&
       files.gstrReportPackedFile &&
@@ -1779,8 +1778,6 @@ export class UploadService {
         }
       }
     } else if (isMyntra && parsedMyntra) {
-      // eslint-disable-next-line no-console
-      console.log('[MYNTRA_VALIDATE] checking headers, row counts, and GSTIN…');
       const myntraValidationReports = [
         {
           reportLabel: 'GSTR Report Packed',
@@ -1831,8 +1828,6 @@ export class UploadService {
         });
       }
       this.validation.validateMyntraImportBundle(myntraValidationReports, gst.gstNumber);
-      // eslint-disable-next-line no-console
-      console.log('[MYNTRA_VALIDATE] passed');
     }
     timer?.endStage('columnMapping');
 
@@ -1858,6 +1853,7 @@ export class UploadService {
     }> = [];
     let paymentSourceRowCount = 0;
     let parsedAmazonReturn: { rows: ParsedSheetRow[]; headers: string[] } | null = null;
+    let myntraHistoricalSaleIds: string[] = [];
 
     timer?.startStage('dataTransformation');
     onProgress?.('processing_sheet', 48);
@@ -1959,21 +1955,21 @@ export class UploadService {
           $set: { totalRecords: 0 },
         });
       }
-      // buildNormalizedRows is async — yields every 2000 rows so status-check requests can be served
-      const myntraResult = await this.myntraImport.buildNormalizedRows(parsedMyntra);
+      const marketplaceId = marketplace._id?.toString?.() ?? dto.marketplaceId;
+      const myntraResult = await this.myntraImport.buildNormalizedRows(parsedMyntra, {
+        sellerIds: ctx.sellerIdAliases,
+        gstin: gst.gstNumber,
+        marketplaceId,
+        reportMonth: dto.reportMonth ?? '',
+      });
       if (myntraResult.joinIssues && myntraResult.rows.length === 0) {
         throw new BadRequestException(
           formatMyntraJoinIssues(myntraResult.joinIssues),
         );
       }
-      if (myntraResult.joinIssues && myntraResult.rows.length > 0) {
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[MYNTRA_BUILD] partial import: built=${myntraResult.rows.length} joinSkipped=${myntraResult.joinIssues.missingInGstr + myntraResult.joinIssues.missingInMdirect + myntraResult.joinIssues.missingOrderIdInSales}`,
-        );
-      }
       normalizedRows.push(...myntraResult.rows);
       rowErrors.push(...myntraResult.errors);
+      myntraHistoricalSaleIds = myntraResult.historicalSaleIdsToMarkReturned;
     } else if (parsedFlipkart) {
       let paymentByOrder: Map<string, ParsedSheetRow> | null = null;
       let returnByOrder: Map<string, FlipkartReturnDetails> | null = null;
@@ -2082,10 +2078,10 @@ export class UploadService {
     const sellerGstStates = [...sellerGstRegistration.states];
     const sellerGstins = [...sellerGstRegistration.gstins];
     if (gst.state) {
-      sellerGstStates.push(gst.state);
+      sellerGstStates.unshift(gst.state);
     }
     if (gst.gstNumber) {
-      sellerGstins.push(gst.gstNumber);
+      sellerGstins.unshift(gst.gstNumber);
     }
     // Flipkart month summary must match the Excel pivot (raw file tax columns).
     for (const row of normalizedRows) {
@@ -2207,6 +2203,13 @@ export class UploadService {
       { progressThrottleMs: 1500 },
     );
     timer?.endStage('databaseInsert');
+
+    if (myntraHistoricalSaleIds.length) {
+      await this.rowModel.updateMany(
+        { _id: { $in: myntraHistoricalSaleIds } },
+        { $set: { myntraIsReturned: true } },
+      );
+    }
 
     if (rowErrors.length) {
       await this.rowErrorModel.insertMany(
