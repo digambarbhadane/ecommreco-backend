@@ -383,11 +383,12 @@ export class StateWiseReportService {
         quantity: 1,
         returnQty: 1,
         meeshoIsGrossSale: 1,
+        gstTransactionType: 1,
       })
       .lean()
       .exec();
 
-    return aggregateStateWiseRows(rows, sellerStateKeys);
+    return aggregateStateWiseRows(rows, sellerStateKeys, ctx.gstin);
   }
 
   private async buildReportData(query: StateWiseExportDto) {

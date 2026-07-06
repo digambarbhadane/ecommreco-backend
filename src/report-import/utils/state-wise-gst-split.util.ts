@@ -1,11 +1,15 @@
 import {
-  collectSellerRegistrationStateKeys,
-  isSameIndianState,
-} from './gst-state.util';
+  buildSellerGstContext,
+  getRowTotalGstAmount,
+  splitGstForReport,
+} from '../../common/services/gst-calculation.core';
+import { collectSellerRegistrationStateKeys } from './gst-state.util';
 import type { StateWiseAggregatedRow } from './state-wise-report.aggregation';
 
 export type StateWiseGstRowInput = {
   stateName?: string | null;
+  customerStateCode?: string | null;
+  gstin?: string | null;
   igstRate?: number | null;
   cgstRate?: number | null;
   sgstRate?: number | null;
@@ -17,19 +21,10 @@ export type StateWiseGstRowInput = {
   quantity?: number | null;
   returnQty?: number | null;
   meeshoIsGrossSale?: boolean | null;
+  gstTransactionType?: 'intra' | 'inter' | string | null;
 };
 
-/** Total GST on a row (IGST or CGST+SGST, never double-count both). */
-export function getRowTotalGstAmount(row: StateWiseGstRowInput): number {
-  const igst = Math.abs(Number(row.igstAmount ?? 0));
-  const cgst = Math.abs(Number(row.cgstAmount ?? 0));
-  const sgst = Math.abs(Number(row.sgstAmount ?? 0));
-  const cgstSgst = cgst + sgst;
-  if (igst > 0 && cgstSgst > 0) {
-    return Math.max(igst, cgstSgst);
-  }
-  return igst + cgstSgst;
-}
+export { getRowTotalGstAmount };
 
 export function resolveRowGstRate(row: StateWiseGstRowInput): number {
   const igstRate = Number(row.igstRate ?? 0);
@@ -56,12 +51,12 @@ export function getReportRowGstSign(row: StateWiseGstRowInput): number {
 
 /**
  * Indian GST split for reports (state-wise + month summary):
- * - Intra-state (seller registration == order state): CGST/SGST = half each, IGST = 0
- * - Inter-state: IGST = full amount, CGST/SGST = 0
+ * Uses centralized GST service — seller registration vs order state.
  */
 export function splitGstForReportRow(
   row: StateWiseGstRowInput,
   sellerStateKeys: Set<string>,
+  sellerGstin?: string | null,
 ): { igst: number; cgst: number; sgst: number } {
   const totalGst = getRowTotalGstAmount(row);
   if (totalGst === 0) {
@@ -69,14 +64,13 @@ export function splitGstForReportRow(
   }
 
   const sign = getReportRowGstSign(row);
-  const isIntra = isSameIndianState(row.stateName ?? '', sellerStateKeys);
+  const sellerContext = buildSellerGstContext(
+    [],
+    sellerGstin ? [sellerGstin] : [],
+  );
+  sellerContext.stateKeys = sellerStateKeys;
 
-  if (isIntra) {
-    const half = (totalGst / 2) * sign;
-    return { igst: 0, cgst: half, sgst: half };
-  }
-
-  return { igst: totalGst * sign, cgst: 0, sgst: 0 };
+  return splitGstForReport(row, sellerContext, sign);
 }
 
 /** @deprecated Use splitGstForReportRow */
@@ -99,6 +93,7 @@ export function sellerStateKeysFromRegistration(
 export function aggregateStateWiseRows(
   rows: StateWiseGstRowInput[],
   sellerStateKeys: Set<string>,
+  sellerGstin?: string | null,
 ): StateWiseAggregatedRow[] {
   const groups = new Map<
     string,
@@ -116,7 +111,7 @@ export function aggregateStateWiseRows(
       );
     const taxableValue = sign * Number(row.taxableAmount ?? 0);
     const invoiceAmount = sign * Number(row.invoiceAmount ?? 0);
-    const tax = splitGstForReportRow(row, sellerStateKeys);
+    const tax = splitGstForReportRow(row, sellerStateKeys, sellerGstin);
 
     const stateName = String(row.stateName ?? 'Unknown').trim() || 'Unknown';
     const gstRate = resolveRowGstRate(row);

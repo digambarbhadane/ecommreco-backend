@@ -477,6 +477,25 @@ export class ReportImportController {
     );
   }
 
+  @Get('rows/export')
+  @ApiOperation({
+    summary: 'Export imported rows CSV',
+    description:
+      'Downloads all imported rows matching the current filters (GST, marketplace, document type, date range, search).',
+  })
+  @ApiProduces('text/csv')
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  async exportRows(@Query() query: ListImportedRowsDto) {
+    if (!query.sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
+    const result = await this.reportImportService.exportImportedRowsCsv(query);
+    return new StreamableFile(result.buffer, {
+      type: 'text/csv; charset=utf-8',
+      disposition: `attachment; filename="${result.filename}"`,
+    });
+  }
+
   @Get('rows')
   @ApiOperation({ summary: 'List imported rows', description: 'Returns paginated list of imported report rows.' })
   @Roles('seller', 'super_admin', 'accounts_manager')

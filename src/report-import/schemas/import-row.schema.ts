@@ -74,6 +74,9 @@ export class ImportRow {
   @Prop()
   sgstAmount?: number;
 
+  @Prop()
+  gstAmount?: number;
+
   @Prop({ index: true })
   gstTransactionType?: 'intra' | 'inter';
 
@@ -86,11 +89,31 @@ export class ImportRow {
   @Prop({ index: true })
   invoiceDate?: string;
 
+  /** Myntra GSTR Report Packed — order_packed_date */
+  @Prop({ index: true })
+  order_packed_date?: string;
+
+  /** Myntra Sales Revenue — order created date (informational; sales are dated by order_packed_date) */
+  @Prop()
+  order_created_date?: string;
+
+  /** Myntra GSTR Report RT — fr_refunded_date as ISO */
+  @Prop({ index: true })
+  frRefundedDate?: string;
+
+  /** Myntra GSTR Report RTO — order_cancel_date as ISO */
+  @Prop({ index: true })
+  orderCancelDate?: string;
+
   @Prop()
   pincode?: string; // canonical: Pincode
 
   @Prop()
   stateName?: string; // canonical: State Name
+
+  /** Myntra GSTR — 2-digit customer_delivery_state_code for place-of-supply */
+  @Prop()
+  customerStateCode?: string;
 
   @Prop()
   customerGstNo?: string; // Amazon optional: Customer Bill To Gstid
@@ -137,6 +160,29 @@ export class ImportRow {
 
   @Prop({ index: true })
   amazonReturnSubType?: string;
+
+  /** Myntra — SALE or RETURN (parallel to documentType for reconciliation). */
+  @Prop({ index: true })
+  myntraTransactionType?: 'SALE' | 'RETURN';
+
+  /** Myntra return ↔ sale match outcome for the uploaded return month. */
+  @Prop({ index: true })
+  myntraReturnMatchStatus?:
+    | 'MATCHED_CURRENT_MONTH'
+    | 'MATCHED_PREVIOUS_MONTH'
+    | 'UNMATCHED_RETURN';
+
+  /** Myntra sale row flagged when a return is linked (same or prior month). */
+  @Prop({ index: true })
+  myntraIsReturned?: boolean;
+
+  /** Myntra return row → matched sale ImportRow _id (prior-month or current upload). */
+  @Prop()
+  linkedSaleRowId?: string;
+
+  /** Original sale report month when return is matched to a prior-month sale. */
+  @Prop()
+  saleReferenceMonth?: string;
 
   @Prop()
   meeshoReturnInvoiceAmount?: number;

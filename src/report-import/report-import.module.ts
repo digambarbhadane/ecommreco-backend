@@ -27,8 +27,8 @@ import { MappingService } from './services/mapping.service';
 import { MeeshoImportService } from './services/meesho-import.service';
 import { FlipkartImportService } from './services/flipkart-import.service';
 import { AmazonImportService } from './services/amazon-import.service';
-import { MyntraImportService } from './services/myntra-import.service';
 import { UploadService } from './services/upload.service';
+import { MyntraImportService } from './services/myntra-import.service';
 import { ValidationService } from './services/validation.service';
 import {
   ImportSlotRecord,

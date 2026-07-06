@@ -21,13 +21,17 @@ import {
   meeshoPaymentFieldMappings,
   type MeeshoPaymentFieldKey,
 } from '../config/importMappings/meesho-payment.mapping';
+import {
+  asImportDateDmy,
+  asImportDateIso,
+} from '../utils/import-date.util';
 import { normalizeHeader as normalizeHeaderUtil } from '../utils/header.util';
 import { applyFlipkartInvoiceAmount } from '../utils/flipkart-invoice.util';
 import {
-  collectSellerRegistrationStateKeys,
-  isSameIndianState,
-  resolveIndianStateKey,
-} from '../utils/gst-state.util';
+  buildSellerGstContext,
+  normalizeImportRowGst,
+} from '../../common/services/gst-calculation.core';
+import { resolveIndianStateKey, resolveIndianStateCode } from '../utils/gst-state.util';
 
 export type ParsedSheetRow = {
   __sheetName: string;
@@ -54,12 +58,20 @@ export type NormalizedImportRow = {
   cgstAmount?: number;
   sgstRate?: number;
   sgstAmount?: number;
+  gstAmount?: number;
   gstTransactionType?: 'intra' | 'inter';
   invoiceNo?: string;
   buyerInvoiceDate?: string;
   invoiceDate?: string;
+  order_packed_date?: string;
+  order_created_date?: string;
+  /** Myntra GSTR RTO — ISO date (YYYY-MM-DD) */
+  orderCancelDate?: string;
+  /** Myntra GSTR RT — ISO date (YYYY-MM-DD) */
+  frRefundedDate?: string;
   pincode?: string;
   stateName?: string;
+  customerStateCode?: string;
   customerGstNo?: string;
   buyerName?: string;
   returnInvoiceDate?: string;
@@ -73,6 +85,14 @@ export type NormalizedImportRow = {
   meeshoIsPreviousMonthReturn?: boolean;
   meeshoReturnSubType?: 'cancellation' | 'rto' | 'customer_return' | 'na';
   amazonReturnSubType?: 'customer_return' | 'rto' | 'na';
+  myntraTransactionType?: 'SALE' | 'RETURN';
+  myntraReturnMatchStatus?:
+    | 'MATCHED_CURRENT_MONTH'
+    | 'MATCHED_PREVIOUS_MONTH'
+    | 'UNMATCHED_RETURN';
+  myntraIsReturned?: boolean;
+  linkedSaleRowId?: string;
+  saleReferenceMonth?: string;
   meeshoOrderStatus?: string;
   meeshoTcsReturnStatus?: string;
   /** Return line amounts from TCS Sales Return (kept separate from gross sales amounts on the row). */
@@ -125,13 +145,11 @@ export const MEESHO_ORDER_ID_ALIASES = [
   'Order Number',
 ] as const;
 
-/** Sales Revenue Packed B2C — join key and invoice fields */
 export const MYNTRA_SALES_ORDER_ID_ALIASES = [
   'Sale_Order_Code',
   'sale_order_code',
 ] as const;
 
-/** GSTR Report Packed — primary join on order_id; also index alternate keys when present */
 export const MYNTRA_GSTR_ORDER_ID_ALIASES = [
   'order_id',
   'order_release_id',
@@ -140,7 +158,6 @@ export const MYNTRA_GSTR_ORDER_ID_ALIASES = [
   'shipment_id',
 ] as const;
 
-/** MDirect Orders Report — join on order_release_id (matches Sale_Order_Code) */
 export const MYNTRA_MDIRECT_ORDER_ID_ALIASES = [
   'order_release_id',
   'order_id',
@@ -148,28 +165,29 @@ export const MYNTRA_MDIRECT_ORDER_ID_ALIASES = [
   'Sale_Order_Code',
 ] as const;
 
-/** GSTR Report RTO — match return rows to Sale_Order_Code when possible */
 export const MYNTRA_GSTR_RTO_ORDER_ID_ALIASES = [
   'order_id',
+  'Order ID',
+  'Order Id',
   'shipment_id',
   'order_release_id',
   'sale_order_code',
+  'Sale_Order_Code',
 ] as const;
 
-/** GSTR Report RT — join key on shipment_id (matches Sale_Order_Code) */
 export const MYNTRA_GSTR_RT_ORDER_ID_ALIASES = [
+  'packet_id',
+  'Packet ID',
+  'Packet_Id',
   'shipment_id',
   'Shipment ID',
   'order_id',
   'Order ID',
+  'order_release_id',
+  'sale_order_code',
+  'Sale_Order_Code',
 ] as const;
 
-/** @deprecated Use MYNTRA_GSTR_RTO_ORDER_ID_ALIASES or MYNTRA_GSTR_RT_ORDER_ID_ALIASES */
-export const MYNTRA_GSTR_RETURN_ORDER_ID_ALIASES = [
-  ...MYNTRA_GSTR_RTO_ORDER_ID_ALIASES,
-] as const;
-
-/** MDirect Returns Report — join key (order_id only; not order_release_id) */
 export const MYNTRA_MDIRECT_RETURNS_ORDER_ID_ALIASES = [
   'order_id',
   'Order ID',
@@ -180,13 +198,6 @@ export const MYNTRA_MDIRECT_RETURNS_ORDER_ID_ALIASES = [
 
 export const MYNTRA_DOCUMENT_TYPE_RTO = 'RTO Return';
 export const MYNTRA_DOCUMENT_TYPE_CUSTOMER_RETURN = 'Customer Return';
-
-/** @deprecated Use file-specific aliases above */
-export const MYNTRA_ORDER_ID_ALIASES = [
-  ...MYNTRA_SALES_ORDER_ID_ALIASES,
-  ...MYNTRA_GSTR_ORDER_ID_ALIASES,
-  ...MYNTRA_MDIRECT_ORDER_ID_ALIASES,
-] as const;
 
 export const normalizeStateName = (value?: string): string =>
   resolveIndianStateKey(value);
@@ -251,32 +262,19 @@ const asNumber = (value: unknown): number | undefined => {
   return Number.isFinite(parsed) ? parsed : undefined;
 };
 
-const asDate = (value: unknown): string | undefined => {
-  if (value === null || value === undefined || value === '') return undefined;
-  if (typeof value === 'number') {
-    const excelEpoch = new Date(Date.UTC(1899, 11, 30));
-    const date = new Date(excelEpoch.getTime() + value * 86400000);
-    return date.toISOString().slice(0, 10);
-  }
-  if (typeof value !== 'string' && typeof value !== 'number') return undefined;
-  const raw = String(value).trim();
-  if (!raw) return undefined;
-
-  // Support values that include time like "31/03/2026 00:00:00".
-  const extractedDateToken =
-    raw.match(/\d{1,4}[./-]\d{1,2}[./-]\d{1,4}/)?.[0] ?? raw;
-  const normalized = extractedDateToken.replace(/\./g, '/').replace(/-/g, '/');
-  const date = new Date(normalized);
-  if (!Number.isNaN(date.getTime())) return date.toISOString().slice(0, 10);
-
-  const parts = normalized.split('/').map((part) => Number(part));
-  if (parts.length === 3 && parts.every((part) => Number.isFinite(part))) {
-    const [d, m, y] = parts;
-    const inferredYear = y < 100 ? 2000 + y : y;
-    const byDmy = new Date(Date.UTC(inferredYear, m - 1, d));
-    if (!Number.isNaN(byDmy.getTime())) return byDmy.toISOString().slice(0, 10);
-  }
-  return undefined;
+const asDate = asImportDateIso;
+const asDmyDate = asImportDateDmy;
+const asIndianStateCode = (value: unknown): string | undefined => {
+  const code = resolveIndianStateCode(
+    value === null || value === undefined ? undefined : String(value),
+  );
+  return code || undefined;
+};
+const asIndianStateLabel = (value: unknown): string | undefined => {
+  const key = resolveIndianStateKey(
+    value === null || value === undefined ? undefined : String(value),
+  );
+  return key || asString(value);
 };
 
 const SALES_MAPPINGS: MappingConfig[] = [
@@ -515,7 +513,6 @@ export type ColumnHeaderMap = Map<string, HeaderMapEntry>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** GSTR Report Packed Excel headers → database fields */
 const MYNTRA_GSTR_MAPPINGS: MappingConfig[] = [
   {
     source: ['seller_gstin', 'GST NO', 'GSTIN', 'Seller Gstin'],
@@ -566,26 +563,193 @@ const MYNTRA_GSTR_MAPPINGS: MappingConfig[] = [
     target: 'sgstAmount',
     transform: asNumber,
   },
+  { source: ['pincode', 'Pincode'], target: 'pincode', transform: asString },
+  {
+    source: [
+      'customer_delivery_state',
+      'customer_delivery_state_code',
+      'State Name',
+      'Ship To State',
+    ],
+    target: 'stateName',
+    transform: asIndianStateLabel,
+  },
   {
     source: ['customer_delivery_state_code', 'State Name', 'Ship To State'],
-    target: 'stateName',
-    transform: asString,
+    target: 'customerStateCode',
+    transform: asIndianStateCode,
+  },
+  {
+    source: ['order_packed_date', 'Order Packed Date', 'Packed Date'],
+    target: 'order_packed_date',
+    transform: asDmyDate,
   },
 ];
 
-/** MDirect Orders Report Excel headers → database fields */
+const MYNTRA_GSTR_RTO_MAPPINGS: MappingConfig[] = [
+  {
+    source: ['tax_seller_gstin', 'seller_gstin', 'GST NO', 'GSTIN'],
+    target: 'sellerGSTIN',
+    transform: normalizeGstin,
+  },
+  {
+    source: [...MYNTRA_GSTR_RTO_ORDER_ID_ALIASES, 'Order ID'],
+    target: 'orderID',
+    transform: asString,
+  },
+  {
+    source: ['order_cancel_date', 'Order Cancel Date', 'Cancel Date'],
+    target: 'orderCancelDate',
+    transform: asDate,
+  },
+  {
+    source: ['payment_method', 'Payment Mode', 'Payment Method'],
+    target: 'paymentMode',
+    transform: asString,
+  },
+  {
+    source: ['seller_type', 'Fulfilment Type', 'Fulfillment Type', 'Fulfilment Channel'],
+    target: 'fulfilmentType',
+    transform: asString,
+  },
+  { source: ['quantity', 'Quantity', 'Qty'], target: 'quantity', transform: asNumber },
+  {
+    source: ['seller_price', 'Invoice Amount'],
+    target: 'invoiceAmount',
+    transform: asNumber,
+  },
+  {
+    source: ['base_value', 'Taxable Amount', 'Taxable Value'],
+    target: 'taxableAmount',
+    transform: asNumber,
+  },
+  { source: ['igst_rate', 'IGST Rate', 'Igst Rate'], target: 'igstRate', transform: asNumber },
+  {
+    source: ['igst_amt', 'IGST Amount', 'Igst Tax', 'Igst Amount'],
+    target: 'igstAmount',
+    transform: asNumber,
+  },
+  { source: ['cgst_rate', 'CGST Rate', 'Cgst Rate'], target: 'cgstRate', transform: asNumber },
+  {
+    source: ['cgst_amt', 'CGST Amount', 'Cgst Tax', 'Cgst Amount'],
+    target: 'cgstAmount',
+    transform: asNumber,
+  },
+  { source: ['sgst_rate', 'SGST Rate', 'Sgst Rate'], target: 'sgstRate', transform: asNumber },
+  {
+    source: ['sgst_amt', 'SGST Amount', 'Sgst Tax', 'Sgst Amount'],
+    target: 'sgstAmount',
+    transform: asNumber,
+  },
+  {
+    source: ['customer_pincode', 'pincode', 'Pincode', 'Customer Pincode'],
+    target: 'pincode',
+    transform: asString,
+  },
+  {
+    source: [
+      'customer_state',
+      'customer_delivery_state',
+      'customer_delivery_state_code',
+      'State Name',
+      'Ship To State',
+    ],
+    target: 'stateName',
+    transform: asIndianStateLabel,
+  },
+];
+
+const MYNTRA_GSTR_RT_MAPPINGS: MappingConfig[] = [
+  {
+    source: ['tax_seller_gstin', 'seller_gstin', 'GST NO', 'GSTIN'],
+    target: 'sellerGSTIN',
+    transform: normalizeGstin,
+  },
+  {
+    source: [...MYNTRA_GSTR_RT_ORDER_ID_ALIASES, 'Order ID'],
+    target: 'orderID',
+    transform: asString,
+  },
+  {
+    source: ['fr_refunded_date', 'FR Refunded Date', 'Refunded Date'],
+    target: 'frRefundedDate',
+    transform: asDate,
+  },
+  {
+    source: ['payment_method', 'Payment Mode', 'Payment Method'],
+    target: 'paymentMode',
+    transform: asString,
+  },
+  {
+    source: ['seller_type', 'Fulfilment Type', 'Fulfillment Type', 'Fulfilment Channel'],
+    target: 'fulfilmentType',
+    transform: asString,
+  },
+  { source: ['quantity', 'Quantity', 'Qty'], target: 'quantity', transform: asNumber },
+  {
+    source: ['seller_price', 'Invoice Amount'],
+    target: 'invoiceAmount',
+    transform: asNumber,
+  },
+  {
+    source: ['base_value', 'Taxable Amount', 'Taxable Value'],
+    target: 'taxableAmount',
+    transform: asNumber,
+  },
+  {
+    source: ['tax_rate', 'gst_rate', 'igst_rate', 'IGST Rate', 'Igst Rate'],
+    target: 'igstRate',
+    transform: asNumber,
+  },
+  {
+    source: ['tax_amount', 'gst_amount', 'igst_amt', 'IGST Amount', 'Igst Tax', 'Igst Amount'],
+    target: 'igstAmount',
+    transform: asNumber,
+  },
+  {
+    source: ['customer_pincode', 'pincode', 'Pincode', 'Customer Pincode'],
+    target: 'pincode',
+    transform: asString,
+  },
+  {
+    source: [
+      'delivery_state',
+      'customer_delivery_state',
+      'customer_delivery_state_code',
+      'State Name',
+      'Ship To State',
+    ],
+    target: 'stateName',
+    transform: asIndianStateLabel,
+  },
+];
+
 const MYNTRA_MDIRECT_MAPPINGS: MappingConfig[] = [
   {
-    source: ['seller_sku_code', 'SKU ID', 'SKU', 'Sku'],
+    source: [...MYNTRA_MDIRECT_ORDER_ID_ALIASES, 'Order ID'],
+    target: 'orderID',
+    transform: asString,
+  },
+  {
+    source: ['seller_sku_code', 'seller sku code', 'SKU ID', 'SKU', 'Sku'],
     target: 'skuID',
     transform: asString,
   },
 ];
 
-/** MDirect Returns Report Excel headers → database fields */
 const MYNTRA_MDIRECT_RETURNS_MAPPINGS: MappingConfig[] = [
   {
-    source: ['return_mode', 'Return Reason', 'Return Mode'],
+    source: [...MYNTRA_MDIRECT_RETURNS_ORDER_ID_ALIASES, 'Order ID'],
+    target: 'orderID',
+    transform: asString,
+  },
+  {
+    source: ['seller_sku_code', 'seller sku code', 'SKU ID', 'SKU', 'Sku'],
+    target: 'skuID',
+    transform: asString,
+  },
+  {
+    source: ['return_mode', 'Return Mode'],
     target: 'returnReason',
     transform: asString,
   },
@@ -596,13 +760,13 @@ const MYNTRA_MDIRECT_RETURNS_MAPPINGS: MappingConfig[] = [
   },
 ];
 
-/** Sales Revenue Packed B2C Excel headers → database fields */
 const MYNTRA_SALES_REVENUE_MAPPINGS: MappingConfig[] = [
   {
     source: [...MYNTRA_SALES_ORDER_ID_ALIASES, 'Order ID', 'Order Id'],
     target: 'orderID',
     transform: asString,
   },
+  { source: ['Hsn', 'HSN', 'hsn', 'HSN Code'], target: 'hsnCode', transform: asString },
   {
     source: ['Invoice_Number', 'invoice_number', 'Invoice No', 'Invoice Number'],
     target: 'invoiceNo',
@@ -612,6 +776,11 @@ const MYNTRA_SALES_REVENUE_MAPPINGS: MappingConfig[] = [
     source: ['Packing_Date', 'packing_date', 'Invoice Date'],
     target: 'invoiceDate',
     transform: asDate,
+  },
+  {
+    source: ['Order_Created_Date', 'order_created_date', 'Order Created Date'],
+    target: 'order_created_date',
+    transform: asDmyDate,
   },
 ];
 
@@ -650,19 +819,6 @@ const MEESHO_TCS_SALES_MAPPINGS: MappingConfig[] = [
 
 @Injectable()
 export class MappingService {
-  private readonly myntraGstrRowCache = new WeakMap<
-    ParsedSheetRow,
-    NormalizedImportRow
-  >();
-  private readonly myntraMdirectRowCache = new WeakMap<
-    ParsedSheetRow,
-    Pick<NormalizedImportRow, 'skuID'>
-  >();
-  private readonly myntraReturnsRowCache = new WeakMap<
-    ParsedSheetRow,
-    Pick<NormalizedImportRow, 'returnReason' | 'detailedReturnReason'>
-  >();
-
   /**
    * Enforce GST component split using seller registration state vs customer state.
    * Intra-state => only CGST/SGST. Inter-state => only IGST.
@@ -672,82 +828,15 @@ export class MappingService {
     sellerStates?: string | string[],
     sellerGstins?: string | string[],
   ): NormalizedImportRow {
-    const states = Array.isArray(sellerStates)
-      ? sellerStates
-      : sellerStates
-        ? [sellerStates]
-        : [];
-    const gstins = Array.isArray(sellerGstins)
-      ? sellerGstins
-      : sellerGstins
-        ? [sellerGstins]
-        : [];
-    if (mapped.sellerGSTIN) {
-      gstins.push(mapped.sellerGSTIN);
+    const sellerContext = buildSellerGstContext(sellerStates, sellerGstins);
+    if (mapped.sellerGSTIN && !sellerContext.gstins.includes(mapped.sellerGSTIN)) {
+      sellerContext.gstins.push(mapped.sellerGSTIN);
+      sellerContext.stateKeys = buildSellerGstContext(
+        sellerContext.states,
+        sellerContext.gstins,
+      ).stateKeys;
     }
-    const sellerStateKeys = collectSellerRegistrationStateKeys(states, gstins);
-    const canCompare =
-      sellerStateKeys.size > 0 &&
-      resolveIndianStateKey(mapped.stateName).length > 0;
-    if (!canCompare) return mapped;
-
-    const isIntraState = isSameIndianState(mapped.stateName, sellerStateKeys);
-
-    if (isIntraState) {
-      mapped.gstTransactionType = 'intra';
-      const hasCgst =
-        typeof mapped.cgstAmount === 'number' || typeof mapped.cgstRate === 'number';
-      const hasSgst =
-        typeof mapped.sgstAmount === 'number' || typeof mapped.sgstRate === 'number';
-
-      if (!(hasCgst || hasSgst)) {
-        const igstRate = mapped.igstRate;
-        const igstAmount = mapped.igstAmount;
-        if (typeof igstRate === 'number' && Number.isFinite(igstRate)) {
-          mapped.cgstRate = igstRate / 2;
-          mapped.sgstRate = igstRate / 2;
-        }
-        if (typeof igstAmount === 'number' && Number.isFinite(igstAmount)) {
-          mapped.cgstAmount = igstAmount / 2;
-          mapped.sgstAmount = igstAmount / 2;
-        }
-      }
-
-      mapped.igstRate = undefined;
-      mapped.igstAmount = undefined;
-      return mapped;
-    }
-
-    mapped.gstTransactionType = 'inter';
-    const hasIgst =
-      typeof mapped.igstAmount === 'number' || typeof mapped.igstRate === 'number';
-    if (!hasIgst) {
-      const cgstRate = mapped.cgstRate;
-      const sgstRate = mapped.sgstRate;
-      const cgstAmount = mapped.cgstAmount;
-      const sgstAmount = mapped.sgstAmount;
-      if (
-        typeof cgstRate === 'number' &&
-        Number.isFinite(cgstRate) &&
-        typeof sgstRate === 'number' &&
-        Number.isFinite(sgstRate)
-      ) {
-        mapped.igstRate = cgstRate + sgstRate;
-      }
-      if (
-        typeof cgstAmount === 'number' &&
-        Number.isFinite(cgstAmount) &&
-        typeof sgstAmount === 'number' &&
-        Number.isFinite(sgstAmount)
-      ) {
-        mapped.igstAmount = cgstAmount + sgstAmount;
-      }
-    }
-
-    mapped.cgstRate = undefined;
-    mapped.cgstAmount = undefined;
-    mapped.sgstRate = undefined;
-    mapped.sgstAmount = undefined;
+    normalizeImportRowGst(mapped, sellerContext);
     return mapped;
   }
 
@@ -1042,80 +1131,66 @@ export class MappingService {
     return this.mapRow(row, 'sales', AMAZON_MAPPINGS);
   }
 
-  mapMyntraSalesRow(
-    salesRow: ParsedSheetRow,
-    mDirectRow?: ParsedSheetRow,
-    gstrRow?: ParsedSheetRow,
-    options?: {
-      isRtoReturn?: boolean;
-      isCustomerReturn?: boolean;
-      mDirectReturnsRow?: ParsedSheetRow;
-    },
-  ): NormalizedImportRow {
-    const base: NormalizedImportRow = gstrRow
-      ? { ...this.getCachedMyntraGstrRow(gstrRow) }
-      : { reportType: 'sales', documentType: 'SALE' };
-    if (mDirectRow) {
-      const skuID = this.getCachedMyntraMdirectSku(mDirectRow);
-      if (skuID) base.skuID = skuID;
-    }
-    const fromSales = this.mapRow(salesRow, 'sales', MYNTRA_SALES_REVENUE_MAPPINGS);
-    if (fromSales.orderID) base.orderID = fromSales.orderID;
-    if (fromSales.invoiceNo) base.invoiceNo = fromSales.invoiceNo;
-    if (fromSales.invoiceDate) base.invoiceDate = fromSales.invoiceDate;
-    if (options?.isRtoReturn) {
-      base.documentType = MYNTRA_DOCUMENT_TYPE_RTO;
-      base.typeOfReturn = MYNTRA_DOCUMENT_TYPE_RTO;
-    } else if (options?.isCustomerReturn) {
-      base.documentType = MYNTRA_DOCUMENT_TYPE_CUSTOMER_RETURN;
-      base.typeOfReturn = MYNTRA_DOCUMENT_TYPE_CUSTOMER_RETURN;
-    } else if (!base.documentType) {
-      base.documentType = 'SALE';
-    }
-    if (options?.mDirectReturnsRow) {
-      const cached = this.getCachedMyntraReturnsFields(options.mDirectReturnsRow);
-      if (cached.returnReason) base.returnReason = cached.returnReason;
-      if (cached.detailedReturnReason) {
-        base.detailedReturnReason = cached.detailedReturnReason;
-      }
-    }
-    return base;
-  }
-
-  private getCachedMyntraGstrRow(gstrRow: ParsedSheetRow): NormalizedImportRow {
-    const cached = this.myntraGstrRowCache.get(gstrRow);
-    if (cached) return cached;
-    const mapped = this.mapRow(gstrRow, 'sales', MYNTRA_GSTR_MAPPINGS);
-    if (!mapped.documentType) mapped.documentType = 'SALE';
-    this.myntraGstrRowCache.set(gstrRow, mapped);
+  mapMyntraGstrRow(row: ParsedSheetRow): NormalizedImportRow {
+    const mapped = this.mapRow(row, 'sales', MYNTRA_GSTR_MAPPINGS);
+    mapped.documentType = 'SALE';
+    mapped.myntraTransactionType = 'SALE';
     return mapped;
   }
 
-  private getCachedMyntraMdirectSku(mDirectRow: ParsedSheetRow): string | undefined {
-    const cached = this.myntraMdirectRowCache.get(mDirectRow);
-    if (cached) return cached.skuID;
-    const fromMdirect = this.mapRow(mDirectRow, 'sales', MYNTRA_MDIRECT_MAPPINGS);
-    this.myntraMdirectRowCache.set(mDirectRow, { skuID: fromMdirect.skuID });
-    return fromMdirect.skuID;
+  mapMyntraSalesRevenueRow(row: ParsedSheetRow): NormalizedImportRow {
+    return this.mapRow(row, 'sales', MYNTRA_SALES_REVENUE_MAPPINGS);
   }
 
-  private getCachedMyntraReturnsFields(returnsRow: ParsedSheetRow): Pick<
+  mapMyntraMdirectRow(row: ParsedSheetRow): NormalizedImportRow {
+    return this.mapRow(row, 'sales', MYNTRA_MDIRECT_MAPPINGS);
+  }
+
+  mapMyntraGstrRtoRow(row: ParsedSheetRow): NormalizedImportRow {
+    const mapped = this.mapRow(row, 'sales', MYNTRA_GSTR_RTO_MAPPINGS);
+    mapped.documentType = MYNTRA_DOCUMENT_TYPE_RTO;
+    mapped.typeOfReturn = MYNTRA_DOCUMENT_TYPE_RTO;
+    mapped.myntraTransactionType = 'RETURN';
+    return mapped;
+  }
+
+  mapMyntraGstrRtRow(row: ParsedSheetRow): NormalizedImportRow {
+    const mapped = this.mapRow(row, 'sales', MYNTRA_GSTR_RT_MAPPINGS);
+    mapped.documentType = MYNTRA_DOCUMENT_TYPE_CUSTOMER_RETURN;
+    mapped.typeOfReturn = MYNTRA_DOCUMENT_TYPE_CUSTOMER_RETURN;
+    mapped.myntraTransactionType = 'RETURN';
+    return mapped;
+  }
+
+  mapMyntraMdirectReturnsRow(row: ParsedSheetRow): Pick<
     NormalizedImportRow,
     'returnReason' | 'detailedReturnReason'
   > {
-    const cached = this.myntraReturnsRowCache.get(returnsRow);
-    if (cached) return cached;
-    const fromReturns = this.mapRow(
-      returnsRow,
-      'sales',
-      MYNTRA_MDIRECT_RETURNS_MAPPINGS,
-    );
-    const fields = {
-      returnReason: fromReturns.returnReason,
-      detailedReturnReason: fromReturns.detailedReturnReason,
-    };
-    this.myntraReturnsRowCache.set(returnsRow, fields);
-    return fields;
+    return this.mapRow(row, 'sales', MYNTRA_MDIRECT_RETURNS_MAPPINGS);
+  }
+
+  buildMyntraGstrHeaderMap(headers: string[]): ColumnHeaderMap {
+    return this.buildHeaderMap(headers, MYNTRA_GSTR_MAPPINGS);
+  }
+
+  buildMyntraMdirectHeaderMap(headers: string[]): ColumnHeaderMap {
+    return this.buildHeaderMap(headers, MYNTRA_MDIRECT_MAPPINGS);
+  }
+
+  buildMyntraSalesHeaderMap(headers: string[]): ColumnHeaderMap {
+    return this.buildHeaderMap(headers, MYNTRA_SALES_REVENUE_MAPPINGS);
+  }
+
+  buildMyntraMdirectReturnsHeaderMap(headers: string[]): ColumnHeaderMap {
+    return this.buildHeaderMap(headers, MYNTRA_MDIRECT_RETURNS_MAPPINGS);
+  }
+
+  buildMyntraGstrRtoHeaderMap(headers: string[]): ColumnHeaderMap {
+    return this.buildHeaderMap(headers, MYNTRA_GSTR_RTO_MAPPINGS);
+  }
+
+  buildMyntraGstrRtHeaderMap(headers: string[]): ColumnHeaderMap {
+    return this.buildHeaderMap(headers, MYNTRA_GSTR_RT_MAPPINGS);
   }
 
   // ─── Fast path: build a per-file lookup map once, then map each row in O(cols) ──
@@ -1170,24 +1245,6 @@ export class MappingService {
       mapped.documentType = reportType === 'sales' ? 'SALE' : 'CASHBACK';
     }
     return mapped;
-  }
-
-  // Convenience builders for the 4 Myntra file types
-
-  buildMyntraGstrHeaderMap(headers: string[]): ColumnHeaderMap {
-    return this.buildHeaderMap(headers, MYNTRA_GSTR_MAPPINGS);
-  }
-
-  buildMyntraMdirectHeaderMap(headers: string[]): ColumnHeaderMap {
-    return this.buildHeaderMap(headers, MYNTRA_MDIRECT_MAPPINGS);
-  }
-
-  buildMyntraSalesHeaderMap(headers: string[]): ColumnHeaderMap {
-    return this.buildHeaderMap(headers, MYNTRA_SALES_REVENUE_MAPPINGS);
-  }
-
-  buildMyntraMdirectReturnsHeaderMap(headers: string[]): ColumnHeaderMap {
-    return this.buildHeaderMap(headers, MYNTRA_MDIRECT_RETURNS_MAPPINGS);
   }
 
   // ─────────────────────────────────────────────────────────────────────────────

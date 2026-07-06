@@ -156,8 +156,13 @@ const MYNTRA_FILE_HEADER_ALIASES: Record<MyntraFileKind, string[]> = {
     'sgst_amt',
     'sgst amount',
     'sgst tax',
+    'pincode',
+    'customer_delivery_state',
     'customer_delivery_state_code',
     'state name',
+    'order_packed_date',
+    'order packed date',
+    'packed date',
   ],
   mDirectOrders: [
     'order_release_id',
@@ -171,27 +176,40 @@ const MYNTRA_FILE_HEADER_ALIASES: Record<MyntraFileKind, string[]> = {
     'sale_order_code',
     'sale order code',
     'order id',
+    'hsn',
     'invoice_number',
     'invoice number',
     'invoice no',
     'packing_date',
     'packing date',
     'invoice date',
+    'order_created_date',
+    'order created date',
   ],
   gstrReportRto: [
     'tax_seller_gstin',
     'tax seller gstin',
+    'seller_gstin',
     'gst no',
     'order_id',
     'order id',
+    'order_cancel_date',
+    'order cancel date',
+    'cancel date',
   ],
   gstrReportRt: [
     'tax_seller_gstin',
     'tax seller gstin',
+    'seller_gstin',
     'gst no',
+    'packet_id',
+    'packet id',
     'shipment_id',
     'shipment id',
     'order id',
+    'fr_refunded_date',
+    'fr refunded date',
+    'refunded date',
   ],
   mDirectReturns: [
     'order_release_id',
@@ -425,7 +443,6 @@ export class FileParserService {
     buffer: Buffer,
     fileKind: MyntraFileKind,
   ): ParsedSingleSheetWorkbook {
-    // cellDates omitted — asDate() already handles numeric Excel serial dates
     const workbook = XLSX.read(buffer, { type: 'buffer' });
     if (!workbook.SheetNames.length) {
       throw new BadRequestException('Workbook does not contain any sheet');
@@ -440,7 +457,6 @@ export class FileParserService {
     };
   }
 
-  /** Always use matrix JSON parse for Myntra (large CSV/XLSX exports). */
   private parseMyntraSheetData(
     sheet: XLSX.WorkSheet,
     sheetName: string,
@@ -1696,12 +1712,17 @@ export class FileParserService {
         (cell) =>
           cell.includes('sale order') ||
           cell.includes('invoice number') ||
-          cell.includes('packing date'),
+          cell.includes('packing date') ||
+          cell.includes('hsn'),
       );
     }
     if (fileKind === 'gstrReportRt') {
       return headerLike.some(
-        (cell) => cell.includes('shipment') || cell.includes('tax seller'),
+        (cell) =>
+          cell.includes('packet') ||
+          cell.includes('shipment') ||
+          cell.includes('tax seller') ||
+          cell.includes('fr refunded'),
       );
     }
     if (fileKind === 'gstrReportRto') {
@@ -1711,7 +1732,6 @@ export class FileParserService {
     }
     return headerLike.some(
       (cell) =>
-        cell.includes('seller gstin') ||
         cell.includes('seller gstin') ||
         cell.includes('order id'),
     );
@@ -1734,7 +1754,6 @@ export class FileParserService {
     sheet: XLSX.WorkSheet,
     fileKind: MyntraFileKind,
   ): number {
-    // Some marketplace CSV/XLSX exports include many preface rows before headers.
     const matrix = this.sheetPreviewMatrix(sheet, 200);
     const aliases = MYNTRA_FILE_HEADER_ALIASES[fileKind];
     let bestIndex = -1;
@@ -1769,7 +1788,6 @@ export class FileParserService {
       }
     }
 
-    // Prefer row 0 when it is a valid header row (fixes CSVs where row 1 data scores falsely).
     if (bestIndex > 0) {
       const firstScore = evaluateRow(0);
       if (firstScore >= minRequiredScore) {

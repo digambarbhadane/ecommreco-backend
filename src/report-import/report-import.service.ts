@@ -84,7 +84,18 @@ export class ReportImportService {
     filter.$and = [visibility];
   }
 
-  async listImportedRows(query: ListImportedRowsDto) {
+  private async buildImportedRowsFilter(
+    query: Pick<
+      ListImportedRowsDto,
+      | 'sellerId'
+      | 'gstin'
+      | 'marketplace'
+      | 'documentType'
+      | 'fromDate'
+      | 'toDate'
+      | 'search'
+    >,
+  ) {
     const filter: Record<string, unknown> = {};
     await this.applySellerIdToFilter(filter, query.sellerId);
     if (query.gstin) filter.gstin = query.gstin.trim().toUpperCase();
@@ -99,8 +110,30 @@ export class ReportImportService {
         (filter.invoiceDate as Record<string, unknown>).$lte = query.toDate;
       }
     }
+    const search = String(query.search ?? '').trim();
+    if (search) {
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const searchClause = {
+        $or: [
+          { orderID: { $regex: escaped, $options: 'i' } },
+          { documentType: { $regex: escaped, $options: 'i' } },
+          { gstin: { $regex: escaped, $options: 'i' } },
+          { invoiceNo: { $regex: escaped, $options: 'i' } },
+          { skuID: { $regex: escaped, $options: 'i' } },
+        ],
+      };
+      if (Array.isArray(filter.$and)) {
+        filter.$and.push(searchClause);
+      } else {
+        filter.$and = [searchClause];
+      }
+    }
     this.applyMeeshoImportedDataVisibilityFilter(filter, query.marketplace);
+    return filter;
+  }
 
+  async listImportedRows(query: ListImportedRowsDto) {
+    const filter = await this.buildImportedRowsFilter(query);
     const limit = Math.max(0, Number(query.limit ?? '50'));
     const skip = Math.max(0, Number(query.skip ?? '0'));
     const sortBy = query.sortBy ?? 'documentType';
@@ -136,6 +169,82 @@ export class ReportImportService {
       total,
       limit,
       skip,
+    };
+  }
+
+  async exportImportedRowsCsv(
+    query: ListImportedRowsDto,
+  ): Promise<{ buffer: Buffer; filename: string; rowCount: number }> {
+    const filter = await this.buildImportedRowsFilter(query);
+    const sortBy = query.sortBy ?? 'invoiceDate';
+    const sortOrder = query.sortOrder === 'asc' ? 1 : -1;
+    const maxRows = 100_000;
+
+    const rows = await this.rowModel
+      .find(filter)
+      .sort({ [sortBy]: sortOrder })
+      .limit(maxRows)
+      .lean()
+      .exec();
+
+    const headers = [
+      'GSTIN',
+      'Document Type',
+      'Order ID',
+      'Invoice Date',
+      'Invoice No',
+      'Invoice Amount',
+      'Taxable Amount',
+      'IGST',
+      'CGST',
+      'SGST',
+      'Quantity',
+      'SKU',
+      'Order Packed Date',
+      'Order Cancel Date',
+      'FR Refunded Date',
+      'Marketplace',
+      'Payment Mode',
+      'State',
+    ];
+
+    const escapeCsv = (value: unknown) => {
+      const text = value === null || value === undefined ? '' : String(value);
+      return `"${text.replace(/"/g, '""')}"`;
+    };
+
+    const lines = rows.map((row) =>
+      [
+        row.gstin,
+        row.documentType,
+        row.orderID,
+        row.invoiceDate,
+        row.invoiceNo,
+        row.invoiceAmount,
+        row.taxableAmount,
+        row.igstAmount,
+        row.cgstAmount,
+        row.sgstAmount,
+        row.quantity,
+        row.skuID,
+        row.order_packed_date,
+        row.orderCancelDate,
+        row.frRefundedDate,
+        row.marketplace,
+        row.paymentMode,
+        row.stateName,
+      ]
+        .map(escapeCsv)
+        .join(','),
+    );
+
+    const csv = [headers.join(','), ...lines].join('\n');
+    const stamp = new Date().toISOString().slice(0, 10);
+
+    return {
+      buffer: Buffer.from(csv, 'utf-8'),
+      filename: `analytics-export-${stamp}.csv`,
+      rowCount: rows.length,
     };
   }
 

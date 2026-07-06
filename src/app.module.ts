@@ -23,6 +23,7 @@ import { ReportImportModule } from './report-import/report-import.module';
 import { HealthModule } from './health/health.module';
 import { PanSlotRequestsModule } from './pan-slot-requests/pan-slot-requests.module';
 import { BillingModule } from './billing/billing.module';
+import { GstModule } from './common/gst/gst.module';
 import { setMongoStorageMode } from './config/mongo-connection';
 import {
   getMongoUriCandidates,
@@ -242,6 +243,7 @@ const DEFAULT_LOCAL_MONGODB_URI = 'mongodb://127.0.0.1:27017/sellerspl';
     SubscriptionModule,
     EmailModule,
     SalesActivityModule,
+    GstModule,
     ReportImportModule,
     HealthModule,
     PanSlotRequestsModule,
