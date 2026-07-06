@@ -13,6 +13,7 @@ import {
   createDocumentOptions,
   normalizeSwaggerDocument,
 } from '../config/swagger';
+import { MongoServerExceptionFilter } from './common/filters/mongo-server-exception.filter';
 
 const normalizeOrigin = (value: string) => value.trim().replace(/\/+$/, '');
 
@@ -110,6 +111,7 @@ async function bootstrap() {
       forbidNonWhitelisted: true,
     }),
   );
+  app.useGlobalFilters(new MongoServerExceptionFilter());
   app.setGlobalPrefix('api/v1', {
     exclude: [{ path: '', method: RequestMethod.GET }],
   });

@@ -25,6 +25,7 @@ import {
   ImportRow,
   ImportRowDocument,
 } from '../report-import/schemas/import-row.schema';
+import { rethrowMongoWriteError } from '../common/utils/mongo-errors';
 
 @Injectable()
 export class GstsService {
@@ -708,32 +709,36 @@ export class GstsService {
       );
     }
 
-    await this.gstModel.findByIdAndDelete(id).exec();
+    try {
+      await this.gstModel.findByIdAndDelete(id).exec();
 
-    const remainingGsts = await this.gstModel
-      .find({ sellerId: gst.sellerId })
-      .select('panNumber gstNumber')
-      .lean()
-      .exec();
-    const panSet = new Set<string>();
-    remainingGsts.forEach((item) => {
-      const pan =
-        typeof item.panNumber === 'string' && item.panNumber.length > 0
-          ? item.panNumber.trim().toUpperCase()
-          : this.extractPanFromGst(item.gstNumber);
-      if (pan) {
-        panSet.add(pan);
+      const remainingGsts = await this.gstModel
+        .find({ sellerId: gst.sellerId })
+        .select('panNumber gstNumber')
+        .lean()
+        .exec();
+      const panSet = new Set<string>();
+      remainingGsts.forEach((item) => {
+        const pan =
+          typeof item.panNumber === 'string' && item.panNumber.length > 0
+            ? item.panNumber.trim().toUpperCase()
+            : this.extractPanFromGst(item.gstNumber);
+        if (pan) {
+          panSet.add(pan);
+        }
+      });
+
+      const seller = await this.sellerModel.findById(gst.sellerId).exec();
+      if (seller) {
+        const nextProfiles = Array.isArray(seller.panProfiles)
+          ? seller.panProfiles.filter((item) => panSet.has(item.panNumber))
+          : [];
+        seller.panProfiles = nextProfiles;
+        seller.gstSlotsUsed = panSet.size;
+        await seller.save();
       }
-    });
-
-    const seller = await this.sellerModel.findById(gst.sellerId).exec();
-    if (seller) {
-      const nextProfiles = Array.isArray(seller.panProfiles)
-        ? seller.panProfiles.filter((item) => panSet.has(item.panNumber))
-        : [];
-      seller.panProfiles = nextProfiles;
-      seller.gstSlotsUsed = panSet.size;
-      await seller.save();
+    } catch (error) {
+      rethrowMongoWriteError(error);
     }
 
     return {

@@ -29,6 +29,9 @@ export class ImportUpload {
   @Prop({ required: true, default: 0 })
   totalRecords: number;
 
+  @Prop({ default: 0 })
+  processedRecords?: number;
+
   @Prop()
   minInvoiceDate?: string;
 

@@ -13,6 +13,7 @@ import {
   PlatformMarketplace,
   PlatformMarketplaceDocument,
 } from '../platform-marketplaces/schemas/platform-marketplace.schema';
+import { rethrowMongoWriteError } from '../common/utils/mongo-errors';
 
 @Injectable()
 export class MarketplacesService implements OnModuleInit {
@@ -125,10 +126,15 @@ export class MarketplacesService implements OnModuleInit {
         errorCode: 'INVALID_ID',
       });
     }
-    const removed = await this.marketplaceModel
-      .findByIdAndDelete(id)
-      .lean()
-      .exec();
+    let removed;
+    try {
+      removed = await this.marketplaceModel
+        .findByIdAndDelete(id)
+        .lean()
+        .exec();
+    } catch (error) {
+      rethrowMongoWriteError(error);
+    }
     if (!removed) {
       throw new NotFoundException({
         success: false,
