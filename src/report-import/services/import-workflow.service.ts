@@ -33,6 +33,7 @@ import {
   buildAmazonWorkflowMonthSummaryPipeline,
   buildFlipkartWorkflowMonthSummaryPipeline,
   buildMeeshoWorkflowMonthSummaryPipeline,
+  buildMyntraWorkflowMonthSummaryPipeline,
   buildWorkflowMonthSummaryPipeline,
   computeFlipkartReturnsNetTotal,
   computeFlipkartGrossSale,
@@ -45,6 +46,7 @@ import {
   type FlipkartMonthTotalsRow,
   type FlipkartVoucherTypeSummaryRow,
   type MeeshoMonthTotalsRow,
+  type MyntraMonthTotalsRow,
   type WorkflowMonthTotalsRow,
 } from '../utils/workflow-month-summary.aggregation';
 import { ReconAdjustment } from '../schemas/recon-adjustment.schema';
@@ -766,7 +768,8 @@ export class ImportWorkflowService {
       | WorkflowMonthTotalsRow
       | MeeshoMonthTotalsRow
       | FlipkartMonthTotalsRow
-      | AmazonMonthTotalsRow = {};
+      | AmazonMonthTotalsRow
+      | MyntraMonthTotalsRow = {};
     let byDocumentType: Array<{
       documentType: string;
       count: number;
@@ -824,7 +827,9 @@ export class ImportWorkflowService {
             ? buildMeeshoWorkflowMonthSummaryPipeline(rowFilter)
             : marketplace === 'amazon'
               ? buildAmazonWorkflowMonthSummaryPipeline(rowFilter)
-              : buildWorkflowMonthSummaryPipeline(rowFilter);
+              : marketplace === 'myntra'
+                ? buildMyntraWorkflowMonthSummaryPipeline(rowFilter)
+                : buildWorkflowMonthSummaryPipeline(rowFilter);
 
       const summaryUploadIds =
         marketplace === 'amazon' && amazonUploadIds.length
@@ -841,6 +846,7 @@ export class ImportWorkflowService {
               | MeeshoMonthTotalsRow
               | FlipkartMonthTotalsRow
               | AmazonMonthTotalsRow
+              | MyntraMonthTotalsRow
             >;
             byDocumentType: Array<{
               _id: string;
@@ -980,6 +986,8 @@ export class ImportWorkflowService {
       marketplace === 'flipkart' ? (totals as FlipkartMonthTotalsRow) : null;
     const amazonTotals =
       marketplace === 'amazon' ? (totals as AmazonMonthTotalsRow) : null;
+    const myntraTotals =
+      marketplace === 'myntra' ? (totals as MyntraMonthTotalsRow) : null;
     const meeshoReturnTotalRows = Number(meeshoTotals?.meeshoTcsReturnRows ?? 0);
     const meeshoReturnTotalPcs = Number(meeshoTotals?.meeshoTcsReturnPcs ?? 0);
     const meeshoReturnTotalTaxable = Number(meeshoTotals?.meeshoTcsReturnTaxable ?? 0);
@@ -1221,6 +1229,70 @@ export class ImportWorkflowService {
                     cgst: Number(amazonTotals.amazonNaCgst ?? 0),
                     sgst: Number(amazonTotals.amazonNaSgst ?? 0),
                     invoiceAmount: Number(amazonTotals.amazonNaInvoice ?? 0),
+                  },
+                },
+              };
+            })()
+        : marketplace === 'myntra' && myntraTotals
+          ? (() => {
+              const sales = {
+                totalRows: Number(myntraTotals.myntraGrossSalesRows ?? 0),
+                pcs: Number(myntraTotals.myntraGrossSalesPcs ?? 0),
+                taxableValue: Number(myntraTotals.myntraGrossSalesTaxable ?? 0),
+                igst: Number(myntraTotals.myntraGrossSalesIgst ?? 0),
+                cgst: Number(myntraTotals.myntraGrossSalesCgst ?? 0),
+                sgst: Number(myntraTotals.myntraGrossSalesSgst ?? 0),
+                invoiceAmount: Number(myntraTotals.myntraGrossSalesInvoice ?? 0),
+              };
+              const returns = {
+                totalRows: Number(myntraTotals.myntraReturnTotalRows ?? 0),
+                pcs: Number(myntraTotals.myntraReturnTotalPcs ?? 0),
+                taxableValue: Number(myntraTotals.myntraReturnTotalTaxable ?? 0),
+                igst: Number(myntraTotals.myntraReturnTotalIgst ?? 0),
+                cgst: Number(myntraTotals.myntraReturnTotalCgst ?? 0),
+                sgst: Number(myntraTotals.myntraReturnTotalSgst ?? 0),
+                invoiceAmount: Number(myntraTotals.myntraReturnTotalInvoice ?? 0),
+              };
+              return {
+                sales,
+                grossSales: sales,
+                returns,
+                netSales: {
+                  totalRows: sales.totalRows - returns.totalRows,
+                  pcs: sales.pcs - returns.pcs,
+                  taxableValue: sales.taxableValue - returns.taxableValue,
+                  igst: sales.igst - returns.igst,
+                  cgst: sales.cgst - returns.cgst,
+                  sgst: sales.sgst - returns.sgst,
+                  invoiceAmount: sales.invoiceAmount - returns.invoiceAmount,
+                },
+                myntraReturns: {
+                  rto: {
+                    totalRows: Number(myntraTotals.myntraReturnRtoRows ?? 0),
+                    pcs: Number(myntraTotals.myntraReturnRtoPcs ?? 0),
+                    taxableValue: Number(myntraTotals.myntraReturnRtoTaxable ?? 0),
+                    igst: Number(myntraTotals.myntraReturnRtoIgst ?? 0),
+                    cgst: Number(myntraTotals.myntraReturnRtoCgst ?? 0),
+                    sgst: Number(myntraTotals.myntraReturnRtoSgst ?? 0),
+                    invoiceAmount: Number(myntraTotals.myntraReturnRtoInvoice ?? 0),
+                  },
+                  customerReturn: {
+                    totalRows: Number(myntraTotals.myntraReturnCustomerRows ?? 0),
+                    pcs: Number(myntraTotals.myntraReturnCustomerPcs ?? 0),
+                    taxableValue: Number(myntraTotals.myntraReturnCustomerTaxable ?? 0),
+                    igst: Number(myntraTotals.myntraReturnCustomerIgst ?? 0),
+                    cgst: Number(myntraTotals.myntraReturnCustomerCgst ?? 0),
+                    sgst: Number(myntraTotals.myntraReturnCustomerSgst ?? 0),
+                    invoiceAmount: Number(myntraTotals.myntraReturnCustomerInvoice ?? 0),
+                  },
+                  na: {
+                    totalRows: Number(myntraTotals.myntraReturnNaRows ?? 0),
+                    pcs: Number(myntraTotals.myntraReturnNaPcs ?? 0),
+                    taxableValue: Number(myntraTotals.myntraReturnNaTaxable ?? 0),
+                    igst: Number(myntraTotals.myntraReturnNaIgst ?? 0),
+                    cgst: Number(myntraTotals.myntraReturnNaCgst ?? 0),
+                    sgst: Number(myntraTotals.myntraReturnNaSgst ?? 0),
+                    invoiceAmount: Number(myntraTotals.myntraReturnNaInvoice ?? 0),
                   },
                 },
               };

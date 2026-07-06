@@ -146,7 +146,11 @@ export class UploadService {
     ) {
       throw new NotFoundException('Import upload not found');
     }
-    const savedSoFar = upload.totalRecords ?? 0;
+    const totalExpected = upload.totalRecords ?? 0;
+    const savedSoFar =
+      upload.status === 'completed'
+        ? totalExpected
+        : Number(upload.processedRecords ?? 0);
     const fileLabel = String(upload.fileName ?? '').toLowerCase();
     const processingHint = fileLabel.includes('myntra')
       ? 'Parsing and matching Myntra reports — large files may take a few minutes.'
@@ -158,7 +162,7 @@ export class UploadService {
       uploadId,
       status: upload.status,
       count: savedSoFar,
-      totalRecords: upload.totalRecords,
+      totalRecords: totalExpected,
       fileName: upload.fileName,
       errorMessage: upload.errorMessage,
       message:
@@ -2192,7 +2196,7 @@ export class UploadService {
       },
       async (savedCount) => {
         await this.uploadModel.findByIdAndUpdate(uploadId, {
-          $set: { totalRecords: savedCount },
+          $set: { processedRecords: savedCount },
         });
         const pct =
           totalRows > 0

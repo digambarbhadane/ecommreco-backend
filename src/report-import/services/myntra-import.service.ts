@@ -165,7 +165,6 @@ export class MyntraImportService {
     gstrReportRt: ParsedMyntraFile;
     mDirectReturns: ParsedMyntraFile;
   }): Promise<MyntraBuildResult> {
-    // ── Build order-id indexes ────────────────────────────────────────────────
     const mDirectByOrder = this.indexByOrderId(
       parsed.mDirectOrders.rows,
       ...MYNTRA_MDIRECT_ORDER_ID_ALIASES,
@@ -173,6 +172,10 @@ export class MyntraImportService {
     const gstrByOrder = this.indexByOrderId(
       parsed.gstrReportPacked.rows,
       ...MYNTRA_GSTR_ORDER_ID_ALIASES,
+    );
+    const salesByOrder = this.indexByOrderId(
+      parsed.salesRevenueB2c.rows,
+      ...MYNTRA_SALES_ORDER_ID_ALIASES,
     );
     const mDirectReturnsByOrder = this.indexByOrderId(
       parsed.mDirectReturns.rows,
@@ -187,86 +190,187 @@ export class MyntraImportService {
       ...MYNTRA_GSTR_RT_ORDER_ID_ALIASES,
     );
 
-    // ── Build per-file header maps ONCE (replaces per-row alias scan) ─────────
     const gstrHeaderMap = this.mapping.buildMyntraGstrHeaderMap(parsed.gstrReportPacked.headers);
     const mdirectHeaderMap = this.mapping.buildMyntraMdirectHeaderMap(parsed.mDirectOrders.headers);
     const salesHeaderMap = this.mapping.buildMyntraSalesHeaderMap(parsed.salesRevenueB2c.headers);
     const returnsHeaderMap = this.mapping.buildMyntraMdirectReturnsHeaderMap(parsed.mDirectReturns.headers);
 
-    // ── Process sales revenue rows ────────────────────────────────────────────
     const rows: MyntraBuildResult['rows'] = [];
     const errors: MyntraBuildResult['errors'] = [];
-    let missingOrderIdCount = 0;
-    let missingInGstrCount = 0;
-    let missingInMdirectCount = 0;
+    let missingOrderIdInGstr = 0;
+    let missingInSales = 0;
+    let missingInMdirect = 0;
+    let missingGstrForReturn = 0;
 
-    const salesRows = parsed.salesRevenueB2c.rows;
+    const gstrRows = parsed.gstrReportPacked.rows;
     const mdirectOrdersProvided = parsed.mDirectOrders.rows.length > 0;
+    const processedReturnOrders = new Set<string>();
 
-    for (let i = 0; i < salesRows.length; i++) {
-      const row = salesRows[i];
+    const pushRow = (
+      mapped: NormalizedImportRow,
+      sheetName: string,
+      rowNumber: number,
+    ) => {
+      rows.push({
+        ...mapped,
+        __sheetName: sheetName,
+        __rowNumber: rowNumber,
+      });
+    };
+
+    // Phase 1 — every GSTR Report Packed row is a gross sale.
+    for (let i = 0; i < gstrRows.length; i++) {
+      const gstrRow = gstrRows[i];
       try {
-        const orderIdRaw = getRowCell(row, ...MYNTRA_SALES_ORDER_ID_ALIASES);
+        const orderIdRaw = getRowCell(gstrRow, ...MYNTRA_GSTR_ORDER_ID_ALIASES);
         const orderId = normalizeOrderKey(orderIdRaw);
         if (!orderId) {
-          missingOrderIdCount += 1;
-        } else {
-          const mDirectRow = mDirectByOrder.get(orderId);
-          const gstrRow = gstrByOrder.get(orderId);
-          if (!gstrRow) {
-            missingInGstrCount += 1;
-          } else if (mdirectOrdersProvided && !mDirectRow) {
-            missingInMdirectCount += 1;
-          } else {
-            const isRtoReturn = rtoOrderIds.has(orderId);
-            const isCustomerReturn = !isRtoReturn && rtOrderIds.has(orderId);
-            const mapped = this.mapRowFast(
-              row,
-              gstrRow,
-              mDirectRow,
-              gstrHeaderMap,
-              mdirectHeaderMap,
-              salesHeaderMap,
-              returnsHeaderMap,
-              {
-                isRtoReturn,
-                isCustomerReturn,
-                mDirectReturnsRow: mDirectReturnsByOrder.get(orderId),
-              },
-            );
-            rows.push({
-              ...mapped,
-              __sheetName: row.__sheetName,
-              __rowNumber: row.__rowNumber,
-            });
-          }
+          missingOrderIdInGstr += 1;
+          continue;
         }
+
+        const salesRow = salesByOrder.get(orderId);
+        if (!salesRow) {
+          missingInSales += 1;
+        }
+
+        const mDirectRow = mDirectByOrder.get(orderId);
+        if (mdirectOrdersProvided && !mDirectRow) {
+          missingInMdirect += 1;
+          continue;
+        }
+
+        const mapped = this.mapRowFast(
+          salesRow,
+          gstrRow,
+          mDirectRow,
+          gstrHeaderMap,
+          mdirectHeaderMap,
+          salesHeaderMap,
+          returnsHeaderMap,
+          {
+            documentType: 'SALE',
+            mDirectReturnsRow: mDirectReturnsByOrder.get(orderId),
+          },
+        );
+        pushRow(mapped, gstrRow.__sheetName, gstrRow.__rowNumber);
       } catch {
         errors.push({
-          sheetName: row.__sheetName,
-          rowNumber: row.__rowNumber,
-          error: 'Failed to normalize Myntra sales revenue row',
+          sheetName: gstrRow.__sheetName,
+          rowNumber: gstrRow.__rowNumber,
+          error: 'Failed to normalize Myntra GSTR packed row',
         });
       }
 
-      // Yield event loop every YIELD_CHUNK rows so HTTP requests can be served
+      if ((i + 1) % YIELD_CHUNK === 0) {
+        await yieldEventLoop();
+      }
+    }
+
+    // Phase 2 — GSTR Report RTO rows become separate return entries.
+    for (let i = 0; i < parsed.gstrReportRto.rows.length; i++) {
+      const rtoRow = parsed.gstrReportRto.rows[i];
+      try {
+        const orderId = normalizeOrderKey(
+          getRowCell(rtoRow, ...MYNTRA_GSTR_RTO_ORDER_ID_ALIASES),
+        );
+        if (!orderId || processedReturnOrders.has(orderId)) continue;
+
+        const gstrRow = gstrByOrder.get(orderId);
+        if (!gstrRow) {
+          missingGstrForReturn += 1;
+          continue;
+        }
+
+        processedReturnOrders.add(orderId);
+        const salesRow = salesByOrder.get(orderId);
+        const mDirectRow = mDirectByOrder.get(orderId);
+        const mapped = this.mapRowFast(
+          salesRow,
+          gstrRow,
+          mDirectRow,
+          gstrHeaderMap,
+          mdirectHeaderMap,
+          salesHeaderMap,
+          returnsHeaderMap,
+          {
+            documentType: 'RTO Return',
+            typeOfReturn: 'RTO Return',
+            mDirectReturnsRow: mDirectReturnsByOrder.get(orderId),
+          },
+        );
+        pushRow(mapped, rtoRow.__sheetName, rtoRow.__rowNumber);
+      } catch {
+        errors.push({
+          sheetName: rtoRow.__sheetName,
+          rowNumber: rtoRow.__rowNumber,
+          error: 'Failed to normalize Myntra RTO return row',
+        });
+      }
+
+      if ((i + 1) % YIELD_CHUNK === 0) {
+        await yieldEventLoop();
+      }
+    }
+
+    // Phase 3 — GSTR Report RT rows (customer returns), excluding RTO orders.
+    for (let i = 0; i < parsed.gstrReportRt.rows.length; i++) {
+      const rtRow = parsed.gstrReportRt.rows[i];
+      try {
+        const orderId = normalizeOrderKey(
+          getRowCell(rtRow, ...MYNTRA_GSTR_RT_ORDER_ID_ALIASES),
+        );
+        if (!orderId || rtoOrderIds.has(orderId) || processedReturnOrders.has(orderId)) {
+          continue;
+        }
+
+        const gstrRow = gstrByOrder.get(orderId);
+        if (!gstrRow) {
+          missingGstrForReturn += 1;
+          continue;
+        }
+
+        processedReturnOrders.add(orderId);
+        const salesRow = salesByOrder.get(orderId);
+        const mDirectRow = mDirectByOrder.get(orderId);
+        const mapped = this.mapRowFast(
+          salesRow,
+          gstrRow,
+          mDirectRow,
+          gstrHeaderMap,
+          mdirectHeaderMap,
+          salesHeaderMap,
+          returnsHeaderMap,
+          {
+            documentType: 'Customer Return',
+            typeOfReturn: 'Customer Return',
+            mDirectReturnsRow: mDirectReturnsByOrder.get(orderId),
+          },
+        );
+        pushRow(mapped, rtRow.__sheetName, rtRow.__rowNumber);
+      } catch {
+        errors.push({
+          sheetName: rtRow.__sheetName,
+          rowNumber: rtRow.__rowNumber,
+          error: 'Failed to normalize Myntra customer return row',
+        });
+      }
+
       if ((i + 1) % YIELD_CHUNK === 0) {
         await yieldEventLoop();
       }
     }
 
     const joinIssues =
-      missingOrderIdCount || missingInGstrCount || missingInMdirectCount
+      missingOrderIdInGstr ||
+      missingInSales ||
+      missingInMdirect ||
+      missingGstrForReturn
         ? {
-            missingOrderIdInSales: missingOrderIdCount,
-            missingInGstr: missingInGstrCount,
-            missingInMdirect: missingInMdirectCount,
-            sampleSalesOrderCodes: this.sampleIndexKeys(
-              this.indexByOrderId(
-                parsed.salesRevenueB2c.rows,
-                ...MYNTRA_SALES_ORDER_ID_ALIASES,
-              ),
-            ),
+            missingOrderIdInSales: missingOrderIdInGstr,
+            missingInGstr: missingGstrForReturn,
+            missingInMdirect,
+            sampleSalesOrderCodes: this.sampleIndexKeys(salesByOrder),
             sampleGstrKeys: this.sampleIndexKeys(gstrByOrder),
             sampleMdirectKeys: this.sampleIndexKeys(mDirectByOrder),
           }
@@ -274,7 +378,7 @@ export class MyntraImportService {
 
     // eslint-disable-next-line no-console
     console.log(
-      `[MYNTRA_BUILD] sales=${salesRows.length} built=${rows.length} missingSalesId=${missingOrderIdCount} missingGstr=${missingInGstrCount} missingMdirect=${missingInMdirectCount}`,
+      `[MYNTRA_BUILD] gstr=${gstrRows.length} sales=${parsed.salesRevenueB2c.rows.length} built=${rows.length} missingGstrId=${missingOrderIdInGstr} missingSales=${missingInSales} missingMdirect=${missingInMdirect} missingGstrForReturn=${missingGstrForReturn} rto=${rtoOrderIds.size} rt=${rtOrderIds.size}`,
     );
 
     return { rows, errors, joinIssues };
@@ -285,7 +389,7 @@ export class MyntraImportService {
    * Primary fields come from GSTR Packed; SKU from MDirect; invoice no/date from Sales Revenue.
    */
   private mapRowFast(
-    salesRow: ParsedSheetRow,
+    salesRow: ParsedSheetRow | undefined,
     gstrRow: ParsedSheetRow,
     mDirectRow: ParsedSheetRow | undefined,
     gstrHeaderMap: ColumnHeaderMap,
@@ -293,42 +397,42 @@ export class MyntraImportService {
     salesHeaderMap: ColumnHeaderMap,
     returnsHeaderMap: ColumnHeaderMap,
     options?: {
-      isRtoReturn?: boolean;
-      isCustomerReturn?: boolean;
+      documentType?: string;
+      typeOfReturn?: string;
       mDirectReturnsRow?: ParsedSheetRow;
     },
   ): NormalizedImportRow {
-    // Start with GSTR Packed fields (GST, payment mode, tax amounts, state…)
     const base = this.mapping.mapRowFast(gstrRow, 'sales', gstrHeaderMap);
 
-    // Enrich SKU from MDirect Orders when that report was provided
     if (mDirectRow) {
       const mdirectMapped = this.mapping.mapRowFast(mDirectRow, 'sales', mdirectHeaderMap);
       if (mdirectMapped.skuID) base.skuID = mdirectMapped.skuID;
     }
 
-    // Enrich invoice no and date from Sales Revenue Packed B2C
-    const salesMapped = this.mapping.mapRowFast(salesRow, 'sales', salesHeaderMap);
-    if (salesMapped.orderID) base.orderID = salesMapped.orderID;
-    if (salesMapped.invoiceNo) base.invoiceNo = salesMapped.invoiceNo;
-    if (salesMapped.invoiceDate) base.invoiceDate = salesMapped.invoiceDate;
-
-    // Return type flags
-    if (options?.isRtoReturn) {
-      base.documentType = 'RTO Return';
-      base.typeOfReturn = 'RTO Return';
-    } else if (options?.isCustomerReturn) {
-      base.documentType = 'Customer Return';
-      base.typeOfReturn = 'Customer Return';
-    } else if (!base.documentType) {
-      base.documentType = 'SALE';
+    if (salesRow) {
+      const salesMapped = this.mapping.mapRowFast(salesRow, 'sales', salesHeaderMap);
+      if (salesMapped.orderID) base.orderID = salesMapped.orderID;
+      if (salesMapped.invoiceNo) base.invoiceNo = salesMapped.invoiceNo;
+      if (salesMapped.invoiceDate) base.invoiceDate = salesMapped.invoiceDate;
     }
 
-    // Enrich return reason from MDirect Returns
+    base.documentType = options?.documentType ?? 'SALE';
+    if (options?.typeOfReturn) {
+      base.typeOfReturn = options.typeOfReturn;
+    } else {
+      delete base.typeOfReturn;
+    }
+
     if (options?.mDirectReturnsRow) {
-      const returnsMapped = this.mapping.mapRowFast(options.mDirectReturnsRow, 'sales', returnsHeaderMap);
+      const returnsMapped = this.mapping.mapRowFast(
+        options.mDirectReturnsRow,
+        'sales',
+        returnsHeaderMap,
+      );
       if (returnsMapped.returnReason) base.returnReason = returnsMapped.returnReason;
-      if (returnsMapped.detailedReturnReason) base.detailedReturnReason = returnsMapped.detailedReturnReason;
+      if (returnsMapped.detailedReturnReason) {
+        base.detailedReturnReason = returnsMapped.detailedReturnReason;
+      }
     }
 
     return base;

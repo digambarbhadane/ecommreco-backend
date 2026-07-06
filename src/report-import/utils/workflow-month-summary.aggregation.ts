@@ -1784,6 +1784,298 @@ export function buildAmazonWorkflowMonthSummaryPipeline(
   ];
 }
 
+export type MyntraReturnSubType = 'rto' | 'customer_return' | 'na';
+
+/** Classify Myntra import rows for month summary (matches myntra-import.service flags). */
+export function classifyMyntraReturnSubType(
+  documentType?: string | null,
+  typeOfReturn?: string | null,
+): MyntraReturnSubType | null {
+  const doc = String(documentType ?? '').trim().toUpperCase();
+  const ret = String(typeOfReturn ?? '').trim().toUpperCase();
+  if (doc === 'SALE' || (!doc && !ret)) return null;
+  if (doc === 'RTO RETURN' || ret === 'RTO RETURN' || /\bRTO\b/.test(`${doc} ${ret}`)) {
+    return 'rto';
+  }
+  if (
+    doc === 'CUSTOMER RETURN' ||
+    ret === 'CUSTOMER RETURN' ||
+    (/CUSTOMER/.test(`${doc} ${ret}`) && /RETURN/.test(`${doc} ${ret}`))
+  ) {
+    return 'customer_return';
+  }
+  if (/RETURN/.test(`${doc} ${ret}`)) {
+    return 'customer_return';
+  }
+  return null;
+}
+
+export function isMyntraSaleRow(
+  documentType?: string | null,
+  typeOfReturn?: string | null,
+): boolean {
+  const doc = String(documentType ?? '').trim().toUpperCase();
+  if (doc === 'SALE') return true;
+  return classifyMyntraReturnSubType(documentType, typeOfReturn) === null && doc !== '';
+}
+
+export type MyntraMonthTotalsRow = WorkflowMonthTotalsRow & {
+  myntraGrossSalesRows?: number;
+  myntraReturnTotalRows?: number;
+  myntraReturnRtoRows?: number;
+  myntraReturnCustomerRows?: number;
+  myntraReturnNaRows?: number;
+  myntraGrossSalesPcs?: number;
+  myntraReturnTotalPcs?: number;
+  myntraReturnRtoPcs?: number;
+  myntraReturnCustomerPcs?: number;
+  myntraReturnNaPcs?: number;
+  myntraGrossSalesTaxable?: number;
+  myntraReturnTotalTaxable?: number;
+  myntraReturnRtoTaxable?: number;
+  myntraReturnCustomerTaxable?: number;
+  myntraReturnNaTaxable?: number;
+  myntraGrossSalesIgst?: number;
+  myntraReturnTotalIgst?: number;
+  myntraReturnRtoIgst?: number;
+  myntraReturnCustomerIgst?: number;
+  myntraReturnNaIgst?: number;
+  myntraGrossSalesCgst?: number;
+  myntraReturnTotalCgst?: number;
+  myntraReturnRtoCgst?: number;
+  myntraReturnCustomerCgst?: number;
+  myntraReturnNaCgst?: number;
+  myntraGrossSalesSgst?: number;
+  myntraReturnTotalSgst?: number;
+  myntraReturnRtoSgst?: number;
+  myntraReturnCustomerSgst?: number;
+  myntraReturnNaSgst?: number;
+  myntraGrossSalesInvoice?: number;
+  myntraReturnTotalInvoice?: number;
+  myntraReturnRtoInvoice?: number;
+  myntraReturnCustomerInvoice?: number;
+  myntraReturnNaInvoice?: number;
+};
+
+export function buildMyntraWorkflowMonthSummaryPipeline(
+  rowFilter: Record<string, unknown>,
+): PipelineStage[] {
+  const paymentGroupFields = Object.fromEntries(
+    PAYMENT_AMOUNT_FIELDS.map(({ key }) => [key, sumField(key)]),
+  );
+
+  const absInvoice = { $abs: invoiceAmt };
+  const absTaxable = { $abs: taxableAmt };
+  const absIgst = { $abs: igstForSummary };
+  const absCgst = { $abs: cgstForSummary };
+  const absSgst = { $abs: sgstForSummary };
+  const absQty = { $abs: qty };
+
+  const myntraTxnUpper = {
+    $toUpper: {
+      $trim: {
+        input: {
+          $concat: [
+            { $ifNull: ['$documentType', ''] },
+            ' ',
+            { $ifNull: ['$typeOfReturn', ''] },
+          ],
+        },
+      },
+    },
+  };
+
+  const isMyntraRto = {
+    $or: [
+      { $eq: ['$documentType', 'RTO Return'] },
+      { $eq: ['$typeOfReturn', 'RTO Return'] },
+    ],
+  };
+  const isMyntraCustomerReturn = {
+    $or: [
+      { $eq: ['$documentType', 'Customer Return'] },
+      { $eq: ['$typeOfReturn', 'Customer Return'] },
+    ],
+  };
+  const isMyntraClassifiedReturn = {
+    $or: [isMyntraRto, isMyntraCustomerReturn],
+  };
+  const isMyntraNaReturn = {
+    $and: [
+      { $not: isMyntraClassifiedReturn },
+      {
+        $or: [
+          { $regexMatch: { input: myntraTxnUpper, regex: 'RETURN' } },
+          { $regexMatch: { input: myntraTxnUpper, regex: '\\bRTO\\b' } },
+        ],
+      },
+    ],
+  };
+  const isMyntraSale = {
+    $or: [
+      { $eq: ['$documentType', 'SALE'] },
+      {
+        $and: [
+          { $not: isMyntraClassifiedReturn },
+          { $not: isMyntraNaReturn },
+        ],
+      },
+    ],
+  };
+
+  const sumWhen = (
+    condition: Record<string, unknown>,
+    fieldExpr: Record<string, unknown> | number,
+  ) => ({
+    $sum: { $cond: [condition, fieldExpr, 0] },
+  });
+
+  return [
+    { $match: rowFilter },
+    {
+      $facet: {
+        totals: [
+          {
+            $group: {
+              _id: null,
+              totalRows: { $sum: 1 },
+              salesRows: {
+                $sum: { $cond: [{ $eq: ['$reportType', 'sales'] }, 1, 0] },
+              },
+              cashbackRows: {
+                $sum: { $cond: [{ $eq: ['$reportType', 'cashback'] }, 1, 0] },
+              },
+              myntraGrossSalesRows: sumWhen(isMyntraSale, 1),
+              myntraReturnTotalRows: sumWhen(isMyntraClassifiedReturn, 1),
+              myntraReturnRtoRows: sumWhen(isMyntraRto, 1),
+              myntraReturnCustomerRows: sumWhen(isMyntraCustomerReturn, 1),
+              myntraReturnNaRows: sumWhen(isMyntraNaReturn, 1),
+              myntraGrossSalesPcs: sumWhen(isMyntraSale, qty),
+              myntraReturnTotalPcs: sumWhen(isMyntraClassifiedReturn, absQty),
+              myntraReturnRtoPcs: sumWhen(isMyntraRto, absQty),
+              myntraReturnCustomerPcs: sumWhen(isMyntraCustomerReturn, absQty),
+              myntraReturnNaPcs: sumWhen(isMyntraNaReturn, absQty),
+              myntraGrossSalesTaxable: sumWhen(isMyntraSale, taxableAmt),
+              myntraReturnTotalTaxable: sumWhen(isMyntraClassifiedReturn, absTaxable),
+              myntraReturnRtoTaxable: sumWhen(isMyntraRto, absTaxable),
+              myntraReturnCustomerTaxable: sumWhen(isMyntraCustomerReturn, absTaxable),
+              myntraReturnNaTaxable: sumWhen(isMyntraNaReturn, absTaxable),
+              myntraGrossSalesIgst: sumWhen(isMyntraSale, igstForSummary),
+              myntraReturnTotalIgst: sumWhen(isMyntraClassifiedReturn, absIgst),
+              myntraReturnRtoIgst: sumWhen(isMyntraRto, absIgst),
+              myntraReturnCustomerIgst: sumWhen(isMyntraCustomerReturn, absIgst),
+              myntraReturnNaIgst: sumWhen(isMyntraNaReturn, absIgst),
+              myntraGrossSalesCgst: sumWhen(isMyntraSale, cgstForSummary),
+              myntraReturnTotalCgst: sumWhen(isMyntraClassifiedReturn, absCgst),
+              myntraReturnRtoCgst: sumWhen(isMyntraRto, absCgst),
+              myntraReturnCustomerCgst: sumWhen(isMyntraCustomerReturn, absCgst),
+              myntraReturnNaCgst: sumWhen(isMyntraNaReturn, absCgst),
+              myntraGrossSalesSgst: sumWhen(isMyntraSale, sgstForSummary),
+              myntraReturnTotalSgst: sumWhen(isMyntraClassifiedReturn, absSgst),
+              myntraReturnRtoSgst: sumWhen(isMyntraRto, absSgst),
+              myntraReturnCustomerSgst: sumWhen(isMyntraCustomerReturn, absSgst),
+              myntraReturnNaSgst: sumWhen(isMyntraNaReturn, absSgst),
+              myntraGrossSalesInvoice: sumWhen(isMyntraSale, invoiceAmt),
+              myntraReturnTotalInvoice: sumWhen(isMyntraClassifiedReturn, absInvoice),
+              myntraReturnRtoInvoice: sumWhen(isMyntraRto, absInvoice),
+              myntraReturnCustomerInvoice: sumWhen(isMyntraCustomerReturn, absInvoice),
+              myntraReturnNaInvoice: sumWhen(isMyntraNaReturn, absInvoice),
+              salesDocRows: sumWhen(isMyntraSale, 1),
+              returnsDocRows: sumWhen(isMyntraClassifiedReturn, 1),
+              totalInvoiceAmount: { $sum: invoiceAmt },
+              salesInvoiceAmount: sumWhen(isMyntraSale, invoiceAmt),
+              returnsInvoiceAmount: sumWhen(isMyntraClassifiedReturn, absInvoice),
+              salesPcs: sumWhen(isMyntraSale, qty),
+              returnsPcs: sumWhen(isMyntraClassifiedReturn, absQty),
+              salesTaxableAmount: sumWhen(isMyntraSale, taxableAmt),
+              returnsTaxableAmount: sumWhen(isMyntraClassifiedReturn, absTaxable),
+              salesIgst: sumWhen(isMyntraSale, igstForSummary),
+              returnsIgst: sumWhen(isMyntraClassifiedReturn, absIgst),
+              salesCgst: sumWhen(isMyntraSale, cgstForSummary),
+              returnsCgst: sumWhen(isMyntraClassifiedReturn, absCgst),
+              salesSgst: sumWhen(isMyntraSale, sgstForSummary),
+              returnsSgst: sumWhen(isMyntraClassifiedReturn, absSgst),
+              totalTaxableAmount: { $sum: taxableAmt },
+              totalIgst: { $sum: igstForSummary },
+              totalCgst: { $sum: cgstForSummary },
+              totalSgst: { $sum: sgstForSummary },
+              intraStateSalesRows: {
+                $sum: {
+                  $cond: [
+                    {
+                      $and: [
+                        isMyntraSale,
+                        { $eq: ['$gstTransactionType', 'intra'] },
+                      ],
+                    },
+                    1,
+                    0,
+                  ],
+                },
+              },
+              interStateSalesRows: {
+                $sum: {
+                  $cond: [
+                    {
+                      $and: [
+                        isMyntraSale,
+                        { $eq: ['$gstTransactionType', 'inter'] },
+                      ],
+                    },
+                    1,
+                    0,
+                  ],
+                },
+              },
+              intraStateTaxableAmount: {
+                $sum: {
+                  $cond: [{ $eq: ['$gstTransactionType', 'intra'] }, taxableAmt, 0],
+                },
+              },
+              interStateTaxableAmount: {
+                $sum: {
+                  $cond: [{ $eq: ['$gstTransactionType', 'inter'] }, taxableAmt, 0],
+                },
+              },
+              minInvoiceDate: { $min: '$invoiceDate' },
+              maxInvoiceDate: { $max: '$invoiceDate' },
+              ordersWithSettlement: {
+                $sum: {
+                  $cond: [{ $gt: [num('finalSettlementAmount'), 0] }, 1, 0],
+                },
+              },
+              ...paymentGroupFields,
+            },
+          },
+        ],
+        byDocumentType: [
+          {
+            $group: {
+              _id: { $ifNull: ['$documentType', 'Unknown'] },
+              count: { $sum: 1 },
+              invoiceAmount: { $sum: invoiceAmt },
+              taxableAmount: { $sum: taxableAmt },
+            },
+          },
+          { $sort: { count: -1, _id: 1 } },
+          { $limit: 30 },
+        ],
+        byReportType: [
+          {
+            $group: {
+              _id: '$reportType',
+              count: { $sum: 1 },
+              invoiceAmount: { $sum: invoiceAmt },
+              taxableAmount: { $sum: taxableAmt },
+            },
+          },
+          { $sort: { count: -1 } },
+        ],
+      },
+    },
+  ];
+}
+
 type FlipkartBucketAcc = {
   count: number;
   pcs: number;
