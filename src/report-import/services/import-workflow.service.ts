@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
@@ -125,6 +126,8 @@ type SlotUploadInfo = {
 
 @Injectable()
 export class ImportWorkflowService {
+  private readonly logger = new Logger(ImportWorkflowService.name);
+
   constructor(
     @InjectModel(ImportUpload.name)
     private readonly uploadModel: Model<ImportUpload>,
@@ -930,6 +933,45 @@ export class ImportWorkflowService {
           })),
         );
         flipkartNotes = mapFlipkartNoteFacetRows(facet.noteTotals ?? []);
+      }
+
+      if (marketplace === 'myntra') {
+        const priorRtoRows = await this.rowModel
+          .find({
+            ...rowFilter,
+            documentType: 'RTO Return',
+            myntraReturnMatchStatus: 'MATCHED_PREVIOUS_MONTH',
+          })
+          .select({
+            orderID: 1,
+            invoiceNo: 1,
+            saleReferenceMonth: 1,
+            taxableAmount: 1,
+            igstAmount: 1,
+            cgstAmount: 1,
+            sgstAmount: 1,
+            invoiceAmount: 1,
+            gstTransactionType: 1,
+          })
+          .lean()
+          .exec();
+        this.logger.log(
+          `REPORT_PRIOR_RTO ${JSON.stringify({
+            totalRows: priorRtoRows.length,
+            matchedOriginalSalesCount: priorRtoRows.length,
+            rows: priorRtoRows.map((row) => ({
+              orderId: row.orderID ?? null,
+              invoiceNo: row.invoiceNo ?? null,
+              saleReferenceMonth: row.saleReferenceMonth ?? null,
+              taxableValue: Number(row.taxableAmount ?? 0),
+              igst: Number(row.igstAmount ?? 0),
+              cgst: Number(row.cgstAmount ?? 0),
+              sgst: Number(row.sgstAmount ?? 0),
+              invoiceAmount: Number(row.invoiceAmount ?? 0),
+              gstTransactionType: row.gstTransactionType ?? null,
+            })),
+          })}`,
+        );
       }
     }
 

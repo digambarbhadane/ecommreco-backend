@@ -196,6 +196,9 @@ const MYNTRA_FILE_HEADER_ALIASES: Record<MyntraFileKind, string[]> = {
     'order_cancel_date',
     'order cancel date',
     'cancel date',
+    'igst_rate',
+    'cgst_rate',
+    'sgst_rate',
   ],
   gstrReportRt: [
     'tax_seller_gstin',
@@ -210,6 +213,9 @@ const MYNTRA_FILE_HEADER_ALIASES: Record<MyntraFileKind, string[]> = {
     'fr_refunded_date',
     'fr refunded date',
     'refunded date',
+    'igst_rate',
+    'cgst_rate',
+    'sgst_rate',
   ],
   mDirectReturns: [
     'order_release_id',

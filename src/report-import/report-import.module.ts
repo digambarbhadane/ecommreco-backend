@@ -57,9 +57,17 @@ import { ImportJobOrchestratorService } from './services/import-job-orchestrator
 import { ImportProgressGateway } from './gateways/import-progress.gateway';
 import { ReconciliationService } from './services/reconciliation.service';
 import { StateWiseReportService } from './services/state-wise-report.service';
+import { StateSkuWiseReportService } from './services/state-sku-wise-report.service';
+import { Gstr1B2csReportService } from './services/gstr1-b2cs-report.service';
+import {
+  SkuMasterMapping,
+  SkuMasterMappingSchema,
+} from '../sku-master/schemas/sku-master-mapping.schema';
+import { SkuMasterModule } from '../sku-master/sku-master.module';
 
 @Module({
   imports: [
+    SkuMasterModule,
     MongooseModule.forFeature([
       { name: Gst.name, schema: GstSchema },
       { name: Seller.name, schema: SellerSchema },
@@ -75,6 +83,7 @@ import { StateWiseReportService } from './services/state-wise-report.service';
       { name: ReconEvent.name, schema: ReconEventSchema },
       { name: ReconAuditLog.name, schema: ReconAuditLogSchema },
       { name: ReconAdjustment.name, schema: ReconAdjustmentSchema },
+      { name: SkuMasterMapping.name, schema: SkuMasterMappingSchema },
     ]),
   ],
   controllers: [ReportImportController],
@@ -97,6 +106,8 @@ import { StateWiseReportService } from './services/state-wise-report.service';
     ImportProgressGateway,
     ReconciliationService,
     StateWiseReportService,
+    StateSkuWiseReportService,
+    Gstr1B2csReportService,
   ],
 })
 export class ReportImportModule {}

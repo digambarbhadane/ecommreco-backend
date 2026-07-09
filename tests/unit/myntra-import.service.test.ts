@@ -142,6 +142,127 @@ describe('MyntraImportService', () => {
     );
   });
 
+  it('infers igst_rate from RT amounts when rate column is missing', async () => {
+    const parsed = {
+      gstrReportPacked: { headers: [], rows: [] },
+      mDirectOrders: { headers: [], rows: [] },
+      salesRevenueB2c: { headers: [], rows: [] },
+      gstrReportRto: { headers: [], rows: [] },
+      gstrReportRt: {
+        headers: [
+          'order_id',
+          'fr_refunded_date',
+          'base_value',
+          'seller_price',
+          'igst_amt',
+          'customer_delivery_state_code',
+        ],
+        rows: [
+          {
+            __sheetName: 'RT',
+            __rowNumber: 2,
+            order_id: '5495127221',
+            fr_refunded_date: '2025-06-06',
+            base_value: 1535.714286,
+            seller_price: 1720,
+            igst_amt: 184.28571432,
+            customer_delivery_state_code: '09',
+          },
+        ],
+      },
+      mDirectReturns: { headers: [], rows: [] },
+    };
+
+    const mapping = new MappingService();
+    const result = await service.buildNormalizedRows(parsed, {
+      ...baseContext,
+      gstin: '24ESNPK1432B1Z5',
+    });
+    const rt = result.rows.find((row) => row.documentType === 'Customer Return');
+    expect(rt?.myntraReturnMatchStatus).toBe('UNMATCHED_RETURN');
+    mapping.normalizeTaxByState(rt!, ['Gujarat'], ['24ESNPK1432B1Z5']);
+    expect(rt?.igstRate).toBe(12);
+    expect(rt?.igstAmount).toBe(-184.28571432);
+    expect(rt?.gstTransactionType).toBe('inter');
+  });
+
+  it('parses percentage GST rate strings from RT file', async () => {
+    const parsed = {
+      gstrReportPacked: { headers: [], rows: [] },
+      mDirectOrders: { headers: [], rows: [] },
+      salesRevenueB2c: { headers: [], rows: [] },
+      gstrReportRto: { headers: [], rows: [] },
+      gstrReportRt: {
+        headers: ['packet_id', 'fr_refunded_date', 'IGST %', 'base_value', 'igst_amt'],
+        rows: [
+          {
+            __sheetName: 'RT',
+            __rowNumber: 2,
+            packet_id: 'ORD-PCT',
+            fr_refunded_date: '2025-06-25',
+            'IGST %': '12%',
+            base_value: 1000,
+            igst_amt: 120,
+          },
+        ],
+      },
+      mDirectReturns: { headers: [], rows: [] },
+    };
+
+    const result = await service.buildNormalizedRows(parsed, baseContext);
+    const rt = result.rows.find((row) => row.documentType === 'Customer Return');
+    expect(rt?.igstRate).toBe(12);
+  });
+
+  it('stores igst_rate, cgst_rate, sgst_rate from GSTR Report RT file', async () => {
+    const parsed = {
+      gstrReportPacked: { headers: [], rows: [] },
+      mDirectOrders: { headers: [], rows: [] },
+      salesRevenueB2c: { headers: [], rows: [] },
+      gstrReportRto: { headers: [], rows: [] },
+      gstrReportRt: {
+        headers: [
+          'packet_id',
+          'fr_refunded_date',
+          'igst_rate',
+          'cgst_rate',
+          'sgst_rate',
+          'base_value',
+          'igst_amt',
+          'cgst_amt',
+          'sgst_amt',
+        ],
+        rows: [
+          {
+            __sheetName: 'RT',
+            __rowNumber: 2,
+            packet_id: 'ORD-RT-1',
+            fr_refunded_date: '2025-06-25',
+            igst_rate: 5,
+            cgst_rate: 2.5,
+            sgst_rate: 2.5,
+            base_value: 1000,
+            igst_amt: 50,
+            cgst_amt: 25,
+            sgst_amt: 25,
+          },
+        ],
+      },
+      mDirectReturns: { headers: [], rows: [] },
+    };
+
+    const result = await service.buildNormalizedRows(parsed, baseContext);
+    const rt = result.rows.find((row) => row.documentType === 'Customer Return');
+    expect(rt).toBeDefined();
+    expect(rt?.igstRate).toBe(5);
+    expect(rt?.cgstRate).toBe(2.5);
+    expect(rt?.sgstRate).toBe(2.5);
+    expect(rt?.taxableAmount).toBe(-1000);
+    expect(rt?.igstAmount).toBe(-50);
+    expect(rt?.cgstAmount).toBe(-25);
+    expect(rt?.sgstAmount).toBe(-25);
+  });
+
   it('marks cross-month returns as MATCHED_PREVIOUS_MONTH when historical sale exists', async () => {
     const rowModel = {
       find: () => ({
@@ -320,5 +441,207 @@ describe('MyntraImportService', () => {
     expect(result.rows[0].documentType).toBe('RTO Return');
     expect(result.rows[0].myntraTransactionType).toBe('RETURN');
     expect(result.rows[0].skuID).toBe('SKU-RTO');
+  });
+
+  it('matches prior-month sale by order_id when invoice no is missing on RTO row', async () => {
+    const rowModel = {
+      find: () => ({
+        select: () => ({
+          sort: () => ({
+            lean: () => ({
+              exec: async () => [
+                {
+                  _id: 'prior-sale-no-invoice',
+                  orderID: 'ORD-MAY-NO-INV',
+                  reportMonth: '2025-05',
+                  quantity: 1,
+                  taxableAmount: 400,
+                  igstAmount: 72,
+                  invoiceAmount: 472,
+                },
+              ],
+            }),
+          }),
+        }),
+      }),
+    };
+
+    const serviceWithDb = new MyntraImportService(
+      new FileParserService(),
+      new MappingService(),
+      rowModel as never,
+    );
+
+    const parsed = {
+      gstrReportPacked: { headers: [], rows: [] },
+      mDirectOrders: { headers: [], rows: [] },
+      salesRevenueB2c: { headers: [], rows: [] },
+      gstrReportRto: {
+        headers: ['order_id', 'order_cancel_date', 'base_value'],
+        rows: [
+          {
+            __sheetName: 'RTO',
+            __rowNumber: 2,
+            order_id: 'ORD-MAY-NO-INV',
+            order_cancel_date: '2025-06-10',
+            base_value: 999,
+          },
+        ],
+      },
+      gstrReportRt: { headers: [], rows: [] },
+      mDirectReturns: { headers: [], rows: [] },
+    };
+
+    const result = await serviceWithDb.buildNormalizedRows(parsed, baseContext);
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0].myntraReturnMatchStatus).toBe('MATCHED_PREVIOUS_MONTH');
+    expect(result.rows[0].igstAmount).toBe(-72);
+    expect(result.rows[0].taxableAmount).toBe(-400);
+  });
+
+  it('imports duplicate order_id RTO rows as separate return records', async () => {
+    const parsed = {
+      gstrReportPacked: { headers: [], rows: [] },
+      mDirectOrders: { headers: [], rows: [] },
+      salesRevenueB2c: { headers: [], rows: [] },
+      gstrReportRto: {
+        headers: ['order_id', 'order_cancel_date', 'igst_amt'],
+        rows: [
+          {
+            __sheetName: 'RTO',
+            __rowNumber: 2,
+            order_id: 'ORD-DUP',
+            order_cancel_date: '2025-06-10',
+            igst_amt: 50,
+          },
+          {
+            __sheetName: 'RTO',
+            __rowNumber: 3,
+            order_id: 'ORD-DUP',
+            order_cancel_date: '2025-06-11',
+            igst_amt: 60,
+          },
+        ],
+      },
+      gstrReportRt: { headers: [], rows: [] },
+      mDirectReturns: { headers: [], rows: [] },
+    };
+
+    const result = await service.buildNormalizedRows(parsed, baseContext);
+    const rtoRows = result.rows.filter((row) => row.documentType === 'RTO Return');
+    expect(rtoRows).toHaveLength(2);
+    expect(rtoRows.map((row) => row.igstAmount).sort()).toEqual([-50, -60]);
+  });
+
+  it('preserves RTO tax values when matched historical sale lacks tax fields', async () => {
+    const rowModel = {
+      find: () => ({
+        select: () => ({
+          sort: () => ({
+            lean: () => ({
+              exec: async () => [
+                {
+                  _id: 'prior-sale-no-tax',
+                  orderID: 'ORD-HIST-NO-TAX',
+                  reportMonth: '2025-05',
+                  quantity: 1,
+                  taxableAmount: 400,
+                  invoiceAmount: 472,
+                },
+              ],
+            }),
+          }),
+        }),
+      }),
+    };
+
+    const serviceWithDb = new MyntraImportService(
+      new FileParserService(),
+      new MappingService(),
+      rowModel as never,
+    );
+
+    const parsed = {
+      gstrReportPacked: { headers: [], rows: [] },
+      mDirectOrders: { headers: [], rows: [] },
+      salesRevenueB2c: { headers: [], rows: [] },
+      gstrReportRto: {
+        headers: ['order_id', 'order_cancel_date', 'base_value', 'igst_amt', 'cgst_amt', 'sgst_amt'],
+        rows: [
+          {
+            __sheetName: 'RTO',
+            __rowNumber: 2,
+            order_id: 'ORD-HIST-NO-TAX',
+            order_cancel_date: '2025-06-10',
+            base_value: 400,
+            igst_amt: 72,
+            cgst_amt: 0,
+            sgst_amt: 0,
+          },
+        ],
+      },
+      gstrReportRt: { headers: [], rows: [] },
+      mDirectReturns: { headers: [], rows: [] },
+    };
+
+    const result = await serviceWithDb.buildNormalizedRows(parsed, baseContext);
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0].myntraReturnMatchStatus).toBe('MATCHED_PREVIOUS_MONTH');
+    expect(result.rows[0].igstAmount).toBe(-72);
+  });
+
+  it('keeps RTO IGST when historical sale has zero IGST', async () => {
+    const rowModel = {
+      find: () => ({
+        select: () => ({
+          sort: () => ({
+            lean: () => ({
+              exec: async () => [
+                {
+                  _id: 'prior-sale-zero-tax',
+                  orderID: 'ORD-HIST-ZERO-TAX',
+                  reportMonth: '2025-05',
+                  quantity: 1,
+                  taxableAmount: 400,
+                  invoiceAmount: 472,
+                  igstAmount: 0,
+                },
+              ],
+            }),
+          }),
+        }),
+      }),
+    };
+
+    const serviceWithDb = new MyntraImportService(
+      new FileParserService(),
+      new MappingService(),
+      rowModel as never,
+    );
+
+    const parsed = {
+      gstrReportPacked: { headers: [], rows: [] },
+      mDirectOrders: { headers: [], rows: [] },
+      salesRevenueB2c: { headers: [], rows: [] },
+      gstrReportRto: {
+        headers: ['order_id', 'order_cancel_date', 'igst_amt'],
+        rows: [
+          {
+            __sheetName: 'RTO',
+            __rowNumber: 2,
+            order_id: 'ORD-HIST-ZERO-TAX',
+            order_cancel_date: '2025-06-10',
+            igst_amt: 72,
+          },
+        ],
+      },
+      gstrReportRt: { headers: [], rows: [] },
+      mDirectReturns: { headers: [], rows: [] },
+    };
+
+    const result = await serviceWithDb.buildNormalizedRows(parsed, baseContext);
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0].myntraReturnMatchStatus).toBe('MATCHED_PREVIOUS_MONTH');
+    expect(result.rows[0].igstAmount).toBe(-72);
   });
 });

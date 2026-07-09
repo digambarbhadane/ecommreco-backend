@@ -222,6 +222,35 @@ export function calculateGST(input: CalculateGstInput): GstCalculationResult {
   };
 }
 
+function roundGstRate(value: number): number {
+  return Math.round(value * 10000) / 10000;
+}
+
+/** Infer missing GST rate fields from stored tax amounts and taxable value. */
+export function inferGstRatesFromAmounts(row: ImportRowGstInput): void {
+  const taxable = Math.abs(Number(row.taxableAmount ?? 0));
+  if (taxable <= 0) return;
+
+  const inferRate = (amount?: number | null) => {
+    const absAmount = Math.abs(Number(amount ?? 0));
+    if (absAmount <= 0) return undefined;
+    return roundGstRate((absAmount / taxable) * 100);
+  };
+
+  if (!row.igstRate) {
+    const inferred = inferRate(row.igstAmount);
+    if (inferred !== undefined) row.igstRate = inferred;
+  }
+  if (!row.cgstRate) {
+    const inferred = inferRate(row.cgstAmount);
+    if (inferred !== undefined) row.cgstRate = inferred;
+  }
+  if (!row.sgstRate) {
+    const inferred = inferRate(row.sgstAmount);
+    if (inferred !== undefined) row.sgstRate = inferred;
+  }
+}
+
 /** Mutate import row with correct GST split (all marketplaces except raw Flipkart pivot). */
 export function normalizeImportRowGst(
   row: ImportRowGstInput,
@@ -234,6 +263,8 @@ export function normalizeImportRowGst(
   if (customerCode && !row.customerStateCode) {
     row.customerStateCode = customerCode;
   }
+
+  inferGstRatesFromAmounts(row);
 
   const sellerGstin = sellerContext.primaryGstin ?? row.sellerGSTIN;
   const intra = isIntraStateSupply({

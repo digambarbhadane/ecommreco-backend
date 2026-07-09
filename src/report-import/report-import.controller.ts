@@ -45,7 +45,10 @@ import {
   ReportUploadMultipart,
 } from './marketplace-upload.routes';
 import { StateWiseReportService } from './services/state-wise-report.service';
+import { StateSkuWiseReportService } from './services/state-sku-wise-report.service';
 import { StateWiseExportDto } from './dto/state-wise-export.dto';
+import { Gstr1B2csExportDto } from './dto/gstr1-b2cs-export.dto';
+import { Gstr1B2csReportService } from './services/gstr1-b2cs-report.service';
 import { MulterExceptionFilter } from './filters/multer-exception.filter';
 import type { Request } from 'express';
 import type { UploadedReportFiles } from './marketplace-upload.routes';
@@ -69,6 +72,8 @@ export class ReportImportController {
     private readonly importJobService: ImportJobService,
     private readonly reconciliationService: ReconciliationService,
     private readonly stateWiseReportService: StateWiseReportService,
+    private readonly stateSkuWiseReportService: StateSkuWiseReportService,
+    private readonly gstr1B2csReportService: Gstr1B2csReportService,
   ) {}
 
   @Post('import-session')
@@ -909,6 +914,99 @@ export class ReportImportController {
         query.format === 'csv'
           ? 'text/csv'
           : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      disposition: `attachment; filename="${result.filename}"`,
+    });
+  }
+
+  @Get('export/state-sku-wise/preview')
+  @ApiOperation({
+    summary: 'Preview state + SKU + master SKU export',
+    description:
+      'Returns sheet and row counts per marketplace for the state/sku/master-sku report.',
+  })
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  previewStateSkuWiseExport(@Query() query: StateWiseExportDto) {
+    if (!query.sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
+    if (!query.gstin?.trim()) {
+      throw new BadRequestException('gstin is required');
+    }
+    return this.stateSkuWiseReportService.getPreview(query);
+  }
+
+  @Get('export/state-sku-wise')
+  @ApiOperation({
+    summary: 'Download state + SKU + master SKU report',
+    description:
+      'Multi-sheet export grouped by state, SKU, and master SKU with summary at bottom.',
+  })
+  @ApiProduces(
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  )
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  async downloadStateSkuWiseExport(@Query() query: StateWiseExportDto) {
+    if (!query.sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
+    if (!query.gstin?.trim()) {
+      throw new BadRequestException('gstin is required');
+    }
+    const result =
+      query.format === 'csv'
+        ? await this.stateSkuWiseReportService.generateCsv(query)
+        : await this.stateSkuWiseReportService.generateWorkbook(query);
+    return new StreamableFile(result.buffer, {
+      type:
+        query.format === 'csv'
+          ? 'text/csv'
+          : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      disposition: `attachment; filename="${result.filename}"`,
+    });
+  }
+
+  @Get('export/gstr1-b2cs/preview')
+  @ApiOperation({
+    summary: 'Preview GSTR1 B2CS template export',
+    description: 'Returns row count that will be written into B2CS sheet.',
+  })
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  previewGstr1B2csExport(@Query() query: Gstr1B2csExportDto) {
+    if (!query.sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
+    if (!query.gstin?.trim()) {
+      throw new BadRequestException('gstin is required');
+    }
+    if (!query.reportMonth?.trim()) {
+      throw new BadRequestException('reportMonth is required');
+    }
+    return this.gstr1B2csReportService.getPreview(query);
+  }
+
+  @Get('export/gstr1-b2cs')
+  @ApiOperation({
+    summary: 'Download GSTR1 B2CS template report',
+    description:
+      'Downloads filled GSTR1_Excel_Workbook_Template_V2.2.xlsx with B2CS data.',
+  })
+  @ApiProduces(
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  )
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  async downloadGstr1B2csExport(@Query() query: Gstr1B2csExportDto) {
+    if (!query.sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
+    if (!query.gstin?.trim()) {
+      throw new BadRequestException('gstin is required');
+    }
+    if (!query.reportMonth?.trim()) {
+      throw new BadRequestException('reportMonth is required');
+    }
+    const result = await this.gstr1B2csReportService.generateWorkbook(query);
+    return new StreamableFile(result.buffer, {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       disposition: `attachment; filename="${result.filename}"`,
     });
   }

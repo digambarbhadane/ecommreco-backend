@@ -1,7 +1,9 @@
 import {
   buildSellerGstContext,
   calculateGST,
+  inferGstRatesFromAmounts,
   isIntraStateSupply,
+  normalizeImportRowGst,
   normalizeState,
 } from '../../src/common/services/gst-calculation.core';
 
@@ -98,5 +100,30 @@ describe('GstService calculateGST', () => {
     const ctx = buildSellerGstContext(['Gujarat'], ['24AAAAA0000A1Z5', '27BBBBB0000B1Z5']);
     expect(ctx.primaryGstin).toBe('24AAAAA0000A1Z5');
     expect(ctx.stateKeys.has('gujarat')).toBe(true);
+  });
+
+  it('inferGstRatesFromAmounts derives IGST rate from tax amounts', () => {
+    const row = {
+      taxableAmount: -1535.714286,
+      igstAmount: -184.28571432,
+    };
+    inferGstRatesFromAmounts(row);
+    expect(row.igstRate).toBe(12);
+  });
+
+  it('normalizeImportRowGst persists IGST rate for inter-state return with amounts only', () => {
+    const row = {
+      taxableAmount: -1535.714286,
+      igstAmount: -184.28571432,
+      gstAmount: -184.28571432,
+      stateName: 'uttar pradesh',
+      customerStateCode: '09',
+      sellerGSTIN: '24ESNPK1432B1Z5',
+    };
+    const sellerContext = buildSellerGstContext(['Gujarat'], ['24ESNPK1432B1Z5']);
+    normalizeImportRowGst(row, sellerContext);
+    expect(row.gstTransactionType).toBe('inter');
+    expect(row.igstRate).toBe(12);
+    expect(row.igstAmount).toBe(-184.28571432);
   });
 });

@@ -50,6 +50,14 @@ describe('gst-column.util', () => {
     );
   });
 
+  it('does not treat CGST/SGST rate columns as generic gst_rate', () => {
+    expect(headerMatchesExcelColumn('cgst_rate', 'gst_rate')).toBe(false);
+    expect(headerMatchesExcelColumn('sgst_rate', 'gst_rate')).toBe(false);
+    expect(headerMatchesExcelColumn('igst_rate', 'gst_rate')).toBe(true);
+    expect(headerMatchesExcelColumn('cgst_rate', 'cgst_rate')).toBe(true);
+    expect(headerMatchesExcelColumn('sgst_rate', 'sgst_rate')).toBe(true);
+  });
+
   it('does not match eco_tcs_gstin or other non-seller GST columns to gstin alias', () => {
     expect(headerMatchesExcelColumn('eco_tcs_gstin', 'gstin')).toBe(false);
     expect(headerMatchesExcelColumn('eco tcs gstin', 'gstin')).toBe(false);

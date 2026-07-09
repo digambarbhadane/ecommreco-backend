@@ -169,20 +169,15 @@ export const MYNTRA_GSTR_RTO_ORDER_ID_ALIASES = [
   'order_id',
   'Order ID',
   'Order Id',
-  'shipment_id',
   'order_release_id',
   'sale_order_code',
   'Sale_Order_Code',
 ] as const;
 
 export const MYNTRA_GSTR_RT_ORDER_ID_ALIASES = [
-  'packet_id',
-  'Packet ID',
-  'Packet_Id',
-  'shipment_id',
-  'Shipment ID',
   'order_id',
   'Order ID',
+  'Order Id',
   'order_release_id',
   'sale_order_code',
   'Sale_Order_Code',
@@ -255,7 +250,7 @@ const asNumber = (value: unknown): number | undefined => {
     return undefined;
   }
   const cleaned = String(value)
-    .replace(/[,\s₹$]/g, '')
+    .replace(/[,\s₹$%]/g, '')
     .trim();
   if (!cleaned) return undefined;
   const parsed = Number(cleaned);
@@ -603,6 +598,11 @@ const MYNTRA_GSTR_RTO_MAPPINGS: MappingConfig[] = [
     transform: asDate,
   },
   {
+    source: ['invoice_number', 'Invoice_Number', 'Invoice No', 'Invoice Number'],
+    target: 'invoiceNo',
+    transform: asString,
+  },
+  {
     source: ['payment_method', 'Payment Mode', 'Payment Method'],
     target: 'paymentMode',
     transform: asString,
@@ -623,21 +623,64 @@ const MYNTRA_GSTR_RTO_MAPPINGS: MappingConfig[] = [
     target: 'taxableAmount',
     transform: asNumber,
   },
-  { source: ['igst_rate', 'IGST Rate', 'Igst Rate'], target: 'igstRate', transform: asNumber },
   {
-    source: ['igst_amt', 'IGST Amount', 'Igst Tax', 'Igst Amount'],
+    source: [
+      'igst_rate',
+      'IGST Rate',
+      'Igst Rate',
+      'Igst_Rate',
+      'IGST_Rate',
+      'Igst Rate %',
+      'IGST Rate %',
+      'IGST %',
+      'tax_rate',
+      'gst_rate',
+    ],
+    target: 'igstRate',
+    transform: asNumber,
+  },
+  {
+    source: [
+      'igst_amt',
+      'IGST Amount',
+      'Igst Tax',
+      'Igst Amount',
+      'Igst_Amt',
+      'tax_amount',
+      'gst_amount',
+    ],
     target: 'igstAmount',
     transform: asNumber,
   },
-  { source: ['cgst_rate', 'CGST Rate', 'Cgst Rate'], target: 'cgstRate', transform: asNumber },
   {
-    source: ['cgst_amt', 'CGST Amount', 'Cgst Tax', 'Cgst Amount'],
+    source: ['cgst_rate', 'CGST Rate', 'Cgst Rate', 'Cgst_Rate', 'CGST_Rate', 'CGST %'],
+    target: 'cgstRate',
+    transform: asNumber,
+  },
+  {
+    source: [
+      'cgst_amt',
+      'CGST Amount',
+      'Cgst Tax',
+      'Cgst Amount',
+      'Cgst_Amt',
+    ],
     target: 'cgstAmount',
     transform: asNumber,
   },
-  { source: ['sgst_rate', 'SGST Rate', 'Sgst Rate'], target: 'sgstRate', transform: asNumber },
   {
-    source: ['sgst_amt', 'SGST Amount', 'Sgst Tax', 'Sgst Amount'],
+    source: ['sgst_rate', 'SGST Rate', 'Sgst Rate', 'Sgst_Rate', 'SGST_Rate', 'SGST %'],
+    target: 'sgstRate',
+    transform: asNumber,
+  },
+  {
+    source: [
+      'sgst_amt',
+      'SGST Amount',
+      'Sgst Tax',
+      'Sgst Amount',
+      'Sgst_Amt',
+    ],
     target: 'sgstAmount',
     transform: asNumber,
   },
@@ -697,13 +740,64 @@ const MYNTRA_GSTR_RT_MAPPINGS: MappingConfig[] = [
     transform: asNumber,
   },
   {
-    source: ['tax_rate', 'gst_rate', 'igst_rate', 'IGST Rate', 'Igst Rate'],
+    source: [
+      'igst_rate',
+      'IGST Rate',
+      'Igst Rate',
+      'Igst_Rate',
+      'IGST_Rate',
+      'Igst Rate %',
+      'IGST Rate %',
+      'IGST %',
+      'tax_rate',
+      'gst_rate',
+    ],
     target: 'igstRate',
     transform: asNumber,
   },
   {
-    source: ['tax_amount', 'gst_amount', 'igst_amt', 'IGST Amount', 'Igst Tax', 'Igst Amount'],
+    source: [
+      'igst_amt',
+      'IGST Amount',
+      'Igst Tax',
+      'Igst Amount',
+      'Igst_Amt',
+      'tax_amount',
+      'gst_amount',
+    ],
     target: 'igstAmount',
+    transform: asNumber,
+  },
+  {
+    source: ['cgst_rate', 'CGST Rate', 'Cgst Rate', 'Cgst_Rate', 'CGST_Rate', 'CGST %'],
+    target: 'cgstRate',
+    transform: asNumber,
+  },
+  {
+    source: [
+      'cgst_amt',
+      'CGST Amount',
+      'Cgst Tax',
+      'Cgst Amount',
+      'Cgst_Amt',
+    ],
+    target: 'cgstAmount',
+    transform: asNumber,
+  },
+  {
+    source: ['sgst_rate', 'SGST Rate', 'Sgst Rate', 'Sgst_Rate', 'SGST_Rate', 'SGST %'],
+    target: 'sgstRate',
+    transform: asNumber,
+  },
+  {
+    source: [
+      'sgst_amt',
+      'SGST Amount',
+      'Sgst Tax',
+      'Sgst Amount',
+      'Sgst_Amt',
+    ],
+    target: 'sgstAmount',
     transform: asNumber,
   },
   {
@@ -724,6 +818,18 @@ const MYNTRA_GSTR_RT_MAPPINGS: MappingConfig[] = [
   },
 ];
 
+const MYNTRA_GSTR_RETURN_GST_FIELDS: Array<keyof NormalizedImportRow> = [
+  'quantity',
+  'invoiceAmount',
+  'taxableAmount',
+  'igstRate',
+  'igstAmount',
+  'cgstRate',
+  'cgstAmount',
+  'sgstRate',
+  'sgstAmount',
+];
+
 const MYNTRA_MDIRECT_MAPPINGS: MappingConfig[] = [
   {
     source: [...MYNTRA_MDIRECT_ORDER_ID_ALIASES, 'Order ID'],
@@ -731,7 +837,7 @@ const MYNTRA_MDIRECT_MAPPINGS: MappingConfig[] = [
     transform: asString,
   },
   {
-    source: ['seller_sku_code', 'seller sku code', 'SKU ID', 'SKU', 'Sku'],
+    source: ['seller_sku_code', 'seller sku code'],
     target: 'skuID',
     transform: asString,
   },
@@ -744,7 +850,7 @@ const MYNTRA_MDIRECT_RETURNS_MAPPINGS: MappingConfig[] = [
     transform: asString,
   },
   {
-    source: ['seller_sku_code', 'seller sku code', 'SKU ID', 'SKU', 'Sku'],
+    source: ['seller_sku_code', 'seller sku code'],
     target: 'skuID',
     transform: asString,
   },
@@ -1193,6 +1299,34 @@ export class MappingService {
     return this.buildHeaderMap(headers, MYNTRA_GSTR_RT_MAPPINGS);
   }
 
+  /** Fill GST rate/amount fields from return file columns when fast header map missed them. */
+  enrichMyntraGstrReturnGstFields(
+    mapped: NormalizedImportRow,
+    row: ParsedSheetRow,
+    kind: 'rto' | 'rt',
+  ): void {
+    const mappings =
+      kind === 'rt' ? MYNTRA_GSTR_RT_MAPPINGS : MYNTRA_GSTR_RTO_MAPPINGS;
+    for (const config of mappings) {
+      if (
+        !MYNTRA_GSTR_RETURN_GST_FIELDS.includes(
+          config.target as keyof NormalizedImportRow,
+        )
+      ) {
+        continue;
+      }
+      const target = config.target as keyof NormalizedImportRow;
+      const current = mapped[target];
+      if (current !== undefined && current !== null && current !== '') continue;
+      const raw = getRowCell(row, ...config.source);
+      if (raw === undefined || raw === null || raw === '') continue;
+      const xformed = config.transform ? config.transform(raw, row) : raw;
+      if (xformed !== undefined && xformed !== null && xformed !== '') {
+        (mapped as Record<string, unknown>)[target] = xformed;
+      }
+    }
+  }
+
   // ─── Fast path: build a per-file lookup map once, then map each row in O(cols) ──
 
   /**
@@ -1210,8 +1344,7 @@ export class MappingService {
       for (const config of mappings) {
         let matched = false;
         for (const alias of config.source) {
-          const aNorm = normalizeHeader(alias);
-          if (aNorm && (hNorm === aNorm || hNorm.includes(aNorm))) {
+          if (headerMatchesExcelColumn(header, alias)) {
             matched = true;
             break;
           }

@@ -1,4 +1,4 @@
-import { Injectable, Optional } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import {
@@ -16,6 +16,7 @@ import {
 import { FileParserService } from './file-parser.service';
 import { ImportRow, ImportRowDocument } from '../schemas/import-row.schema';
 import { yieldToEventLoop } from '../utils/import-performance.util';
+import { normalizeHeader as normalizeHeaderUtil } from '../utils/header.util';
 
 type ParsedMyntraFile = {
   rows: ParsedSheetRow[];
@@ -91,8 +92,32 @@ type CurrentSaleEntry = {
   snapshot: SaleSnapshot;
 };
 
+type ReturnProcessingStats = {
+  totalRows: number;
+  matchedCurrent: number;
+  matchedPrevious: number;
+  unmatched: number;
+  finalQty: number;
+  finalTaxable: number;
+  finalIgst: number;
+  finalCgst: number;
+  finalSgst: number;
+  finalInvoice: number;
+};
+
+const MYNTRA_PREFERRED_RETURN_ORDER_ID_ALIASES = [
+  'order_id',
+  'Order ID',
+  'Order Id',
+  'order_release_id',
+  'sale_order_code',
+  'Sale_Order_Code',
+] as const;
+
 @Injectable()
 export class MyntraImportService {
+  private readonly logger = new Logger(MyntraImportService.name);
+
   constructor(
     private readonly parser: FileParserService,
     private readonly mapping: MappingService,
@@ -144,6 +169,40 @@ export class MyntraImportService {
     value = value.replace(/^['"]+|['"]+$/g, '').replace(/\s+/g, '');
     value = value.replace(/\.0+$/, '');
     return value.toUpperCase();
+  }
+
+  private isUuidLike(value: string): boolean {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value.trim(),
+    );
+  }
+
+  private getExactRowCell(row: ParsedSheetRow, alias: string): unknown {
+    const target = normalizeHeaderUtil(alias);
+    for (const [key, value] of Object.entries(row)) {
+      if (key.startsWith('__')) continue;
+      if (normalizeHeaderUtil(key) === target) {
+        return value;
+      }
+    }
+    return undefined;
+  }
+
+  private resolvePreferredReturnOrderId(
+    row: ParsedSheetRow,
+    mappedOrderID?: string,
+  ): string | undefined {
+    for (const alias of MYNTRA_PREFERRED_RETURN_ORDER_ID_ALIASES) {
+      const raw = this.getExactRowCell(row, alias);
+      const key = this.normalizeOrderKey(raw);
+      if (!key) continue;
+      if (this.isUuidLike(key)) continue;
+      return key;
+    }
+
+    const fallback = this.normalizeOrderKey(mappedOrderID);
+    if (!fallback || this.isUuidLike(fallback)) return undefined;
+    return fallback;
   }
 
   private collectOrderKeys(row: ParsedSheetRow, aliases: readonly string[]): string[] {
@@ -259,6 +318,51 @@ export class MyntraImportService {
     };
   }
 
+  private applyMatchedSaleAmounts(
+    returnRow: NormalizedImportRow,
+    sale: SaleSnapshot,
+  ): void {
+    const existingIgst = returnRow.igstAmount;
+    const existingCgst = returnRow.cgstAmount;
+    const existingSgst = returnRow.sgstAmount;
+    const existingIgstRate = returnRow.igstRate;
+    const existingCgstRate = returnRow.cgstRate;
+    const existingSgstRate = returnRow.sgstRate;
+    const fromSale = this.negateSaleAmounts(sale);
+    Object.assign(returnRow, this.mergeDefined(returnRow, fromSale));
+
+    // Keep return-file tax when matched sale has missing/zero tax.
+    const keepExistingOrSale = (
+      existing?: number,
+      matched?: number,
+    ): number | undefined => {
+      if (matched === undefined || matched === null || matched === 0) return existing;
+      return matched;
+    };
+    returnRow.igstAmount = keepExistingOrSale(existingIgst, fromSale.igstAmount);
+    returnRow.cgstAmount = keepExistingOrSale(existingCgst, fromSale.cgstAmount);
+    returnRow.sgstAmount = keepExistingOrSale(existingSgst, fromSale.sgstAmount);
+    returnRow.igstRate = existingIgstRate ?? fromSale.igstRate;
+    returnRow.cgstRate = existingCgstRate ?? fromSale.cgstRate;
+    returnRow.sgstRate = existingSgstRate ?? fromSale.sgstRate;
+    // Keep transaction type aligned with final GST breakup so summary aggregation
+    // does not zero-out the wrong bucket (IGST vs CGST/SGST).
+    if (sale.gstTransactionType === 'intra' || sale.gstTransactionType === 'inter') {
+      returnRow.gstTransactionType = sale.gstTransactionType;
+    } else {
+      const finalIgst = Number(returnRow.igstAmount ?? 0);
+      const finalCgst = Number(returnRow.cgstAmount ?? 0);
+      const finalSgst = Number(returnRow.sgstAmount ?? 0);
+      if (finalIgst !== 0) {
+        returnRow.gstTransactionType = 'inter';
+      } else if (finalCgst !== 0 || finalSgst !== 0) {
+        returnRow.gstTransactionType = 'intra';
+      }
+    }
+
+    this.negateUnmatchedReturnAmounts(returnRow);
+  }
+
   private negateUnmatchedReturnAmounts(row: NormalizedImportRow): void {
     const negate = (value?: number) =>
       value === undefined || value === null ? undefined : -Math.abs(value);
@@ -302,6 +406,7 @@ export class MyntraImportService {
       reportType: _reportType,
       typeOfReturn: _typeOfReturn,
       myntraReturnMatchStatus: _myntraReturnMatchStatus,
+      orderID: _orderID,
       ...returnFields
     } = fromReturns;
     Object.assign(target, this.mergeDefined(target, returnFields));
@@ -370,15 +475,39 @@ export class MyntraImportService {
       .exec();
 
     for (const doc of sales) {
-      const orderKey = this.normalizeOrderKey(doc.orderID);
-      if (!orderKey || map.has(orderKey)) continue;
-      map.set(orderKey, {
+      const entry: HistoricalSaleEntry = {
         _id: String(doc._id),
         reportMonth: doc.reportMonth,
         ...this.toSaleSnapshot(doc as NormalizedImportRow),
-      });
+      };
+      this.registerHistoricalSaleLookup(map, entry);
     }
     return map;
+  }
+
+  private registerHistoricalSaleLookup(
+    map: Map<string, HistoricalSaleEntry>,
+    entry: HistoricalSaleEntry,
+  ): void {
+    const orderKey = this.normalizeOrderKey(entry.orderID);
+    if (orderKey && !map.has(orderKey)) {
+      map.set(orderKey, entry);
+    }
+
+    const invoiceKey = this.normalizeOrderKey(entry.invoiceNo);
+    if (invoiceKey && !map.has(invoiceKey)) {
+      map.set(invoiceKey, entry);
+    }
+  }
+
+  private buildReturnLookupKeys(
+    orderKeys: string[],
+    invoiceNo?: string,
+  ): string[] {
+    const keys = new Set(orderKeys);
+    const invoiceKey = this.normalizeOrderKey(invoiceNo);
+    if (invoiceKey) keys.add(invoiceKey);
+    return [...keys];
   }
 
   private applyReturnMatch(
@@ -391,8 +520,10 @@ export class MyntraImportService {
     rows: NormalizedImportRow[],
     historicalSaleIdsToMarkReturned: string[],
   ): void {
+    const lookupKeys = this.buildReturnLookupKeys(orderKeys, returnRow.invoiceNo);
+
     let matchedCurrent: CurrentSaleEntry | undefined;
-    for (const key of orderKeys) {
+    for (const key of lookupKeys) {
       const hit = currentSales.get(key);
       if (hit) {
         matchedCurrent = hit;
@@ -402,7 +533,7 @@ export class MyntraImportService {
 
     if (matchedCurrent) {
       const sale = matchedCurrent.snapshot;
-      Object.assign(returnRow, this.negateSaleAmounts(sale));
+      this.applyMatchedSaleAmounts(returnRow, sale);
       returnRow.myntraReturnMatchStatus = 'MATCHED_CURRENT_MONTH';
       returnRow.linkedSaleRowId = undefined;
       returnRow.saleReferenceMonth = undefined;
@@ -411,7 +542,7 @@ export class MyntraImportService {
     }
 
     let matchedHistorical: HistoricalSaleEntry | undefined;
-    for (const key of orderKeys) {
+    for (const key of lookupKeys) {
       const hit = priorMonthSales.get(key);
       if (hit) {
         matchedHistorical = hit;
@@ -420,7 +551,44 @@ export class MyntraImportService {
     }
 
     if (matchedHistorical) {
-      Object.assign(returnRow, this.negateSaleAmounts(matchedHistorical));
+      this.applyMatchedSaleAmounts(returnRow, matchedHistorical);
+      if (returnRow.documentType === 'RTO Return') {
+        this.logger.log(
+          JSON.stringify({
+            tag: 'MATCHED_PREVIOUS_MONTH_ORIGINAL_SALE',
+            orderId: matchedHistorical.orderID ?? null,
+            packetId: (matchedHistorical as Record<string, unknown>).packetID ?? null,
+            invoiceNumber: matchedHistorical.invoiceNo ?? null,
+            saleMonth: matchedHistorical.reportMonth ?? null,
+            originalTaxable: matchedHistorical.taxableAmount ?? null,
+            originalIgst:
+              (matchedHistorical as Record<string, unknown>).igst ??
+              matchedHistorical.igstAmount ??
+              null,
+            originalCgst:
+              (matchedHistorical as Record<string, unknown>).cgst ??
+              matchedHistorical.cgstAmount ??
+              null,
+            originalSgst:
+              (matchedHistorical as Record<string, unknown>).sgst ??
+              matchedHistorical.sgstAmount ??
+              null,
+            originalInvoiceAmount: matchedHistorical.invoiceAmount ?? null,
+            originalIgstAmount: matchedHistorical.igstAmount ?? null,
+            originalCgstAmount: matchedHistorical.cgstAmount ?? null,
+            originalSgstAmount: matchedHistorical.sgstAmount ?? null,
+            finalTaxable: returnRow.taxableAmount ?? null,
+            finalIgst: returnRow.igstAmount ?? null,
+            finalCgst: returnRow.cgstAmount ?? null,
+            finalSgst: returnRow.sgstAmount ?? null,
+            finalInvoiceAmount: returnRow.invoiceAmount ?? null,
+            finalGstTransactionType: returnRow.gstTransactionType ?? null,
+          }),
+        );
+        this.logger.log(
+          `[Myntra PriorMonth RTO Match] order=${returnRow.orderID ?? ''}, sourceMonth=${matchedHistorical.reportMonth ?? ''}, originalIgst=${matchedHistorical.igstAmount ?? 0}, originalCgst=${matchedHistorical.cgstAmount ?? 0}, originalSgst=${matchedHistorical.sgstAmount ?? 0}, finalIgst=${returnRow.igstAmount ?? 0}, finalCgst=${returnRow.cgstAmount ?? 0}, finalSgst=${returnRow.sgstAmount ?? 0}`,
+        );
+      }
       returnRow.myntraReturnMatchStatus = 'MATCHED_PREVIOUS_MONTH';
       returnRow.linkedSaleRowId = matchedHistorical._id;
       returnRow.saleReferenceMonth = matchedHistorical.reportMonth;
@@ -431,7 +599,7 @@ export class MyntraImportService {
     }
 
     let matchedSameMonthDb: HistoricalSaleEntry | undefined;
-    for (const key of orderKeys) {
+    for (const key of lookupKeys) {
       const hit = sameMonthDbSales.get(key);
       if (hit) {
         matchedSameMonthDb = hit;
@@ -440,7 +608,7 @@ export class MyntraImportService {
     }
 
     if (matchedSameMonthDb) {
-      Object.assign(returnRow, this.negateSaleAmounts(matchedSameMonthDb));
+      this.applyMatchedSaleAmounts(returnRow, matchedSameMonthDb);
       returnRow.myntraReturnMatchStatus = 'MATCHED_PREVIOUS_MONTH';
       returnRow.linkedSaleRowId = matchedSameMonthDb._id;
       returnRow.saleReferenceMonth = matchedSameMonthDb.reportMonth;
@@ -450,11 +618,18 @@ export class MyntraImportService {
       return;
     }
 
-    for (const key of orderKeys) {
+    for (const key of lookupKeys) {
       const gstrRow = gstrByOrder.get(key);
       if (!gstrRow) continue;
       const gstrMapped = this.mapping.mapMyntraGstrRow(gstrRow);
-      Object.assign(returnRow, this.negateSaleAmounts(this.toSaleSnapshot(gstrMapped)));
+      Object.assign(
+        returnRow,
+        this.mergeDefined(
+          returnRow,
+          this.negateSaleAmounts(this.toSaleSnapshot(gstrMapped)),
+        ),
+      );
+      this.negateUnmatchedReturnAmounts(returnRow);
       break;
     }
 
@@ -462,6 +637,156 @@ export class MyntraImportService {
     returnRow.linkedSaleRowId = undefined;
     returnRow.saleReferenceMonth = undefined;
     this.negateUnmatchedReturnAmounts(returnRow);
+  }
+
+  private getPriorMonthBounds(reportMonth: string): {
+    start: string;
+    end: string;
+  } {
+    const [year, month] = reportMonth.split('-').map(Number);
+    if (!year || !month) {
+      return { start: '', end: '' };
+    }
+    const start = new Date(Date.UTC(year, month - 2, 1));
+    const end = new Date(Date.UTC(year, month - 1, 0, 23, 59, 59, 999));
+    const toIso = (d: Date) => d.toISOString();
+    return { start: toIso(start), end: toIso(end) };
+  }
+
+  private async processReturnRows(params: {
+    rowsToProcess: ParsedSheetRow[];
+    headerMap: ReturnType<MappingService['buildMyntraGstrRtoHeaderMap']>;
+    orderAliases: readonly string[];
+    documentType: 'RTO Return' | 'Customer Return';
+    processedKeys: Set<string>;
+    dedupePrefix: 'rto' | 'rt';
+    currentSales: Map<string, CurrentSaleEntry>;
+    gstrByOrder: Map<string, ParsedSheetRow>;
+    priorMonthSales: Map<string, HistoricalSaleEntry>;
+    sameMonthDbSales: Map<string, HistoricalSaleEntry>;
+    mDirectReturnsByOrder: Map<string, ParsedSheetRow>;
+    returnsHeaderMap: ReturnType<MappingService['buildMyntraMdirectReturnsHeaderMap']>;
+    targetRows: MyntraBuildResult['rows'];
+    targetErrors: MyntraBuildResult['errors'];
+    historicalSaleIdsToMarkReturned: string[];
+  }): Promise<ReturnProcessingStats> {
+    const stats: ReturnProcessingStats = {
+      totalRows: params.rowsToProcess.length,
+      matchedCurrent: 0,
+      matchedPrevious: 0,
+      unmatched: 0,
+      finalQty: 0,
+      finalTaxable: 0,
+      finalIgst: 0,
+      finalCgst: 0,
+      finalSgst: 0,
+      finalInvoice: 0,
+    };
+
+    for (let i = 0; i < params.rowsToProcess.length; i += 1) {
+      const sourceRow = params.rowsToProcess[i];
+      try {
+        const mapped = this.mapping.mapRowFast(sourceRow, 'sales', params.headerMap);
+        this.mapping.enrichMyntraGstrReturnGstFields(
+          mapped,
+          sourceRow,
+          params.dedupePrefix === 'rt' ? 'rt' : 'rto',
+        );
+        mapped.documentType = params.documentType;
+        mapped.typeOfReturn = params.documentType;
+        mapped.myntraTransactionType = 'RETURN';
+        mapped.invoiceDate = undefined;
+
+        const preferredOrderId = this.resolvePreferredReturnOrderId(
+          sourceRow,
+          mapped.orderID,
+        );
+        if (preferredOrderId) {
+          mapped.orderID = preferredOrderId;
+        }
+
+        const orderKeys = this.resolveOrderKeys(
+          sourceRow,
+          params.orderAliases,
+          mapped.orderID,
+        );
+        if (!mapped.orderID && orderKeys[0]) mapped.orderID = orderKeys[0];
+
+        const dedupeKey = `${params.dedupePrefix}:${sourceRow.__sheetName}:${sourceRow.__rowNumber}`;
+        if (params.processedKeys.has(dedupeKey)) continue;
+        params.processedKeys.add(dedupeKey);
+
+        const mDirectReturnsRow = this.lookupRowByOrderKeys(
+          params.mDirectReturnsByOrder,
+          sourceRow,
+          MYNTRA_MDIRECT_RETURNS_ORDER_ID_ALIASES,
+        );
+        this.mergeMdirectReturnFields(mapped, mDirectReturnsRow, params.returnsHeaderMap);
+        mapped.documentType = params.documentType;
+        mapped.typeOfReturn = params.documentType;
+        mapped.myntraTransactionType = 'RETURN';
+
+        this.applyReturnMatch(
+          mapped,
+          orderKeys,
+          params.currentSales,
+          params.gstrByOrder,
+          params.priorMonthSales,
+          params.sameMonthDbSales,
+          params.targetRows,
+          params.historicalSaleIdsToMarkReturned,
+        );
+
+        if (mapped.myntraReturnMatchStatus === 'MATCHED_CURRENT_MONTH') {
+          stats.matchedCurrent += 1;
+        } else if (mapped.myntraReturnMatchStatus === 'MATCHED_PREVIOUS_MONTH') {
+          stats.matchedPrevious += 1;
+        } else {
+          stats.unmatched += 1;
+        }
+        stats.finalQty += Number(mapped.quantity ?? 0);
+        stats.finalTaxable += Number(mapped.taxableAmount ?? 0);
+        stats.finalIgst += Number(mapped.igstAmount ?? 0);
+        stats.finalCgst += Number(mapped.cgstAmount ?? 0);
+        stats.finalSgst += Number(mapped.sgstAmount ?? 0);
+        stats.finalInvoice += Number(mapped.invoiceAmount ?? 0);
+        if (
+          params.documentType === 'RTO Return' &&
+          mapped.myntraReturnMatchStatus === 'MATCHED_PREVIOUS_MONTH'
+        ) {
+          this.logger.log(
+            `BEFORE_SAVE_PRIOR_RTO ${JSON.stringify({
+              orderId: mapped.orderID ?? null,
+              invoiceNo: mapped.invoiceNo ?? null,
+              saleReferenceMonth: mapped.saleReferenceMonth ?? null,
+              taxableValue: mapped.taxableAmount ?? 0,
+              igst: mapped.igstAmount ?? 0,
+              cgst: mapped.cgstAmount ?? 0,
+              sgst: mapped.sgstAmount ?? 0,
+              invoiceAmount: mapped.invoiceAmount ?? 0,
+              gstTransactionType: mapped.gstTransactionType ?? null,
+            })}`,
+          );
+        }
+
+        params.targetRows.push({
+          ...mapped,
+          __sheetName: sourceRow.__sheetName,
+          __rowNumber: sourceRow.__rowNumber,
+        });
+      } catch {
+        params.targetErrors.push({
+          sheetName: sourceRow.__sheetName,
+          rowNumber: sourceRow.__rowNumber,
+          error: `Failed to normalize Myntra ${params.documentType} row`,
+        });
+      }
+      if (i > 0 && i % 2000 === 0) {
+        // eslint-disable-next-line no-await-in-loop
+        await yieldToEventLoop();
+      }
+    }
+    return stats;
   }
 
   async buildNormalizedRows(
@@ -482,6 +807,7 @@ export class MyntraImportService {
       this.loadPriorMonthSalesMap(context),
       this.loadSameMonthDbSalesMap(context),
     ]);
+    const priorMonthBounds = this.getPriorMonthBounds(context.reportMonth);
 
     const gstrByOrder = this.indexByOrderId(
       parsed.gstrReportPacked.rows,
@@ -602,119 +928,45 @@ export class MyntraImportService {
       if (i > 0 && i % 2000 === 0) await yieldToEventLoop();
     }
 
-    const rtoRows = parsed.gstrReportRto.rows;
-    for (let i = 0; i < rtoRows.length; i += 1) {
-      const rtoRow = rtoRows[i];
-      try {
-        const mapped = this.mapping.mapRowFast(rtoRow, 'sales', rtoHeaderMap);
-        mapped.documentType = 'RTO Return';
-        mapped.typeOfReturn = 'RTO Return';
-        mapped.myntraTransactionType = 'RETURN';
-        mapped.invoiceDate = undefined;
+    const rtoStats = await this.processReturnRows({
+      rowsToProcess: parsed.gstrReportRto.rows,
+      headerMap: rtoHeaderMap,
+      orderAliases: MYNTRA_GSTR_RTO_ORDER_ID_ALIASES,
+      documentType: 'RTO Return',
+      processedKeys: processedRtoKeys,
+      dedupePrefix: 'rto',
+      currentSales,
+      gstrByOrder,
+      priorMonthSales,
+      sameMonthDbSales,
+      mDirectReturnsByOrder,
+      returnsHeaderMap,
+      targetRows: rows,
+      targetErrors: errors,
+      historicalSaleIdsToMarkReturned,
+    });
 
-        const orderKeys = this.resolveOrderKeys(
-          rtoRow,
-          MYNTRA_GSTR_RTO_ORDER_ID_ALIASES,
-          mapped.orderID,
-        );
-        if (!mapped.orderID && orderKeys[0]) mapped.orderID = orderKeys[0];
+    const rtStats = await this.processReturnRows({
+      rowsToProcess: parsed.gstrReportRt.rows,
+      headerMap: rtHeaderMap,
+      orderAliases: MYNTRA_GSTR_RT_ORDER_ID_ALIASES,
+      documentType: 'Customer Return',
+      processedKeys: processedRtKeys,
+      dedupePrefix: 'rt',
+      currentSales,
+      gstrByOrder,
+      priorMonthSales,
+      sameMonthDbSales,
+      mDirectReturnsByOrder,
+      returnsHeaderMap,
+      targetRows: rows,
+      targetErrors: errors,
+      historicalSaleIdsToMarkReturned,
+    });
 
-        const dedupeKey = orderKeys.join('|') || `rto:${rtoRow.__rowNumber}`;
-        if (processedRtoKeys.has(dedupeKey)) continue;
-        processedRtoKeys.add(dedupeKey);
-
-        const mDirectReturnsRow = this.lookupRowByOrderKeys(
-          mDirectReturnsByOrder,
-          rtoRow,
-          MYNTRA_MDIRECT_RETURNS_ORDER_ID_ALIASES,
-        );
-        this.mergeMdirectReturnFields(mapped, mDirectReturnsRow, returnsHeaderMap);
-        mapped.documentType = 'RTO Return';
-        mapped.typeOfReturn = 'RTO Return';
-        mapped.myntraTransactionType = 'RETURN';
-
-        this.applyReturnMatch(
-          mapped,
-          orderKeys,
-          currentSales,
-          gstrByOrder,
-          priorMonthSales,
-          sameMonthDbSales,
-          rows,
-          historicalSaleIdsToMarkReturned,
-        );
-
-        rows.push({
-          ...mapped,
-          __sheetName: rtoRow.__sheetName,
-          __rowNumber: rtoRow.__rowNumber,
-        });
-      } catch {
-        errors.push({
-          sheetName: rtoRow.__sheetName,
-          rowNumber: rtoRow.__rowNumber,
-          error: 'Failed to normalize GSTR RTO return row',
-        });
-      }
-      if (i > 0 && i % 2000 === 0) await yieldToEventLoop();
-    }
-
-    const rtRows = parsed.gstrReportRt.rows;
-    for (let i = 0; i < rtRows.length; i += 1) {
-      const rtRow = rtRows[i];
-      try {
-        const mapped = this.mapping.mapRowFast(rtRow, 'sales', rtHeaderMap);
-        mapped.documentType = 'Customer Return';
-        mapped.typeOfReturn = 'Customer Return';
-        mapped.myntraTransactionType = 'RETURN';
-        mapped.invoiceDate = undefined;
-
-        const orderKeys = this.resolveOrderKeys(
-          rtRow,
-          MYNTRA_GSTR_RT_ORDER_ID_ALIASES,
-          mapped.orderID,
-        );
-        if (!mapped.orderID && orderKeys[0]) mapped.orderID = orderKeys[0];
-
-        const dedupeKey = orderKeys.join('|') || `rt:${rtRow.__rowNumber}`;
-        if (processedRtKeys.has(dedupeKey)) continue;
-        processedRtKeys.add(dedupeKey);
-
-        const mDirectReturnsRow = this.lookupRowByOrderKeys(
-          mDirectReturnsByOrder,
-          rtRow,
-          MYNTRA_MDIRECT_RETURNS_ORDER_ID_ALIASES,
-        );
-        this.mergeMdirectReturnFields(mapped, mDirectReturnsRow, returnsHeaderMap);
-        mapped.documentType = 'Customer Return';
-        mapped.typeOfReturn = 'Customer Return';
-        mapped.myntraTransactionType = 'RETURN';
-
-        this.applyReturnMatch(
-          mapped,
-          orderKeys,
-          currentSales,
-          gstrByOrder,
-          priorMonthSales,
-          sameMonthDbSales,
-          rows,
-          historicalSaleIdsToMarkReturned,
-        );
-
-        rows.push({
-          ...mapped,
-          __sheetName: rtRow.__sheetName,
-          __rowNumber: rtRow.__rowNumber,
-        });
-      } catch {
-        errors.push({
-          sheetName: rtRow.__sheetName,
-          rowNumber: rtRow.__rowNumber,
-          error: 'Failed to normalize GSTR RT return row',
-        });
-      }
-      if (i > 0 && i % 2000 === 0) await yieldToEventLoop();
-    }
+    this.logger.log(
+      `[Myntra PriorMonth Debug] reportMonth=${context.reportMonth}, priorStart=${priorMonthBounds.start}, priorEnd=${priorMonthBounds.end}, priorSalesFound=${priorMonthSales.size}, sameMonthSalesFound=${sameMonthDbSales.size}, rtoRows=${rtoStats.totalRows}, rtoMatchedCurrent=${rtoStats.matchedCurrent}, rtoMatchedPrevious=${rtoStats.matchedPrevious}, rtoUnmatched=${rtoStats.unmatched}, rtoFinalQty=${rtoStats.finalQty}, rtoFinalTaxable=${rtoStats.finalTaxable}, rtoFinalIgst=${rtoStats.finalIgst}, rtoFinalCgst=${rtoStats.finalCgst}, rtoFinalSgst=${rtoStats.finalSgst}, rtoFinalInvoice=${rtoStats.finalInvoice}, rtRows=${rtStats.totalRows}, rtMatchedCurrent=${rtStats.matchedCurrent}, rtMatchedPrevious=${rtStats.matchedPrevious}, rtUnmatched=${rtStats.unmatched}, rtFinalQty=${rtStats.finalQty}, rtFinalTaxable=${rtStats.finalTaxable}, rtFinalIgst=${rtStats.finalIgst}, rtFinalCgst=${rtStats.finalCgst}, rtFinalSgst=${rtStats.finalSgst}, rtFinalInvoice=${rtStats.finalInvoice}, matchedReturnTotal=${rtoStats.matchedCurrent + rtoStats.matchedPrevious + rtStats.matchedCurrent + rtStats.matchedPrevious}, finalRows=${rows.length}`,
+    );
 
     const joinIssues =
       missingOrderIdInGstr || missingInSales

@@ -27,10 +27,20 @@ export class ListImportedRowsDto {
 
   @IsOptional()
   @IsString()
-  @IsIn(['documentType', 'invoiceDate', 'gstin', 'invoiceAmount', 'taxableAmount'])
+  @IsIn([
+    'documentType',
+    'invoiceDate',
+    'orderCancelDate',
+    'frRefundedDate',
+    'gstin',
+    'invoiceAmount',
+    'taxableAmount',
+  ])
   sortBy?:
     | 'documentType'
     | 'invoiceDate'
+    | 'orderCancelDate'
+    | 'frRefundedDate'
     | 'gstin'
     | 'invoiceAmount'
     | 'taxableAmount';

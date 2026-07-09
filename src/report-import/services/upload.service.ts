@@ -81,6 +81,7 @@ import {
   buildSlotUploadDetails,
 } from '../utils/slot-upload-details';
 import { ReconciliationService } from './reconciliation.service';
+import { SkuMasterSyncService } from '../../sku-master/sku-master-sync.service';
 
 type UploadContext = Awaited<
   ReturnType<ValidationService['validateOwnership']>
@@ -131,6 +132,7 @@ export class UploadService {
     private readonly fileStore: ImportFileStoreService,
     private readonly importJobService: ImportJobService,
     private readonly reconciliationService: ReconciliationService,
+    private readonly skuMasterSyncService: SkuMasterSyncService,
     @Inject(forwardRef(() => ImportJobOrchestratorService))
     private readonly importOrchestrator: ImportJobOrchestratorService,
   ) {}
@@ -2086,6 +2088,14 @@ export class UploadService {
     // Flipkart month summary must match the Excel pivot (raw file tax columns).
     for (const row of normalizedRows) {
       if (!isFlipkart) {
+        if (
+          isMyntra &&
+          row.documentType === 'RTO Return' &&
+          row.myntraReturnMatchStatus === 'MATCHED_PREVIOUS_MONTH'
+        ) {
+          // Preserve original prior-month sale GST breakup for RTO rows.
+          continue;
+        }
         this.mapping.normalizeTaxByState(row, sellerGstStates, sellerGstins);
       }
     }
@@ -2269,6 +2279,7 @@ export class UploadService {
       });
     }
     await this.reconciliationService.enqueueForUpload(uploadId);
+    this.skuMasterSyncService.enqueueForUpload(uploadId);
     timer?.endStage('postProcessing');
     onProgress?.('completed', 100, normalizedRows.length);
 

@@ -28,4 +28,14 @@ export class StateWiseExportDto {
   @IsOptional()
   @IsIn(['csv', 'xlsx'])
   format?: 'csv' | 'xlsx';
+
+  /** YYYY-MM — filters import rows for state+SKU reports. */
+  @IsOptional()
+  @IsString()
+  reportMonth?: string;
+
+  /** Group SKU rows by master SKU or marketplace SKU. */
+  @IsOptional()
+  @IsIn(['master_sku', 'marketplace_sku'])
+  skuGrouping?: 'master_sku' | 'marketplace_sku';
 }

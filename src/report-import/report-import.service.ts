@@ -550,13 +550,26 @@ export class ReportImportService {
               ],
               monthly: [
                 {
+                  $addFields: {
+                    // Returns (RTO/Customer Return) don't carry an invoiceDate —
+                    // bucket them by their own return date so they aren't
+                    // silently dropped from month-wise totals.
+                    effectiveDate: {
+                      $ifNull: [
+                        '$invoiceDate',
+                        { $ifNull: ['$orderCancelDate', '$frRefundedDate'] },
+                      ],
+                    },
+                  },
+                },
+                {
                   $match: {
-                    invoiceDate: { $exists: true, $nin: [null, ''] },
+                    effectiveDate: { $exists: true, $nin: [null, ''] },
                   },
                 },
                 {
                   $addFields: {
-                    month: { $substr: ['$invoiceDate', 0, 7] },
+                    month: { $substr: ['$effectiveDate', 0, 7] },
                   },
                 },
                 {
@@ -701,16 +714,31 @@ export class ReportImportService {
             ],
           },
           monthKey: {
-            $cond: [
-              {
-                $regexMatch: {
-                  input: { $ifNull: ['$invoiceDate', ''] },
-                  regex: /^\d{4}-\d{2}/,
+            $let: {
+              vars: {
+                // Returns (RTO/Customer Return) don't carry an invoiceDate —
+                // fall back to their own return date so they still land in
+                // the month they were actually returned in.
+                effectiveDate: {
+                  $ifNull: [
+                    '$invoiceDate',
+                    { $ifNull: ['$orderCancelDate', '$frRefundedDate'] },
+                  ],
                 },
               },
-              { $substr: [{ $ifNull: ['$invoiceDate', ''] }, 0, 7] },
-              null,
-            ],
+              in: {
+                $cond: [
+                  {
+                    $regexMatch: {
+                      input: { $ifNull: ['$$effectiveDate', ''] },
+                      regex: /^\d{4}-\d{2}/,
+                    },
+                  },
+                  { $substr: [{ $ifNull: ['$$effectiveDate', ''] }, 0, 7] },
+                  null,
+                ],
+              },
+            },
           },
         },
       },

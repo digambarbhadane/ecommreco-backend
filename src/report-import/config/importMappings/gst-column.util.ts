@@ -105,6 +105,12 @@ export const headerMatchesExcelColumn = (
     return false;
   }
 
+  // Generic "gst rate" / "tax rate" must not match CGST/SGST-specific columns.
+  if (colNorm === 'gst rate' || colNorm === 'tax rate') {
+    if (/\bcgst\b/.test(norm) || /\bsgst\b/.test(norm)) return false;
+    if (colNorm === 'tax rate' && /\bigst\b/.test(norm)) return false;
+  }
+
   // Header may be a composite label that contains the alias (e.g. "GST NO = Seller GSTIN").
   // Do not match when the alias is longer and merely contains the header text
   // (e.g. alias "Detailed Return Reason" must not match header "Return Reason").

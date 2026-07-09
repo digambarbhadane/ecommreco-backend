@@ -19,16 +19,14 @@ export const myntraImportMapping: MarketplaceImportMapping = {
     excelColumns: [
       'order_id',
       'Order ID',
+      'Order Id',
       'Sale_Order_Code',
       'sale_order_code',
       'order_release_id',
-      'packet_id',
-      'Packet ID',
-      'shipment_id',
     ],
   },
   sku: {
     databaseField: 'skuID',
-    excelColumns: ['seller_sku_code', 'seller sku code', 'SKU ID', 'SKU'],
+    excelColumns: ['seller_sku_code', 'seller sku code'],
   },
 };
