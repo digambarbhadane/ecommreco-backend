@@ -80,6 +80,7 @@ export const toImportRowDocuments = (
     meeshoIsPreviousMonthReturn: row.meeshoIsPreviousMonthReturn,
     meeshoReturnSubType: row.meeshoReturnSubType,
     amazonReturnSubType: row.amazonReturnSubType,
+    amazonMtrSource: row.amazonMtrSource,
     myntraTransactionType: row.myntraTransactionType,
     myntraReturnMatchStatus: row.myntraReturnMatchStatus,
     myntraIsReturned: row.myntraIsReturned,

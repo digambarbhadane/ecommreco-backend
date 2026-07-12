@@ -1,6 +1,6 @@
 import { IsIn, IsOptional, IsString } from 'class-validator';
 
-export class ListImportedRowsDto {
+export class ListAnalyticsOrdersDto {
   @IsOptional()
   @IsString()
   sellerId?: string;
@@ -25,24 +25,6 @@ export class ListImportedRowsDto {
   @IsString()
   toDate?: string;
 
-  /** Filter rows with settlement/payment enrichment (Flipkart, Meesho) or payment mode. */
-  @IsOptional()
-  @IsString()
-  @IsIn(['yes', 'no'])
-  hasPaymentData?: 'yes' | 'no';
-
-  @IsOptional()
-  @IsString()
-  paymentDateFrom?: string;
-
-  @IsOptional()
-  @IsString()
-  paymentDateTo?: string;
-
-  @IsOptional()
-  @IsString()
-  paymentMode?: string;
-
   @IsOptional()
   @IsString()
   @IsIn([
@@ -53,8 +35,6 @@ export class ListImportedRowsDto {
     'gstin',
     'invoiceAmount',
     'taxableAmount',
-    'paymentDate',
-    'finalSettlementAmount',
     'orderID',
   ])
   sortBy?:
@@ -65,8 +45,6 @@ export class ListImportedRowsDto {
     | 'gstin'
     | 'invoiceAmount'
     | 'taxableAmount'
-    | 'paymentDate'
-    | 'finalSettlementAmount'
     | 'orderID';
 
   @IsOptional()

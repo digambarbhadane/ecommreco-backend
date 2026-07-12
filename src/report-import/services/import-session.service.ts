@@ -24,7 +24,8 @@ type ImportSession = {
 const SESSION_TTL_MS = 60 * 60 * 1000;
 
 const REQUIRED_SLOTS: Record<MarketplaceUploadKey, string[]> = {
-  flipkart: ['file'],
+  // Sales / return / payment-only rules are validated in commit() (like Amazon & Meesho).
+  flipkart: [],
   amazon: [], // B2C is preferred but B2B-only is valid; checked in commit()
   meesho: [],
   myntra: [
@@ -36,7 +37,7 @@ const REQUIRED_SLOTS: Record<MarketplaceUploadKey, string[]> = {
 };
 
 const OPTIONAL_SLOTS: Partial<Record<MarketplaceUploadKey, string[]>> = {
-  flipkart: ['returnReportFile', 'paymentReportFile'],
+  flipkart: ['file', 'returnReportFile', 'paymentReportFile'],
   amazon: ['mtrB2cFile', 'mtrB2bFile', 'amazonReturnReportFile'],
   meesho: [
     'tcsSalesFile',

@@ -39,6 +39,7 @@ export class ImportQueueService implements OnModuleInit, OnModuleDestroy {
   async onModuleInit() {
     try {
       await this.importJobService.failStaleActiveJobs();
+      await this.uploadService.failStaleProcessingUploads();
     } catch (err) {
       this.logger.warn(
         `Could not clean stale import jobs on startup: ${err instanceof Error ? err.message : String(err)}`,

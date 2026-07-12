@@ -65,7 +65,7 @@ export class MeeshoImportService {
     return variants;
   }
 
-  parseFiles(files: {
+  async parseFiles(files: {
     tcsSalesFile?: { buffer: Buffer; originalname: string };
     tcsSalesReturnFile?: { buffer: Buffer; originalname: string };
     orderReportFile?: { buffer: Buffer; originalname: string };
@@ -74,40 +74,52 @@ export class MeeshoImportService {
     returnDeliveryCompleteReportFile?: { buffer: Buffer; originalname: string };
   }) {
     const empty: ParsedMeeshoFile = { rows: [], headers: [] };
-    const parseLifecycle = (
+    const yieldToEventLoop = () =>
+      new Promise<void>((resolve) => setImmediate(resolve));
+    const parseLifecycle = async (
       file: { buffer: Buffer; originalname: string } | undefined,
       kind:
         | 'returnInTransit'
         | 'returnOutForDelivery'
         | 'returnDeliveryComplete',
-    ) =>
-      file ? this.parser.parseMeeshoWorkbook(file.buffer, kind) : empty;
+    ) => {
+      if (!file) return empty;
+      await yieldToEventLoop();
+      return this.parser.parseMeeshoWorkbook(file.buffer, kind);
+    };
+
+    await yieldToEventLoop();
+    const tcsSales = files.tcsSalesFile
+      ? this.parser.parseMeeshoWorkbook(files.tcsSalesFile.buffer, 'tcsSales')
+      : empty;
+    await yieldToEventLoop();
+    const tcsSalesReturn = files.tcsSalesReturnFile
+      ? this.parser.parseMeeshoWorkbook(
+          files.tcsSalesReturnFile.buffer,
+          'tcsSalesReturn',
+        )
+      : empty;
+    await yieldToEventLoop();
+    const orderReport = files.orderReportFile
+      ? this.parser.parseMeeshoWorkbook(
+          files.orderReportFile.buffer,
+          'orderReport',
+        )
+      : empty;
 
     return {
-      tcsSales: files.tcsSalesFile
-        ? this.parser.parseMeeshoWorkbook(files.tcsSalesFile.buffer, 'tcsSales')
-        : empty,
-      tcsSalesReturn: files.tcsSalesReturnFile
-        ? this.parser.parseMeeshoWorkbook(
-            files.tcsSalesReturnFile.buffer,
-            'tcsSalesReturn',
-          )
-        : empty,
-      orderReport: files.orderReportFile
-        ? this.parser.parseMeeshoWorkbook(
-            files.orderReportFile.buffer,
-            'orderReport',
-          )
-        : empty,
-      returnInTransit: parseLifecycle(
+      tcsSales,
+      tcsSalesReturn,
+      orderReport,
+      returnInTransit: await parseLifecycle(
         files.returnInTransitReportFile,
         'returnInTransit',
       ),
-      returnOutForDelivery: parseLifecycle(
+      returnOutForDelivery: await parseLifecycle(
         files.returnOutForDeliveryReportFile,
         'returnOutForDelivery',
       ),
-      returnDeliveryComplete: parseLifecycle(
+      returnDeliveryComplete: await parseLifecycle(
         files.returnDeliveryCompleteReportFile,
         'returnDeliveryComplete',
       ),

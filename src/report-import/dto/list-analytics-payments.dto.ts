@@ -1,6 +1,6 @@
 import { IsIn, IsOptional, IsString } from 'class-validator';
 
-export class ListImportedRowsDto {
+export class ListAnalyticsPaymentsDto {
   @IsOptional()
   @IsString()
   sellerId?: string;
@@ -17,6 +17,7 @@ export class ListImportedRowsDto {
   @IsString()
   documentType?: string;
 
+  /** Filter by invoice date (order context). */
   @IsOptional()
   @IsString()
   fromDate?: string;
@@ -24,12 +25,6 @@ export class ListImportedRowsDto {
   @IsOptional()
   @IsString()
   toDate?: string;
-
-  /** Filter rows with settlement/payment enrichment (Flipkart, Meesho) or payment mode. */
-  @IsOptional()
-  @IsString()
-  @IsIn(['yes', 'no'])
-  hasPaymentData?: 'yes' | 'no';
 
   @IsOptional()
   @IsString()
@@ -46,28 +41,34 @@ export class ListImportedRowsDto {
   @IsOptional()
   @IsString()
   @IsIn([
-    'documentType',
-    'invoiceDate',
-    'orderCancelDate',
-    'frRefundedDate',
-    'gstin',
-    'invoiceAmount',
-    'taxableAmount',
     'paymentDate',
     'finalSettlementAmount',
+    'transactionId',
     'orderID',
+    'invoiceDate',
+    'paymentMode',
+    'bankSettlementValue',
+    'neftId',
+    'orderId',
+    'saleAmount',
+    'marketplaceFee',
+    'commission',
+    'sellerSku',
   ])
   sortBy?:
-    | 'documentType'
-    | 'invoiceDate'
-    | 'orderCancelDate'
-    | 'frRefundedDate'
-    | 'gstin'
-    | 'invoiceAmount'
-    | 'taxableAmount'
     | 'paymentDate'
     | 'finalSettlementAmount'
-    | 'orderID';
+    | 'transactionId'
+    | 'orderID'
+    | 'invoiceDate'
+    | 'paymentMode'
+    | 'bankSettlementValue'
+    | 'neftId'
+    | 'orderId'
+    | 'saleAmount'
+    | 'marketplaceFee'
+    | 'commission'
+    | 'sellerSku';
 
   @IsOptional()
   @IsString()

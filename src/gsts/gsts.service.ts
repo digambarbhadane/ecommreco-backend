@@ -26,6 +26,7 @@ import {
   ImportRowDocument,
 } from '../report-import/schemas/import-row.schema';
 import { rethrowMongoWriteError } from '../common/utils/mongo-errors';
+import { buildGstIdFilter, buildGstIdsFilter } from '../common/utils/seller-id.util';
 
 @Injectable()
 export class GstsService {
@@ -466,7 +467,7 @@ export class GstsService {
 
     const gstIds = gsts.map((gst) => String(gst._id));
     const marketplaces = await this.marketplaceModel
-      .find({ gstId: { $in: gstIds } })
+      .find(buildGstIdsFilter(gstIds))
       .populate('platformMarketplaceId')
       .lean()
       .exec();
@@ -691,7 +692,10 @@ export class GstsService {
     };
   }
 
-  async remove(id: string) {
+  async remove(
+    id: string,
+    options?: { unlinkMarketplaces?: boolean; requesterId?: string; requesterRole?: string },
+  ) {
     if (!Types.ObjectId.isValid(id)) {
       throw new BadRequestException('Invalid GST id');
     }
@@ -700,13 +704,27 @@ export class GstsService {
       throw new NotFoundException('GST not found');
     }
 
-    const linkedMarketplaces = await this.marketplaceModel.countDocuments({
-      gstId: id,
-    });
+    if (options?.requesterRole === 'seller' && options.requesterId) {
+      const seller = await this.findSellerByIdentifier(options.requesterId);
+      const sellerAliases = seller
+        ? this.getSellerIdAliases(seller, options.requesterId)
+        : [options.requesterId];
+      const ownerId = String(gst.sellerId ?? '');
+      if (!sellerAliases.includes(ownerId)) {
+        throw new NotFoundException('GST not found');
+      }
+    }
+
+    const gstIdFilter = buildGstIdFilter(id);
+    const linkedMarketplaces = await this.marketplaceModel.countDocuments(gstIdFilter);
     if (linkedMarketplaces > 0) {
-      throw new BadRequestException(
-        'Cannot delete GST with linked marketplaces',
-      );
+      if (options?.unlinkMarketplaces) {
+        await this.marketplaceModel.deleteMany(gstIdFilter).exec();
+      } else {
+        throw new BadRequestException(
+          'Cannot delete GST with linked marketplaces',
+        );
+      }
     }
 
     try {

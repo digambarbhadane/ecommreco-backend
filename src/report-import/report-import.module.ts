@@ -64,6 +64,14 @@ import {
   SkuMasterMappingSchema,
 } from '../sku-master/schemas/sku-master-mapping.schema';
 import { SkuMasterModule } from '../sku-master/sku-master.module';
+import {
+  FlipkartPaymentReport,
+  FlipkartPaymentReportSchema,
+} from './payments/flipkart/schemas/flipkart-payment-report.schema';
+import { FlipkartPaymentParser } from './payments/flipkart/flipkart-payment.parser';
+import { FlipkartPaymentRepository } from './payments/flipkart/flipkart-payment.repository';
+import { FlipkartPaymentService } from './payments/flipkart/flipkart-payment.service';
+import { AnalyticsPaymentsService } from './payments/analytics-payments.service';
 
 @Module({
   imports: [
@@ -84,6 +92,7 @@ import { SkuMasterModule } from '../sku-master/sku-master.module';
       { name: ReconAuditLog.name, schema: ReconAuditLogSchema },
       { name: ReconAdjustment.name, schema: ReconAdjustmentSchema },
       { name: SkuMasterMapping.name, schema: SkuMasterMappingSchema },
+      { name: FlipkartPaymentReport.name, schema: FlipkartPaymentReportSchema },
     ]),
   ],
   controllers: [ReportImportController],
@@ -108,6 +117,10 @@ import { SkuMasterModule } from '../sku-master/sku-master.module';
     StateWiseReportService,
     StateSkuWiseReportService,
     Gstr1B2csReportService,
+    FlipkartPaymentParser,
+    FlipkartPaymentRepository,
+    FlipkartPaymentService,
+    AnalyticsPaymentsService,
   ],
 })
 export class ReportImportModule {}

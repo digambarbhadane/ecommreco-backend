@@ -126,7 +126,7 @@ export class MyntraImportService {
     private readonly rowModel?: Model<ImportRowDocument>,
   ) {}
 
-  parseFiles(files: {
+  async parseFiles(files: {
     gstrReportPackedFile?: { buffer: Buffer; originalname: string };
     mDirectOrdersReportFile?: { buffer: Buffer; originalname: string };
     salesRevenuePackedB2cFile?: { buffer: Buffer; originalname: string };
@@ -135,7 +135,9 @@ export class MyntraImportService {
     mDirectReturnsReportFile?: { buffer: Buffer; originalname: string };
   }) {
     const empty: ParsedMyntraFile = { rows: [], headers: [] };
-    const parse = (
+    const yieldToEventLoop = () =>
+      new Promise<void>((resolve) => setImmediate(resolve));
+    const parse = async (
       file: { buffer: Buffer; originalname: string } | undefined,
       kind:
         | 'gstrReportPacked'
@@ -144,18 +146,22 @@ export class MyntraImportService {
         | 'gstrReportRto'
         | 'gstrReportRt'
         | 'mDirectReturns',
-    ) => (file ? this.parser.parseMyntraWorkbook(file.buffer, kind) : empty);
+    ) => {
+      if (!file) return empty;
+      await yieldToEventLoop();
+      return this.parser.parseMyntraWorkbook(file.buffer, kind);
+    };
 
     return {
-      gstrReportPacked: parse(files.gstrReportPackedFile, 'gstrReportPacked'),
-      mDirectOrders: parse(files.mDirectOrdersReportFile, 'mDirectOrders'),
-      salesRevenueB2c: parse(
+      gstrReportPacked: await parse(files.gstrReportPackedFile, 'gstrReportPacked'),
+      mDirectOrders: await parse(files.mDirectOrdersReportFile, 'mDirectOrders'),
+      salesRevenueB2c: await parse(
         files.salesRevenuePackedB2cFile,
         'salesRevenueB2c',
       ),
-      gstrReportRto: parse(files.gstrReportRtoFile, 'gstrReportRto'),
-      gstrReportRt: parse(files.gstrReportRtFile, 'gstrReportRt'),
-      mDirectReturns: parse(files.mDirectReturnsReportFile, 'mDirectReturns'),
+      gstrReportRto: await parse(files.gstrReportRtoFile, 'gstrReportRto'),
+      gstrReportRt: await parse(files.gstrReportRtFile, 'gstrReportRt'),
+      mDirectReturns: await parse(files.mDirectReturnsReportFile, 'mDirectReturns'),
     };
   }
 

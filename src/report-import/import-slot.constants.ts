@@ -103,6 +103,23 @@ export function inferUploadedSlotsFromFileHash(fileHash: string): string[] {
     return ['amazonReturnReportFile'];
   }
 
+  if (hash.startsWith('amazon|')) {
+    const slots: string[] = [];
+    const b2cHash = hashSegmentValue(hash, 'b2c:');
+    const b2bHash = hashSegmentValue(hash, 'b2b:');
+    const returnHash = hashSegmentValue(hash, 'return:');
+    if (b2cHash && b2cHash !== 'none') {
+      slots.push('mtrB2cFile');
+    }
+    if (b2bHash && b2bHash !== 'none') {
+      slots.push('mtrB2bFile');
+    }
+    if (returnHash && returnHash !== 'none') {
+      slots.push('amazonReturnReportFile');
+    }
+    return slots;
+  }
+
   if (hash.startsWith('flipkart|')) {
     const slots: string[] = [];
     const salesHash = hashSegmentValue(hash, 'sales:');

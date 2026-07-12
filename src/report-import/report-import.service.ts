@@ -3,6 +3,8 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, PipelineStage, Types } from 'mongoose';
 import { TtlCache, cacheKey } from '../common/ttl-cache';
 import { ListImportedRowsDto } from './dto/list-imported-rows.dto';
+import { ListAnalyticsOrdersDto } from './dto/list-analytics-orders.dto';
+import { ListAnalyticsPaymentsDto } from './dto/list-analytics-payments.dto';
 import {
   ImportUpload,
   ImportUploadDocument,
@@ -13,6 +15,10 @@ import {
   ImportRowErrorDocument,
 } from './schemas/import-row-error.schema';
 import { Seller, SellerDocument } from '../sellers/schemas/seller.schema';
+import {
+  applyPaymentFiltersToMongoFilter,
+  HAS_PAYMENT_DATA_EXPR,
+} from './utils/payment-filter.util';
 import { Gst, GstDocument } from '../gsts/schemas/gst.schema';
 import {
   PlatformMarketplace,
@@ -26,6 +32,7 @@ import {
   MARKETPLACE_COMPLETION_SLOTS,
   MARKETPLACE_TRACKED_SLOTS,
 } from './import-slot.constants';
+import { AnalyticsPaymentsService } from './payments/analytics-payments.service';
 
 @Injectable()
 export class ReportImportService {
@@ -48,6 +55,7 @@ export class ReportImportService {
     @InjectModel(PlatformMarketplace.name)
     private readonly platformMarketplaceModel: Model<PlatformMarketplaceDocument>,
     private readonly validationService: ValidationService,
+    private readonly analyticsPaymentsService: AnalyticsPaymentsService,
   ) {}
 
   private async applySellerIdToFilter(
@@ -94,6 +102,10 @@ export class ReportImportService {
       | 'fromDate'
       | 'toDate'
       | 'search'
+      | 'hasPaymentData'
+      | 'paymentDateFrom'
+      | 'paymentDateTo'
+      | 'paymentMode'
     >,
   ) {
     const filter: Record<string, unknown> = {};
@@ -110,6 +122,7 @@ export class ReportImportService {
         (filter.invoiceDate as Record<string, unknown>).$lte = query.toDate;
       }
     }
+    applyPaymentFiltersToMongoFilter(filter, query);
     const search = String(query.search ?? '').trim();
     if (search) {
       const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -172,6 +185,149 @@ export class ReportImportService {
     };
   }
 
+  async listAnalyticsOrders(query: ListAnalyticsOrdersDto) {
+    return this.listImportedRows({
+      ...query,
+      hasPaymentData: undefined,
+      paymentDateFrom: undefined,
+      paymentDateTo: undefined,
+      paymentMode: undefined,
+    });
+  }
+
+  private async buildAnalyticsPaymentsFilter(
+    query: Pick<
+      ListAnalyticsPaymentsDto,
+      | 'sellerId'
+      | 'gstin'
+      | 'marketplace'
+      | 'documentType'
+      | 'fromDate'
+      | 'toDate'
+      | 'paymentDateFrom'
+      | 'paymentDateTo'
+      | 'paymentMode'
+      | 'search'
+    >,
+  ) {
+    const filter = await this.buildImportedRowsFilter({
+      sellerId: query.sellerId,
+      gstin: query.gstin,
+      marketplace: query.marketplace,
+      documentType: query.documentType,
+      fromDate: query.fromDate,
+      toDate: query.toDate,
+      hasPaymentData: 'yes',
+      paymentDateFrom: query.paymentDateFrom,
+      paymentDateTo: query.paymentDateTo,
+      paymentMode: query.paymentMode,
+    });
+
+    const search = String(query.search ?? '').trim();
+    if (search) {
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const searchClause = {
+        $or: [
+          { orderID: { $regex: escaped, $options: 'i' } },
+          { transactionId: { $regex: escaped, $options: 'i' } },
+          { paymentMode: { $regex: escaped, $options: 'i' } },
+          { gstin: { $regex: escaped, $options: 'i' } },
+          { invoiceNo: { $regex: escaped, $options: 'i' } },
+        ],
+      };
+      if (Array.isArray(filter.$and)) {
+        filter.$and.push(searchClause);
+      } else {
+        filter.$and = [searchClause];
+      }
+    }
+
+    return filter;
+  }
+
+  async listAnalyticsPayments(query: ListAnalyticsPaymentsDto) {
+    return this.analyticsPaymentsService.listPayments(query);
+  }
+
+  async exportAnalyticsOrdersCsv(
+    query: ListAnalyticsOrdersDto,
+  ): Promise<{ buffer: Buffer; filename: string; rowCount: number }> {
+    const filter = await this.buildImportedRowsFilter({
+      ...query,
+      hasPaymentData: undefined,
+      paymentDateFrom: undefined,
+      paymentDateTo: undefined,
+      paymentMode: undefined,
+    });
+    const sortBy = query.sortBy ?? 'invoiceDate';
+    const sortOrder = query.sortOrder === 'asc' ? 1 : -1;
+    const maxRows = 100_000;
+
+    const rows = await this.rowModel
+      .find(filter)
+      .sort({ [sortBy]: sortOrder })
+      .limit(maxRows)
+      .lean()
+      .exec();
+
+    const headers = [
+      'GSTIN',
+      'Document Type',
+      'Order ID',
+      'Invoice Date',
+      'Invoice No',
+      'Invoice Amount',
+      'Taxable Amount',
+      'IGST',
+      'CGST',
+      'SGST',
+      'Quantity',
+      'SKU',
+      'Marketplace',
+      'State',
+    ];
+
+    const escapeCsv = (value: unknown) => {
+      const text = value === null || value === undefined ? '' : String(value);
+      return `"${text.replace(/"/g, '""')}"`;
+    };
+
+    const lines = rows.map((row) =>
+      [
+        row.gstin,
+        row.documentType,
+        row.orderID,
+        row.invoiceDate,
+        row.invoiceNo,
+        row.invoiceAmount,
+        row.taxableAmount,
+        row.igstAmount,
+        row.cgstAmount,
+        row.sgstAmount,
+        row.quantity,
+        row.skuID,
+        row.marketplace,
+        row.stateName,
+      ]
+        .map(escapeCsv)
+        .join(','),
+    );
+
+    const csv = [headers.join(','), ...lines].join('\n');
+    const stamp = new Date().toISOString().slice(0, 10);
+    return {
+      buffer: Buffer.from(csv, 'utf-8'),
+      filename: `analytics-orders-${stamp}.csv`,
+      rowCount: rows.length,
+    };
+  }
+
+  async exportAnalyticsPaymentsCsv(
+    query: ListAnalyticsPaymentsDto,
+  ): Promise<{ buffer: Buffer; filename: string; rowCount: number }> {
+    return this.analyticsPaymentsService.exportCsv(query);
+  }
+
   async exportImportedRowsCsv(
     query: ListImportedRowsDto,
   ): Promise<{ buffer: Buffer; filename: string; rowCount: number }> {
@@ -205,6 +361,9 @@ export class ReportImportService {
       'FR Refunded Date',
       'Marketplace',
       'Payment Mode',
+      'Payment Date',
+      'Final Settlement',
+      'Transaction ID',
       'State',
     ];
 
@@ -232,6 +391,9 @@ export class ReportImportService {
         row.frRefundedDate,
         row.marketplace,
         row.paymentMode,
+        row.paymentDate,
+        row.finalSettlementAmount,
+        row.transactionId,
         row.stateName,
       ]
         .map(escapeCsv)
@@ -251,39 +413,101 @@ export class ReportImportService {
   async getDocumentTypeSummary(
     query: Pick<
       ListImportedRowsDto,
-      'sellerId' | 'gstin' | 'marketplace' | 'fromDate' | 'toDate'
+      | 'sellerId'
+      | 'gstin'
+      | 'marketplace'
+      | 'fromDate'
+      | 'toDate'
+      | 'hasPaymentData'
+      | 'paymentDateFrom'
+      | 'paymentDateTo'
+      | 'paymentMode'
     >,
   ) {
-    const filter: Record<string, unknown> = {};
-    await this.applySellerIdToFilter(filter, query.sellerId);
-    if (query.gstin) filter.gstin = query.gstin.trim().toUpperCase();
-    if (query.marketplace) filter.marketplace = query.marketplace;
-    if (query.fromDate || query.toDate) {
-      filter.invoiceDate = {};
-      if (query.fromDate) {
-        (filter.invoiceDate as Record<string, unknown>).$gte = query.fromDate;
-      }
-      if (query.toDate) {
-        (filter.invoiceDate as Record<string, unknown>).$lte = query.toDate;
-      }
-    }
-    this.applyMeeshoImportedDataVisibilityFilter(filter, query.marketplace);
+    const filter = await this.buildImportedRowsFilter({
+      ...query,
+      documentType: undefined,
+      search: undefined,
+    });
 
-    const groups = await this.rowModel
+    const facetResult = await this.rowModel
       .aggregate<{
-        _id: string;
-        count: number;
+        byDocumentType: Array<{ _id: string; count: number }>;
+        paymentStats: Array<{
+          rowsWithPaymentData: number;
+          rowsMissingPaymentData: number;
+          totalSettlementAmount: number;
+          rowsWithPaymentMode: number;
+        }>;
       }>([
         { $match: filter },
         {
-          $group: {
-            _id: { $ifNull: ['$documentType', 'Unknown'] },
-            count: { $sum: 1 },
+          $facet: {
+            byDocumentType: [
+              {
+                $group: {
+                  _id: { $ifNull: ['$documentType', 'Unknown'] },
+                  count: { $sum: 1 },
+                },
+              },
+              { $sort: { count: -1, _id: 1 } },
+            ],
+            paymentStats: [
+              {
+                $group: {
+                  _id: null,
+                  rowsWithPaymentData: {
+                    $sum: {
+                      $cond: [HAS_PAYMENT_DATA_EXPR, 1, 0],
+                    },
+                  },
+                  rowsMissingPaymentData: {
+                    $sum: {
+                      $cond: [HAS_PAYMENT_DATA_EXPR, 0, 1],
+                    },
+                  },
+                  totalSettlementAmount: {
+                    $sum: { $ifNull: ['$finalSettlementAmount', 0] },
+                  },
+                  rowsWithPaymentMode: {
+                    $sum: {
+                      $cond: [
+                        {
+                          $gt: [
+                            {
+                              $strLenCP: {
+                                $trim: {
+                                  input: { $ifNull: ['$paymentMode', ''] },
+                                },
+                              },
+                            },
+                            0,
+                          ],
+                        },
+                        1,
+                        0,
+                      ],
+                    },
+                  },
+                },
+              },
+            ],
           },
         },
-        { $sort: { count: -1, _id: 1 } },
       ])
       .exec();
+
+    const facet = facetResult[0] ?? {
+      byDocumentType: [],
+      paymentStats: [],
+    };
+    const groups = facet.byDocumentType ?? [];
+    const paymentStats = facet.paymentStats[0] ?? {
+      rowsWithPaymentData: 0,
+      rowsMissingPaymentData: 0,
+      totalSettlementAmount: 0,
+      rowsWithPaymentMode: 0,
+    };
 
     const getCount = (matcher: (documentType: string) => boolean) =>
       groups
@@ -300,8 +524,60 @@ export class ReportImportService {
           documentType: item._id || 'UNKNOWN',
           count: item.count,
         })),
+        paymentOverview: {
+          rowsWithPaymentData: Number(paymentStats.rowsWithPaymentData ?? 0),
+          rowsMissingPaymentData: Number(paymentStats.rowsMissingPaymentData ?? 0),
+          totalSettlementAmount: Number(paymentStats.totalSettlementAmount ?? 0),
+          rowsWithPaymentMode: Number(paymentStats.rowsWithPaymentMode ?? 0),
+        },
       },
     };
+  }
+
+  async getAnalyticsOrdersSummary(
+    query: Pick<
+      ListAnalyticsOrdersDto,
+      'sellerId' | 'gstin' | 'marketplace' | 'fromDate' | 'toDate'
+    >,
+  ) {
+    const result = await this.getDocumentTypeSummary({
+      ...query,
+      hasPaymentData: undefined,
+      paymentDateFrom: undefined,
+      paymentDateTo: undefined,
+      paymentMode: undefined,
+    });
+    const data = result.data as {
+      totalSalesCount: number;
+      totalReturnsCount: number;
+      totalCancelledCount: number;
+      byDocumentType: Array<{ documentType: string; count: number }>;
+    };
+    return {
+      success: true,
+      data: {
+        totalSalesCount: data.totalSalesCount,
+        totalReturnsCount: data.totalReturnsCount,
+        totalCancelledCount: data.totalCancelledCount,
+        byDocumentType: data.byDocumentType,
+      },
+    };
+  }
+
+  async getAnalyticsPaymentsSummary(
+    query: Pick<
+      ListAnalyticsPaymentsDto,
+      | 'sellerId'
+      | 'gstin'
+      | 'marketplace'
+      | 'fromDate'
+      | 'toDate'
+      | 'paymentDateFrom'
+      | 'paymentDateTo'
+      | 'paymentMode'
+    >,
+  ) {
+    return this.analyticsPaymentsService.getSummary(query);
   }
 
   async getMarketplaceDocumentSummary(

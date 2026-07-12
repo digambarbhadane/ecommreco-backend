@@ -161,6 +161,10 @@ export class ImportRow {
   @Prop({ index: true })
   amazonReturnSubType?: string;
 
+  /** Amazon MTR B2B vs B2C source file for return classification. */
+  @Prop({ index: true })
+  amazonMtrSource?: 'b2b' | 'b2c';
+
   /** Myntra — SALE or RETURN (parallel to documentType for reconciliation). */
   @Prop({ index: true })
   myntraTransactionType?: 'SALE' | 'RETURN';

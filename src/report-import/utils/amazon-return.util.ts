@@ -1,10 +1,12 @@
 import type { ParsedSheetRow } from '../services/mapping.service';
+import { isAmazonCountableReturnTransaction } from './amazon-analytics.util';
 
 export type AmazonReturnSubType = 'customer_return' | 'rto' | 'na';
 
 export type AmazonReturnDetails = {
   typeOfReturn?: string;
   amazonReturnSubType?: AmazonReturnSubType;
+  returnReason?: string;
 };
 
 export function normalizeAmazonOrderId(value: unknown): string {
@@ -130,5 +132,36 @@ export function applyAmazonReturnDetailsToRow<
     ...(details.amazonReturnSubType
       ? { amazonReturnSubType: details.amazonReturnSubType }
       : {}),
+    ...(details.returnReason ? { returnReason: details.returnReason } : {}),
+  };
+}
+
+/** Stamp B2C Refund/Return rows so summary counts them even without a return report match. */
+export function applyAmazonReturnTransactionDefaults<
+  T extends AmazonReturnDetails & {
+    documentType?: string;
+    voucherType?: string;
+    amazonMtrSource?: 'b2b' | 'b2c';
+    customerGstNo?: string;
+  },
+>(row: T): T {
+  if (
+    !isAmazonCountableReturnTransaction(
+      row.documentType,
+      row.voucherType,
+      row.amazonMtrSource,
+      row.customerGstNo,
+    )
+  ) {
+    return row;
+  }
+  if (row.amazonReturnSubType) {
+    return row;
+  }
+  const label = String(row.documentType ?? row.voucherType ?? 'Refund').trim();
+  return {
+    ...row,
+    typeOfReturn: row.typeOfReturn || label || 'Refund',
+    amazonReturnSubType: 'na',
   };
 }

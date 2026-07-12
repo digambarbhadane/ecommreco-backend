@@ -4,9 +4,11 @@ import { amazonImportMapping } from '../config/importMappings/amazon.mapping';
 import { flipkartImportMapping } from '../config/importMappings/flipkart.mapping';
 import {
   enrichRowsWithForwardFilledGstin,
+  extractGstinFromRow,
   extractGstinsFromRows,
   headerMatchesAnyExcelColumn,
   parseGstinFromCell,
+  resolvePrimaryGstHeaderKey,
 } from '../config/importMappings/gst-column.util';
 import { ParsedSheetRow } from './mapping.service';
 import {
@@ -266,10 +268,8 @@ export class FileParserService {
       'Cash Back Report',
     );
     const gstColumns = flipkartImportMapping.gstin.excelColumns;
-    // parseSheetRowsFast uses sheet_to_json (single O(n) pass) instead of
-    // sheetToMatrix + per-row getCellValue, cutting parse time by ~10-20x.
     const salesRows = enrichRowsWithForwardFilledGstin(
-      this.parseSheetRowsFast(
+      this.parseFlipkartSheetRows(
         sales,
         'Sales Report',
         salesHeaderRowIndex,
@@ -279,7 +279,7 @@ export class FileParserService {
       this.extractHeaders(sales, salesHeaderRowIndex, { gstColumns }),
     );
     const cashbackRows = enrichRowsWithForwardFilledGstin(
-      this.parseSheetRowsFast(
+      this.parseFlipkartSheetRows(
         cashback,
         'Cash Back Report',
         cashbackHeaderRowIndex,
@@ -304,13 +304,25 @@ export class FileParserService {
     const cashbackHeaders = this.extractHeaders(cashback, cashbackHeaderRowIndex, {
       gstColumns,
     });
+    const salesRowsHydrated = this.attachDetectedGstinToRows(
+      salesRows,
+      salesHeaders,
+      gstColumns,
+      salesGstins,
+    );
+    const cashbackRowsHydrated = this.attachDetectedGstinToRows(
+      cashbackRows,
+      cashbackHeaders,
+      gstColumns,
+      cashbackGstins,
+    );
     const gstinFromParsedRows = new Set([
       ...salesGstins,
       ...cashbackGstins,
-      ...extractGstinsFromRows(salesRows, flipkartImportMapping, salesHeaders)
+      ...extractGstinsFromRows(salesRowsHydrated, flipkartImportMapping, salesHeaders)
         .values,
       ...extractGstinsFromRows(
-        cashbackRows,
+        cashbackRowsHydrated,
         flipkartImportMapping,
         cashbackHeaders,
       ).values,
@@ -318,8 +330,8 @@ export class FileParserService {
     const gstinValues = [...gstinFromParsedRows];
 
     return {
-      salesRows,
-      cashbackRows,
+      salesRows: salesRowsHydrated,
+      cashbackRows: cashbackRowsHydrated,
       headers: {
         'Sales Report': salesHeaders,
         'Cash Back Report': cashbackHeaders,
@@ -482,13 +494,14 @@ export class FileParserService {
     headerRowIndex: number,
     gstColumnsForDataStart: string[] = [],
   ): ParsedSheetRow[] {
-    const range = this.getSheetRange(sheet);
-    const estimatedRows = Math.max(0, range.e.r - range.s.r);
-    if (estimatedRows > 2500) {
-      const fast = this.parseSheetRowsFast(sheet, sheetName, headerRowIndex);
-      if (fast.length > 0) {
-        return fast;
-      }
+    const fast = this.parseSheetRowsFast(
+      sheet,
+      sheetName,
+      headerRowIndex,
+      gstColumnsForDataStart,
+    );
+    if (fast.length > 0) {
+      return fast;
     }
     return this.parseSheetRows(
       sheet,
@@ -496,6 +509,25 @@ export class FileParserService {
       headerRowIndex,
       gstColumnsForDataStart,
     );
+  }
+
+  /** Flipkart sheets: fast parse first, then cell-by-cell fallback when zero rows. */
+  private parseFlipkartSheetRows(
+    sheet: XLSX.WorkSheet,
+    sheetName: 'Sales Report' | 'Cash Back Report',
+    headerRowIndex: number,
+    gstColumns: string[],
+  ): ParsedSheetRow[] {
+    const fast = this.parseSheetRowsFast(
+      sheet,
+      sheetName,
+      headerRowIndex,
+      gstColumns,
+    );
+    if (fast.length > 0) {
+      return fast;
+    }
+    return this.parseSheetRows(sheet, sheetName, headerRowIndex, gstColumns);
   }
 
   private resolveHeaders(
@@ -547,22 +579,60 @@ export class FileParserService {
   }
 
   private getSheetRange(sheet: XLSX.WorkSheet): XLSX.Range {
-    // Fast path: every worksheet written by XLSX.read has !ref set.
-    // Decoding it is O(1); the old key-scan was O(total_cells) and was called
-    // once per row in parseSheetRows, causing 20B+ iterations on large files.
-    if (sheet['!ref']) {
-      return XLSX.utils.decode_range(sheet['!ref']);
+    type CachedSheet = XLSX.WorkSheet & { __ecommrecoRange?: XLSX.Range };
+    const cached = (sheet as CachedSheet).__ecommrecoRange;
+    if (cached) {
+      return cached;
     }
-    // Fallback for worksheets built in memory without !ref (extremely rare).
-    let minR = 0, minC = 0, maxR = 0, maxC = 0;
-    let found = false;
+
+    // Flipkart exports sometimes ship a short !ref (header row only) while data
+    // cells exist outside it. Expand once per sheet and cache the result.
+    let minR = Number.POSITIVE_INFINITY;
+    let minC = Number.POSITIVE_INFINITY;
+    let maxR = -1;
+    let maxC = -1;
+
+    const absorb = (r: number, c: number) => {
+      minR = Math.min(minR, r);
+      minC = Math.min(minC, c);
+      maxR = Math.max(maxR, r);
+      maxC = Math.max(maxC, c);
+    };
+
+    if (sheet['!ref']) {
+      const refRange = XLSX.utils.decode_range(sheet['!ref']);
+      absorb(refRange.s.r, refRange.s.c);
+      absorb(refRange.e.r, refRange.e.c);
+    }
+
     for (const key of Object.keys(sheet)) {
       if (key[0] === '!') continue;
       const { r, c } = XLSX.utils.decode_cell(key);
-      if (!found) { minR = r; minC = c; maxR = r; maxC = c; found = true; }
-      else { minR = Math.min(minR, r); minC = Math.min(minC, c); maxR = Math.max(maxR, r); maxC = Math.max(maxC, c); }
+      absorb(r, c);
     }
-    return found ? { s: { r: minR, c: minC }, e: { r: maxR, c: maxC } } : { s: { r: 0, c: 0 }, e: { r: 0, c: 0 } };
+
+    const dense = (sheet as XLSX.WorkSheet & { '!data'?: unknown[][] })['!data'];
+    if (dense?.length) {
+      for (let r = 0; r < dense.length; r += 1) {
+        const row = dense[r];
+        if (!row?.length) continue;
+        for (let c = 0; c < row.length; c += 1) {
+          const cell = row[c];
+          if (cell === null || cell === undefined || String(cell).trim() === '') {
+            continue;
+          }
+          absorb(r, c);
+        }
+      }
+    }
+
+    const range: XLSX.Range =
+      maxR >= 0
+        ? { s: { r: minR, c: minC }, e: { r: maxR, c: maxC } }
+        : { s: { r: 0, c: 0 }, e: { r: 0, c: 0 } };
+
+    (sheet as CachedSheet).__ecommrecoRange = range;
+    return range;
   }
 
   private toAbsoluteRow(sheet: XLSX.WorkSheet, matrixRowIndex: number): number {
@@ -665,6 +735,26 @@ export class FileParserService {
     return parsed;
   }
 
+  private attachDetectedGstinToRows(
+    rows: ParsedSheetRow[],
+    fileHeaders: string[],
+    gstColumns: string[],
+    detectedGstins: string[],
+  ): ParsedSheetRow[] {
+    if (!rows.length || !detectedGstins.length) return rows;
+    const gstKey = resolvePrimaryGstHeaderKey(fileHeaders, gstColumns);
+    if (!gstKey) return rows;
+    const fallbackGstin =
+      detectedGstins.map((item) => parseGstinFromCell(item)).find(Boolean) ??
+      undefined;
+    if (!fallbackGstin) return rows;
+
+    return rows.map((row) => {
+      if (extractGstinFromRow(row, gstColumns)) return row;
+      return { ...row, [gstKey]: fallbackGstin };
+    });
+  }
+
   private findFlipkartSheet(
     workbook: XLSX.WorkBook,
     aliases: string[],
@@ -717,8 +807,13 @@ export class FileParserService {
     if (cell.v != null) {
       if (typeof cell.v === 'number') {
         const asText = String(cell.v);
-        if (/E[+-]?/i.test(asText)) return null;
+        if (/E[+-]?/i.test(asText)) {
+          return cell.w != null && String(cell.w).trim() !== '' ? cell.w : null;
+        }
         return asText;
+      }
+      if (typeof cell.v === 'string') {
+        return cell.v;
       }
       return cell.v;
     }
@@ -766,6 +861,7 @@ export class FileParserService {
     headerRowIndex: number,
     gstColumnsForDataStart: string[] = [],
   ): ParsedSheetRow[] {
+    const range = this.getSheetRange(sheet);
     // blankrows: true keeps matrix indices in sync with the headerRowIndex that
     // detectHeaderRowIndex computed (which also counts blank rows). Without this,
     // files that have blank rows before the header would start data extraction at
@@ -793,10 +889,50 @@ export class FileParserService {
       subHeaderRow,
       gstColumns: gstColumnsForDataStart,
     });
+    if (gstColumnsForDataStart.length) {
+      const gstColIndices = this.resolveGstColumnIndicesFromSheet(
+        sheet,
+        absoluteHeaderRow,
+        gstColumnsForDataStart,
+      );
+      const primaryLabel =
+        resolvePrimaryGstHeaderKey(
+          headerColumns.map((item) => item.label),
+          gstColumnsForDataStart,
+        ) ?? 'Seller GSTIN';
+      for (const col of gstColIndices) {
+        if (!headerColumns.some((item) => item.col === col)) {
+          headerColumns.unshift({ label: primaryLabel, col });
+        }
+      }
+    }
     if (!headerColumns.length) {
       return [];
     }
     const parsed: ParsedSheetRow[] = [];
+
+    const readMatrixCell = (
+      cells: unknown[] | undefined,
+      absoluteRow: number,
+      absoluteCol: number,
+    ): unknown => {
+      const matrixCol = absoluteCol - range.s.c;
+      if (
+        Array.isArray(cells) &&
+        matrixCol >= 0 &&
+        matrixCol < cells.length
+      ) {
+        const fromMatrix = cells[matrixCol];
+        if (
+          fromMatrix !== null &&
+          fromMatrix !== undefined &&
+          String(fromMatrix).trim().length > 0
+        ) {
+          return fromMatrix;
+        }
+      }
+      return this.getCellValue(sheet, absoluteRow, absoluteCol);
+    };
 
     for (
       let matrixRowIndex = dataStartMatrixIndex;
@@ -804,15 +940,24 @@ export class FileParserService {
       matrixRowIndex += 1
     ) {
       const absoluteRow = this.toAbsoluteRow(sheet, matrixRowIndex);
+      const cells = matrixRows[matrixRowIndex];
 
-      const hasData = headerColumns.some(({ col }) => {
-        const value = this.getCellValue(sheet, absoluteRow, col);
-        return (
-          value !== null &&
-          value !== undefined &&
-          String(value).trim().length > 0
-        );
-      });
+      const hasData =
+        headerColumns.some(({ col }) => {
+          const value = readMatrixCell(cells, absoluteRow, col);
+          return (
+            value !== null &&
+            value !== undefined &&
+            String(value).trim().length > 0
+          );
+        }) ||
+        (Array.isArray(cells) &&
+          cells.some(
+            (cell) =>
+              cell !== null &&
+              cell !== undefined &&
+              String(cell).trim().length > 0,
+          ));
       if (!hasData) continue;
 
       const row: ParsedSheetRow = {
@@ -820,7 +965,7 @@ export class FileParserService {
         __rowNumber: absoluteHeaderRow + (matrixRowIndex - headerRowIndex) + 1,
       };
       headerColumns.forEach(({ label, col }) => {
-        row[label] = this.getCellValue(sheet, absoluteRow, col) ?? null;
+        row[label] = readMatrixCell(cells, absoluteRow, col) ?? null;
       });
       parsed.push(row);
     }
@@ -851,10 +996,9 @@ export class FileParserService {
     const range = this.getSheetRange(sheet);
     if (range.e.r < range.s.r) return [];
 
-    // Only preview the first few rows to determine where data rows start.
     const previewForStartRow = this.sheetPreviewMatrix(sheet, headerRowIndex + 4);
     const absoluteHeaderRow = this.toAbsoluteRow(sheet, headerRowIndex);
-    const colIndex = this.resolveGstColumnIndexFromSheet(
+    const colIndices = this.resolveGstColumnIndicesFromSheet(
       sheet,
       absoluteHeaderRow,
       excelColumns,
@@ -867,13 +1011,9 @@ export class FileParserService {
     );
     const dataStartAbsolute = this.toAbsoluteRow(sheet, dataStartMatrixRow);
 
-    if (colIndex >= 0) {
+    for (const colIndex of colIndices) {
       let lastGstin = '';
-      for (
-        let row = dataStartAbsolute - 1;
-        row >= absoluteHeaderRow;
-        row -= 1
-      ) {
+      for (let row = dataStartAbsolute - 1; row >= absoluteHeaderRow; row -= 1) {
         const seed = parseGstinFromCell(this.getCellValue(sheet, row, colIndex));
         if (seed) {
           lastGstin = seed;
@@ -921,12 +1061,12 @@ export class FileParserService {
     return [...values];
   }
 
-  /** Resolve GST column using actual sheet coordinates (avoids sparse-array index drift). */
-  private resolveGstColumnIndexFromSheet(
+  /** Resolve all GST columns using actual sheet coordinates (avoids sparse-array index drift). */
+  private resolveGstColumnIndicesFromSheet(
     sheet: XLSX.WorkSheet,
     absoluteHeaderRow: number,
     excelColumns: string[],
-  ): number {
+  ): number[] {
     const range = this.getSheetRange(sheet);
     const rowsToScan = [
       absoluteHeaderRow,
@@ -935,7 +1075,8 @@ export class FileParserService {
       absoluteHeaderRow + 2,
     ].filter((row) => row >= range.s.r && row <= range.e.r);
 
-    let fallbackCol = -1;
+    const sellerCols = new Set<number>();
+    const fallbackCols = new Set<number>();
 
     for (const rowIndex of rowsToScan) {
       for (let col = range.s.c; col <= range.e.c; col += 1) {
@@ -945,14 +1086,30 @@ export class FileParserService {
 
         const norm = normalizeHeader(label);
         if (norm === 'seller gstin' || norm.includes('seller gstin')) {
-          return col;
-        }
-        if (fallbackCol < 0) {
-          fallbackCol = col;
+          sellerCols.add(col);
+        } else {
+          fallbackCols.add(col);
         }
       }
     }
-    return fallbackCol;
+
+    if (sellerCols.size) return [...sellerCols];
+    if (fallbackCols.size) return [...fallbackCols];
+    return [];
+  }
+
+  /** @deprecated Use resolveGstColumnIndicesFromSheet */
+  private resolveGstColumnIndexFromSheet(
+    sheet: XLSX.WorkSheet,
+    absoluteHeaderRow: number,
+    excelColumns: string[],
+  ): number {
+    const cols = this.resolveGstColumnIndicesFromSheet(
+      sheet,
+      absoluteHeaderRow,
+      excelColumns,
+    );
+    return cols[0] ?? -1;
   }
 
   private resolveDataStartRow(
@@ -986,9 +1143,15 @@ export class FileParserService {
           norm === 'sku'
         );
       }).length;
-      const looksLikeHeader =
-        nonEmpty.length > 0 && headerLikeCount >= Math.min(3, nonEmpty.length);
+      const normalizedCells = nonEmpty.map((cell) =>
+        normalizeHeader(String(cell ?? '')),
+      );
       const hasGstinValue = row.some((cell) => !!parseGstinFromCell(cell));
+      const looksLikeHeader =
+        nonEmpty.length > 0 &&
+        headerLikeCount >= Math.min(3, nonEmpty.length) &&
+        rowLooksLikeHeaderRow(normalizedCells) &&
+        !hasGstinValue;
       if (looksLikeHeader && !hasGstinValue) {
         lastHeaderRow = rowIndex;
         continue;
@@ -1080,6 +1243,7 @@ export class FileParserService {
     for (let i = 0; i < scanLimit; i += 1) {
       const row = matrix[i];
       if (!Array.isArray(row)) continue;
+      if (row.some((cell) => !!parseGstinFromCell(cell))) continue;
       const normalizedCells = row
         .map((item) =>
           item === null || item === undefined
@@ -1088,6 +1252,7 @@ export class FileParserService {
         )
         .filter((item) => item.length > 0);
       if (!normalizedCells.length) continue;
+      if (!rowLooksLikeHeaderRow(normalizedCells)) continue;
 
       const score = scoreRow(normalizedCells, true);
       if (score > bestScore) {
@@ -1100,6 +1265,7 @@ export class FileParserService {
       for (let i = 0; i < scanLimit; i += 1) {
         const row = matrix[i];
         if (!Array.isArray(row)) continue;
+        if (row.some((cell) => !!parseGstinFromCell(cell))) continue;
         const normalizedCells = row
           .map((item) =>
             item === null || item === undefined
@@ -1108,6 +1274,7 @@ export class FileParserService {
           )
           .filter((item) => item.length > 0);
         if (!normalizedCells.length) continue;
+        if (!rowLooksLikeHeaderRow(normalizedCells)) continue;
         const score = scoreRow(normalizedCells, false);
         if (score > bestScore) {
           bestScore = score;
@@ -1348,18 +1515,35 @@ export class FileParserService {
 
   private isAmazonReturnSheetName(sheetName: string): boolean {
     const normalized = normalizeHeader(sheetName);
-    return AMAZON_RETURN_SHEET_NAMES.some(
-      (target) => normalizeHeader(target) === normalized,
-    );
+    return AMAZON_RETURN_SHEET_NAMES.some((target) => {
+      const alias = normalizeHeader(target);
+      return (
+        normalized === alias ||
+        normalized.includes(alias) ||
+        alias.includes(normalized)
+      );
+    });
   }
 
   private scoreAmazonReturnHeaderRow(normalizedCells: string[]): number {
-    return normalizedCells.reduce((score, cell) => {
-      if (AMAZON_RETURN_HEADER_ALIASES.some((alias) => cell.includes(alias))) {
-        return score + 1;
+    let score = 0;
+    let hasReturnType = false;
+    for (const cell of normalizedCells) {
+      if (
+        cell.includes('return type') ||
+        cell.includes('type of return') ||
+        cell.includes('return_type') ||
+        cell.includes('type_of_return')
+      ) {
+        hasReturnType = true;
+        score += 4;
+      } else if (
+        AMAZON_RETURN_HEADER_ALIASES.some((alias) => cell.includes(alias))
+      ) {
+        score += 1;
       }
-      return score;
-    }, 0);
+    }
+    return hasReturnType ? score : 0;
   }
 
   private detectAmazonReturnHeaderRowIndex(sheet: XLSX.WorkSheet): number {

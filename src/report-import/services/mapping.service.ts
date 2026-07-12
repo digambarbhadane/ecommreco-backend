@@ -85,6 +85,8 @@ export type NormalizedImportRow = {
   meeshoIsPreviousMonthReturn?: boolean;
   meeshoReturnSubType?: 'cancellation' | 'rto' | 'customer_return' | 'na';
   amazonReturnSubType?: 'customer_return' | 'rto' | 'na';
+  /** Amazon MTR file source — B2B Cancel rows are excluded from return totals. */
+  amazonMtrSource?: 'b2b' | 'b2c';
   myntraTransactionType?: 'SALE' | 'RETURN';
   myntraReturnMatchStatus?:
     | 'MATCHED_CURRENT_MONTH'
@@ -1179,28 +1181,35 @@ export class MappingService {
 
   mapAmazonReturnFields(
     returnRow: ParsedSheetRow,
-  ): Pick<NormalizedImportRow, AmazonReturnFieldKey | 'amazonReturnSubType'> {
+  ): Pick<
+    NormalizedImportRow,
+    AmazonReturnFieldKey | 'amazonReturnSubType'
+  > {
     let returnType = '';
+    let returnReason = '';
     for (const mapping of amazonReturnFieldMappings) {
       const raw = getRowCell(returnRow, ...mapping.source);
       const value = asString(raw);
-      if (value !== undefined) {
-        returnType = value;
-      }
+      if (!value) continue;
+      if (mapping.target === 'typeOfReturn') returnType = value;
+      if (mapping.target === 'returnReason') returnReason = value;
     }
 
     const orderId = asString(
       getRowCell(returnRow, 'Order Id', 'Order ID', 'order_id', 'Order Number'),
     ) ?? '';
 
-    return resolveAmazonReturnDetails(returnType, orderId);
+    return {
+      ...resolveAmazonReturnDetails(returnType, orderId),
+      ...(returnReason ? { returnReason } : {}),
+    };
   }
 
   enrichAmazonFromReturnReport(
     mapped: NormalizedImportRow,
     returnDetails?: Pick<
       NormalizedImportRow,
-      'typeOfReturn' | 'amazonReturnSubType'
+      'typeOfReturn' | 'amazonReturnSubType' | 'returnReason'
     > | null,
   ): NormalizedImportRow {
     if (!returnDetails) return mapped;
@@ -1211,6 +1220,9 @@ export class MappingService {
         : {}),
       ...(returnDetails.amazonReturnSubType
         ? { amazonReturnSubType: returnDetails.amazonReturnSubType }
+        : {}),
+      ...(returnDetails.returnReason
+        ? { returnReason: returnDetails.returnReason }
         : {}),
     };
   }

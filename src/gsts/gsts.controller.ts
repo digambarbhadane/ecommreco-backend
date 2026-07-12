@@ -127,7 +127,19 @@ export class GstsController {
   @Delete(':id')
   @ApiOperation({ summary: 'Delete GST entry' })
   @Roles('seller', 'super_admin')
-  remove(@Param('id') id: string) {
-    return this.gstsService.remove(id);
+  remove(
+    @Param('id') id: string,
+    @Query('unlinkMarketplaces') unlinkMarketplaces?: string,
+    @Req() req?: RequestWithUser,
+  ) {
+    const shouldUnlink =
+      unlinkMarketplaces === 'true' ||
+      unlinkMarketplaces === '1' ||
+      unlinkMarketplaces === 'yes';
+    return this.gstsService.remove(id, {
+      unlinkMarketplaces: shouldUnlink,
+      requesterId: req?.user?.id,
+      requesterRole: req?.user?.role,
+    });
   }
 }

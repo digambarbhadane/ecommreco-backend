@@ -32,6 +32,7 @@ import {
   enrichRowsWithForwardFilledGstin,
   filterRowsBySelectedGstin,
   headerMatchesExcelColumn,
+  hydrateFlipkartRowsWithProfileGstin,
 } from '../config/importMappings/gst-column.util';
 import { flipkartImportMapping } from '../config/importMappings/flipkart.mapping';
 import { ParsedSheetRow } from './mapping.service';
@@ -287,13 +288,23 @@ export class ValidationService {
       ...parsed.headers['Sales Report'],
       ...parsed.headers['Cash Back Report'],
     ];
-    const enrichedSales = enrichRowsWithForwardFilledGstin(
+    const salesHydrated = hydrateFlipkartRowsWithProfileGstin(
       parsed.salesRows,
+      parsed.headers['Sales Report'],
+      expectedGstin,
+    );
+    const cashbackHydrated = hydrateFlipkartRowsWithProfileGstin(
+      parsed.cashbackRows,
+      parsed.headers['Cash Back Report'],
+      expectedGstin,
+    );
+    const enrichedSales = enrichRowsWithForwardFilledGstin(
+      salesHydrated,
       flipkartImportMapping,
       parsed.headers['Sales Report'],
     );
     const enrichedCashback = enrichRowsWithForwardFilledGstin(
-      parsed.cashbackRows,
+      cashbackHydrated,
       flipkartImportMapping,
       parsed.headers['Cash Back Report'],
     );
@@ -316,7 +327,7 @@ export class ValidationService {
       expectedGstin,
       mapping: flipkartImportMapping,
       fileHeaders,
-      fallbackGstins: parsed.gstinValues,
+      fallbackGstins: [...parsed.gstinValues, expectedGstin],
       matchedRowCount: sales.matchedCount + cashback.matchedCount,
       fileGstins,
     });

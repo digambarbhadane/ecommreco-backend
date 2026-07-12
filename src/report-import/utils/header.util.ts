@@ -1,6 +1,10 @@
+/** Strip invisible Unicode characters that often appear in Excel exports. */
+export const stripInvisibleChars = (value: string) =>
+  value.replace(/[\u200B-\u200D\uFEFF\u00A0]/g, ' ');
+
 /** Normalize Excel header labels for alias matching (case/space/punctuation insensitive). */
 export const normalizeHeader = (value: string) =>
-  value
+  stripInvisibleChars(value)
     .trim()
     .toLowerCase()
     .replace(/\s*=\s*/g, ' ')

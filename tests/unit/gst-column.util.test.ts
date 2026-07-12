@@ -9,6 +9,7 @@ import {
   headersHaveGstColumn,
   normalizeGstinValue,
   parseGstinFromCell,
+  resolvePrimaryGstHeaderKey,
 } from '../../src/report-import/config/importMappings/gst-column.util';
 import { ParsedSheetRow } from '../../src/report-import/services/mapping.service';
 
@@ -172,6 +173,14 @@ describe('gst-column.util', () => {
         flipkartImportMapping.gstin.excelColumns,
       ),
     ).toBe(true);
+  });
+
+  it('prefers Seller GSTIN header over generic GST NO when both exist', () => {
+    const header = resolvePrimaryGstHeaderKey(
+      ['GST NO', 'Seller GSTIN', 'Order ID'],
+      flipkartImportMapping.gstin.excelColumns,
+    );
+    expect(header).toBe('Seller GSTIN');
   });
 
   it('filters rows to only the selected GSTIN', () => {

@@ -29,6 +29,8 @@ import { AuthGuard } from '@nestjs/passport';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { ListImportedRowsDto } from './dto/list-imported-rows.dto';
+import { ListAnalyticsOrdersDto } from './dto/list-analytics-orders.dto';
+import { ListAnalyticsPaymentsDto } from './dto/list-analytics-payments.dto';
 import { UploadReportDto } from './dto/upload-report.dto';
 import { ReportImportService } from './report-import.service';
 import { UploadService } from './services/upload.service';
@@ -482,6 +484,89 @@ export class ReportImportController {
     );
   }
 
+  @Get('analytics/orders/export')
+  @ApiOperation({
+    summary: 'Export analytics orders CSV',
+    description: 'Order-focused export without payment columns.',
+  })
+  @ApiProduces('text/csv')
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  async exportAnalyticsOrders(@Query() query: ListAnalyticsOrdersDto) {
+    if (!query.sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
+    const result = await this.reportImportService.exportAnalyticsOrdersCsv(query);
+    return new StreamableFile(result.buffer, {
+      type: 'text/csv; charset=utf-8',
+      disposition: `attachment; filename="${result.filename}"`,
+    });
+  }
+
+  @Get('analytics/payments/export')
+  @ApiOperation({
+    summary: 'Export analytics payments CSV',
+    description: 'Payment and settlement export for rows with payment data.',
+  })
+  @ApiProduces('text/csv')
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  async exportAnalyticsPayments(@Query() query: ListAnalyticsPaymentsDto) {
+    if (!query.sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
+    const result =
+      await this.reportImportService.exportAnalyticsPaymentsCsv(query);
+    return new StreamableFile(result.buffer, {
+      type: 'text/csv; charset=utf-8',
+      disposition: `attachment; filename="${result.filename}"`,
+    });
+  }
+
+  @Get('analytics/orders/summary')
+  @ApiOperation({
+    summary: 'Analytics orders summary',
+    description: 'Document-type breakdown for order analytics view.',
+  })
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  analyticsOrdersSummary(@Query() query: ListAnalyticsOrdersDto) {
+    if (!query.sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
+    return this.reportImportService.getAnalyticsOrdersSummary(query);
+  }
+
+  @Get('analytics/payments/summary')
+  @ApiOperation({
+    summary: 'Analytics payments summary',
+    description: 'Settlement totals and payment-mode breakdown.',
+  })
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  analyticsPaymentsSummary(@Query() query: ListAnalyticsPaymentsDto) {
+    if (!query.sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
+    return this.reportImportService.getAnalyticsPaymentsSummary(query);
+  }
+
+  @Get('analytics/orders')
+  @ApiOperation({
+    summary: 'List analytics orders',
+    description: 'Paginated order records without payment-only filtering.',
+  })
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  listAnalyticsOrders(@Query() query: ListAnalyticsOrdersDto) {
+    return this.reportImportService.listAnalyticsOrders(query);
+  }
+
+  @Get('analytics/payments')
+  @ApiOperation({
+    summary: 'List analytics payments',
+    description: 'Paginated payment/settlement records (rows with payment data).',
+  })
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  listAnalyticsPayments(@Query() query: ListAnalyticsPaymentsDto) {
+    return this.reportImportService.listAnalyticsPayments(query);
+  }
+
   @Get('rows/export')
   @ApiOperation({
     summary: 'Export imported rows CSV',
@@ -736,6 +821,16 @@ export class ReportImportController {
       reportMonth,
       marketplaceId,
     });
+  }
+
+  @Get('workflow/upload-overview')
+  @ApiOperation({ summary: 'Seller-wide upload status by GST, month, and marketplace' })
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  workflowUploadOverview(@Query('sellerId') sellerId: string) {
+    if (!sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
+    return this.importWorkflowService.getSellerUploadOverview(sellerId.trim());
   }
 
   @Get('workflow/month-summary')
