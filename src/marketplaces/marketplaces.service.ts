@@ -1,8 +1,10 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -12,9 +14,18 @@ import {
   PlatformMarketplace,
   PlatformMarketplaceDocument,
 } from '../platform-marketplaces/schemas/platform-marketplace.schema';
+import { Seller, SellerDocument } from '../sellers/schemas/seller.schema';
+import { User, UserDocument } from '../users/schemas/user.schema';
+import { rethrowMongoWriteError } from '../common/utils/mongo-errors';
+import {
+  findSellerByIdentifier,
+  getSellerIdAliases,
+  getSellerObjectIdString,
+  resolveSellerIdAliases,
+} from '../common/utils/seller-id.util';
 
 @Injectable()
-export class MarketplacesService {
+export class MarketplacesService implements OnModuleInit {
   private readonly logger = new Logger(MarketplacesService.name);
 
   constructor(
@@ -22,9 +33,43 @@ export class MarketplacesService {
     private readonly marketplaceModel: Model<MarketplaceDocument>,
     @InjectModel(PlatformMarketplace.name)
     private readonly platformMarketplaceModel: Model<PlatformMarketplaceDocument>,
+    @InjectModel(Seller.name)
+    private readonly sellerModel: Model<SellerDocument>,
+    @InjectModel(User.name)
+    private readonly userModel: Model<UserDocument>,
   ) {}
 
+  async onModuleInit() {
+    try {
+      await this.marketplaceModel.collection.dropIndex('sellerId_1_platformMarketplaceId_1');
+      this.logger.log('Dropped legacy marketplace unique index (seller + platform only)');
+    } catch {
+      // Index may not exist on fresh databases.
+    }
+    try {
+      await this.marketplaceModel.syncIndexes();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Marketplace index sync warning: ${message}`);
+    }
+  }
+
   async create(dto: CreateMarketplaceDto) {
+    const seller = await findSellerByIdentifier(
+      this.sellerModel,
+      this.userModel,
+      dto.sellerId,
+    );
+    if (!seller) {
+      throw new NotFoundException({
+        success: false,
+        message: 'Seller not found',
+        errorCode: 'SELLER_NOT_FOUND',
+      });
+    }
+    const sellerId = getSellerObjectIdString(seller);
+    const sellerIdAliases = getSellerIdAliases(seller, dto.sellerId);
+
     const platform = await this.resolvePlatform(dto);
     if (platform.status !== 'active') {
       throw new BadRequestException({
@@ -36,21 +81,22 @@ export class MarketplacesService {
 
     const existing = await this.marketplaceModel
       .findOne({
-        sellerId: dto.sellerId,
+        sellerId: { $in: sellerIdAliases },
         platformMarketplaceId: platform._id,
+        gstId: dto.gstId,
       })
       .lean()
       .exec();
     if (existing) {
       throw new BadRequestException({
         success: false,
-        message: 'Marketplace already connected',
+        message: 'This marketplace is already connected to the selected GST profile',
         errorCode: 'DUPLICATE_MARKETPLACE',
       });
     }
 
     const created = await this.marketplaceModel.create({
-      sellerId: dto.sellerId,
+      sellerId,
       platformMarketplaceId: platform._id,
       gstId: dto.gstId,
       storeName: dto.storeName,
@@ -64,7 +110,7 @@ export class MarketplacesService {
       .exec();
 
     this.logger.log(
-      `Marketplace linked seller=${dto.sellerId} platform=${platform.name}`,
+      `Marketplace linked seller=${sellerId} platform=${platform.name}`,
     );
 
     return {
@@ -78,10 +124,15 @@ export class MarketplacesService {
     limit?: number;
     skip?: number;
   }) {
-    const limit = Math.max(0, params.limit ?? 10);
+    const sellerAliases = await resolveSellerIdAliases(
+      this.sellerModel,
+      this.userModel,
+      params.sellerId,
+    );
+    const limit = Math.max(0, params.limit ?? 500);
     const skip = Math.max(0, params.skip ?? 0);
     const data = await this.marketplaceModel
-      .find({ sellerId: params.sellerId })
+      .find({ sellerId: { $in: sellerAliases } })
       .populate('platformMarketplaceId')
       .sort({ createdAt: -1 })
       .skip(skip)
@@ -89,7 +140,7 @@ export class MarketplacesService {
       .lean()
       .exec();
     const total = await this.marketplaceModel.countDocuments({
-      sellerId: params.sellerId,
+      sellerId: { $in: sellerAliases },
     });
     return {
       success: true,
@@ -100,7 +151,26 @@ export class MarketplacesService {
     };
   }
 
-  async remove(id: string) {
+  async getById(
+    id: string,
+    options?: { requesterId?: string; requesterRole?: string },
+  ) {
+    const link = await this.findOwnedLink(id, options);
+    const populated = await this.marketplaceModel
+      .findById(link._id)
+      .populate('platformMarketplaceId')
+      .lean()
+      .exec();
+    return {
+      success: true,
+      data: this.mapMarketplace(populated),
+    };
+  }
+
+  async remove(
+    id: string,
+    options?: { requesterId?: string; requesterRole?: string },
+  ) {
     if (!Types.ObjectId.isValid(id)) {
       throw new BadRequestException({
         success: false,
@@ -108,10 +178,17 @@ export class MarketplacesService {
         errorCode: 'INVALID_ID',
       });
     }
-    const removed = await this.marketplaceModel
-      .findByIdAndDelete(id)
-      .lean()
-      .exec();
+
+    const link = await this.findOwnedLink(id, options);
+    let removed;
+    try {
+      removed = await this.marketplaceModel
+        .findByIdAndDelete(link._id)
+        .lean()
+        .exec();
+    } catch (error) {
+      rethrowMongoWriteError(error);
+    }
     if (!removed) {
       throw new NotFoundException({
         success: false,
@@ -123,6 +200,65 @@ export class MarketplacesService {
       success: true,
       data: this.mapMarketplace(removed),
     };
+  }
+
+  private async findOwnedLink(
+    id: string,
+    options?: { requesterId?: string; requesterRole?: string },
+  ) {
+    const trimmed = String(id ?? '').trim();
+    if (!Types.ObjectId.isValid(trimmed)) {
+      throw new BadRequestException({
+        success: false,
+        message: 'Invalid marketplace id',
+        errorCode: 'INVALID_ID',
+      });
+    }
+
+    let link = await this.marketplaceModel.findById(trimmed).lean().exec();
+
+    if (!link && options?.requesterId) {
+      const sellerAliases = await resolveSellerIdAliases(
+        this.sellerModel,
+        this.userModel,
+        options.requesterId,
+      );
+      if (sellerAliases.length) {
+        link = await this.marketplaceModel
+          .findOne({
+            platformMarketplaceId: new Types.ObjectId(trimmed),
+            sellerId: { $in: sellerAliases },
+          })
+          .lean()
+          .exec();
+      }
+    }
+
+    if (!link) {
+      throw new NotFoundException({
+        success: false,
+        message: 'Marketplace not found',
+        errorCode: 'NOT_FOUND',
+      });
+    }
+
+    if (options?.requesterRole === 'seller' && options.requesterId) {
+      const sellerAliases = await resolveSellerIdAliases(
+        this.sellerModel,
+        this.userModel,
+        options.requesterId,
+      );
+      const ownerId = String(link.sellerId ?? '');
+      if (!sellerAliases.includes(ownerId)) {
+        throw new ForbiddenException({
+          success: false,
+          message: 'You can only remove your own marketplace connections',
+          errorCode: 'FORBIDDEN',
+        });
+      }
+    }
+
+    return link;
   }
 
   private mapMarketplace(
@@ -145,8 +281,10 @@ export class MarketplacesService {
     const platformName = platform?.name;
     const platformLogo = platform?.logoUrl;
     const status = item.status ?? 'active';
+    const linkId = item._id?.toString?.() ?? String(item._id ?? '');
     return {
-      _id: item._id?.toString?.() ?? item._id,
+      _id: linkId,
+      id: linkId,
       sellerId: item.sellerId,
       gstId: item.gstId,
       status,

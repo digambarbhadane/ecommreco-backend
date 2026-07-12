@@ -4,6 +4,7 @@ import { AccountManagerController } from './account-manager.controller';
 import { AccountManagerService } from './account-manager.service';
 import { Seller, SellerSchema } from '../sellers/schemas/seller.schema';
 import { Lead, LeadSchema } from '../leads/schemas/lead.schema';
+import { User, UserSchema } from '../users/schemas/user.schema';
 import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
@@ -11,6 +12,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
     MongooseModule.forFeature([
       { name: Seller.name, schema: SellerSchema },
       { name: Lead.name, schema: LeadSchema },
+      { name: User.name, schema: UserSchema },
     ]),
     NotificationsModule,
   ],

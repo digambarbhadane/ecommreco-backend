@@ -8,8 +8,10 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import * as bcrypt from 'bcrypt';
 import * as nodemailer from 'nodemailer';
+import { randomBytes } from 'crypto';
 import { Seller, SellerDocument } from '../sellers/schemas/seller.schema';
 import { Lead, LeadDocument } from '../leads/schemas/lead.schema';
+import { User, UserDocument } from '../users/schemas/user.schema';
 import { generatePublicId } from '../common/public-id';
 import { NotificationsService } from '../notifications/notifications.service';
 import { VerifyPaymentDto } from './dto/verify-payment.dto';
@@ -41,6 +43,7 @@ export class AccountManagerService {
   constructor(
     @InjectModel(Seller.name) private sellerModel: Model<SellerDocument>,
     @InjectModel(Lead.name) private leadModel: Model<LeadDocument>,
+    @InjectModel(User.name) private userModel: Model<UserDocument>,
     private readonly notificationsService: NotificationsService,
   ) {}
 
@@ -52,6 +55,101 @@ export class AccountManagerService {
       throw new ForbiddenException('Access denied');
     }
     return { role, email };
+  }
+
+  private formatSellerResponse(seller: SellerDocument | Record<string, unknown>) {
+    const raw =
+      typeof (seller as SellerDocument).toObject === 'function'
+        ? (seller as SellerDocument).toObject()
+        : { ...seller };
+    const { password, ...rest } = raw as Record<string, unknown> & {
+      password?: string;
+      _id?: Types.ObjectId;
+    };
+    void password;
+    const id =
+      rest._id instanceof Types.ObjectId
+        ? rest._id.toString()
+        : typeof rest._id === 'string'
+          ? rest._id
+          : undefined;
+    return {
+      success: true,
+      data: {
+        ...rest,
+        id: id ?? rest.id,
+      },
+    };
+  }
+
+  private async findSellerByIdentifier(identifier: string) {
+    const value = String(identifier ?? '').trim();
+    if (!value) return null;
+    if (Types.ObjectId.isValid(value) && value.length === 24) {
+      const sellerById = await this.sellerModel.findById(value).exec();
+      if (sellerById) return sellerById;
+    }
+    const sellerByPublicId = await this.sellerModel
+      .findOne({ publicId: value })
+      .exec();
+    if (sellerByPublicId) return sellerByPublicId;
+    return this.sellerModel.findOne({ leadId: value }).exec();
+  }
+
+  private async syncSellerUserAccount(
+    seller: SellerDocument,
+    options?: {
+      password?: string;
+      username?: string;
+      actorEmail?: string;
+    },
+  ) {
+    const email = seller.email.trim().toLowerCase();
+    const existing = await this.userModel.findOne({ email }).exec();
+    if (existing && existing.role !== 'seller') {
+      throw new BadRequestException(
+        'A user with this email already exists with a different role',
+      );
+    }
+
+    const companyName = seller.firmName || seller.tradeName || '';
+    const update: Record<string, unknown> = {
+      fullName: seller.fullName,
+      email,
+      username: email,
+      mobile: seller.contactNumber,
+      companyName,
+      role: 'seller',
+      status: 'approved',
+      profileCompleted: true,
+    };
+
+    if (options?.password) {
+      update.password = await bcrypt.hash(options.password, 10);
+      update.mustChangePassword = true;
+      update.credentialsGeneratedAt = new Date();
+      update.credentialsGeneratedBy = options.actorEmail || 'account_manager';
+    }
+
+    if (existing) {
+      await this.userModel
+        .updateOne({ _id: existing._id }, { $set: update })
+        .exec();
+      return existing._id.toString();
+    }
+
+    const created = await this.userModel.create({
+      publicId: generatePublicId('user', email),
+      ...update,
+      password:
+        typeof update.password === 'string'
+          ? update.password
+          : await bcrypt.hash(randomBytes(12).toString('hex'), 10),
+      mustChangePassword: true,
+      credentialsGeneratedAt: options?.password ? new Date() : undefined,
+      credentialsGeneratedBy: options?.actorEmail,
+    });
+    return created._id.toString();
   }
 
   private buildLeadIdentityFilter(id: string) {
@@ -68,6 +166,8 @@ export class AccountManagerService {
   async findAllConversionLeads(user?: RequestUser) {
     const { role, email } = this.assertAccountManagerAccess(user);
 
+    await this.repairStuckConversionLeads();
+
     const baseAnd: Array<Record<string, unknown>> = [
       { leadStatus: 'converted' },
       {
@@ -78,7 +178,12 @@ export class AccountManagerService {
         ],
       },
       { 'paymentDetails.status': 'completed' },
-      { conversionRequestedAt: { $exists: true } },
+      {
+        $or: [
+          { conversionRequestedAt: { $exists: true, $ne: null } },
+          { convertedAt: { $exists: true, $ne: null } },
+        ],
+      },
     ];
 
     if (role === 'accounts_manager' && email) {
@@ -138,14 +243,13 @@ export class AccountManagerService {
     if (lead.leadStatus !== 'converted') {
       throw new BadRequestException('Lead is not ready for conversion');
     }
+    this.repairConversionLeadFields(lead);
+    if (lead.isModified()) {
+      lead.markModified('paymentDetails');
+      await lead.save();
+    }
     if (lead.paymentDetails?.status !== 'completed') {
       throw new BadRequestException('Payment is not completed');
-    }
-    if (
-      !(lead as unknown as { conversionRequestedAt?: Date })
-        .conversionRequestedAt
-    ) {
-      throw new BadRequestException('Conversion request not found');
     }
 
     if (role === 'accounts_manager') {
@@ -180,14 +284,13 @@ export class AccountManagerService {
     if (lead.leadStatus !== 'converted') {
       throw new BadRequestException('Lead is not ready for conversion');
     }
+    this.repairConversionLeadFields(lead);
+    if (lead.isModified()) {
+      lead.markModified('paymentDetails');
+      await lead.save();
+    }
     if (lead.paymentDetails?.status !== 'completed') {
       throw new BadRequestException('Payment is not completed');
-    }
-    if (
-      !(lead as unknown as { conversionRequestedAt?: Date })
-        .conversionRequestedAt
-    ) {
-      throw new BadRequestException('Conversion request not found');
     }
 
     if (role === 'accounts_manager') {
@@ -203,14 +306,26 @@ export class AccountManagerService {
       }
     }
 
+    const normalizedEmail = dto.email.trim().toLowerCase();
+    const resolvedGstNumber =
+      (typeof dto.gstNumber === 'string' && dto.gstNumber.trim()
+        ? dto.gstNumber.trim().toUpperCase()
+        : '') ||
+      (typeof lead.gstNumber === 'string' && lead.gstNumber.trim()
+        ? lead.gstNumber.trim().toUpperCase()
+        : '') ||
+      'PENDING';
+
+    const conflictConditions: Array<Record<string, unknown>> = [
+      { email: normalizedEmail },
+      { contactNumber: dto.contactNumber },
+    ];
+    if (resolvedGstNumber !== 'PENDING') {
+      conflictConditions.push({ gstNumber: resolvedGstNumber });
+    }
+
     const conflict = await this.sellerModel
-      .findOne({
-        $or: [
-          { email: dto.email.toLowerCase() },
-          { contactNumber: dto.contactNumber },
-          { gstNumber: dto.gstNumber },
-        ],
-      })
+      .findOne({ $or: conflictConditions })
       .lean()
       .exec();
     if (conflict) {
@@ -227,8 +342,8 @@ export class AccountManagerService {
 
     lead.fullName = dto.fullName;
     lead.contactNumber = dto.contactNumber;
-    lead.email = dto.email.toLowerCase();
-    lead.gstNumber = dto.gstNumber;
+    lead.email = normalizedEmail;
+    lead.gstNumber = resolvedGstNumber;
     if (dto.businessType) lead.businessType = dto.businessType;
     lead.subscriptionConfig = {
       gstSlots,
@@ -237,6 +352,7 @@ export class AccountManagerService {
       updatedAt: new Date(),
       updatedBy: user?.email || 'accounts_manager',
     };
+    await lead.save();
 
     const paymentCompletedAt = lead.paymentDetails?.paymentDate
       ? new Date(lead.paymentDetails.paymentDate)
@@ -264,13 +380,10 @@ export class AccountManagerService {
       paymentCompletedBy:
         (lead as unknown as { conversionRequestedBy?: string })
           .conversionRequestedBy || 'sales_manager',
-      paymentStatus: 'payment_verified',
+      paymentStatus: 'payment_completed',
       paymentDate: paymentCompletedAt,
       paymentAmount: amount,
-      onboardingStatus: 'payment_verified',
-      paymentVerifiedAt: new Date(),
-      paymentVerifiedBy: user?.email || 'account_manager',
-      verificationNotes: dto.verificationNotes ?? '',
+      onboardingStatus: 'payment_completed',
       salesManager: lead.assignedSalesManager || '',
       businessType: lead.businessType || '',
       leadSource: lead.source || '',
@@ -291,20 +404,28 @@ export class AccountManagerService {
       paymentLinkGeneratedBy: lead.paymentDetails?.generatedBy || '',
       assignedAccountsManager: lead.assignedAccountsManager || email || '',
       salesNotes: '',
+      verificationNotes: dto.verificationNotes ?? '',
     });
 
     const sellerId = String((seller as unknown as { _id: unknown })._id);
     lead.sellerId = sellerId;
     await lead.save();
 
+    await this.syncSellerUserAccount(seller, {
+      actorEmail: user?.email || 'account_manager',
+    });
+
     await this.notificationsService.createNotification({
       event: 'seller_created',
       recipientRole: 'super_admin',
-      message: `Seller created for lead ${lead.fullName} by ${user?.email || 'Account Manager'}.`,
+      message: `Seller created for lead ${lead.fullName} by ${user?.email || 'Account Manager'}. Credentials can be generated after account setup.`,
     });
 
-    const created = await this.sellerModel.findById(sellerId).lean().exec();
-    return { success: true, data: created };
+    const created = await this.sellerModel.findById(sellerId).exec();
+    if (!created) {
+      throw new NotFoundException('Seller not found after creation');
+    }
+    return this.formatSellerResponse(created);
   }
 
   async findAllPaymentCompletedSellers(user?: RequestUser) {
@@ -412,7 +533,13 @@ export class AccountManagerService {
       }
     }
 
-    return sellers;
+    return sellers.map((seller) => {
+      const id = seller._id.toString();
+      return {
+        ...seller,
+        id,
+      };
+    });
   }
 
   async findOne(id: string, user?: RequestUser) {
@@ -439,7 +566,15 @@ export class AccountManagerService {
       }
     }
 
-    return seller;
+    try {
+      await this.syncSellerUserAccount(seller, {
+        actorEmail: user?.email || 'account_manager',
+      });
+    } catch {
+      // Non-fatal: seller details should still load even if user sync fails.
+    }
+
+    return this.formatSellerResponse(seller);
   }
 
   async verifyPayment(dto: VerifyPaymentDto, user?: RequestUser) {
@@ -472,13 +607,17 @@ export class AccountManagerService {
     seller.accountCreatedBy = user?.email || 'account_manager';
     const saved = await seller.save();
 
+    await this.syncSellerUserAccount(saved, {
+      actorEmail: user?.email || 'account_manager',
+    });
+
     await this.notificationsService.createNotification({
       event: 'account_created',
       recipientRole: 'super_admin',
       message: `Account created for ${seller.fullName} (Seller ID: ${seller._id.toString()}, Email: ${seller.email}, GST: ${seller.gstNumber || '—'}, GST Slots: ${typeof seller.gstSlots === 'number' ? seller.gstSlots : '—'}, Duration: ${typeof seller.durationYears === 'number' ? seller.durationYears : typeof seller.subscriptionDuration === 'number' ? seller.subscriptionDuration : '—'} year(s), Amount: ${typeof seller.amount === 'number' ? seller.amount : typeof seller.paymentAmount === 'number' ? seller.paymentAmount : '—'}).`,
     });
 
-    return saved;
+    return this.formatSellerResponse(saved);
   }
 
   async generateCredentials(dto: GenerateCredentialsDto, user?: RequestUser) {
@@ -487,9 +626,7 @@ export class AccountManagerService {
       user,
     );
 
-    const username =
-      dto.username ||
-      seller.email.split('@')[0] + Math.floor(Math.random() * 1000);
+    const username = seller.email.trim().toLowerCase();
     const password =
       dto.password || Math.random().toString(36).slice(-8) + 'A1!';
 
@@ -512,6 +649,12 @@ export class AccountManagerService {
 
     await seller.save();
 
+    await this.syncSellerUserAccount(seller, {
+      password,
+      username,
+      actorEmail: user?.email || 'account_manager',
+    });
+
     await this.notificationsService.createNotification({
       event: 'credentials_generated',
       recipientRole: 'super_admin',
@@ -519,9 +662,11 @@ export class AccountManagerService {
     });
 
     return {
+      success: true,
       username,
       password,
       message: 'Credentials generated and sent for approval',
+      data: this.formatSellerResponse(seller).data,
     };
   }
 
@@ -558,7 +703,7 @@ export class AccountManagerService {
     sellerId: string,
     user?: RequestUser,
   ) {
-    const seller = await this.sellerModel.findById(sellerId).exec();
+    const seller = await this.findSellerByIdentifier(sellerId);
     if (!seller) {
       throw new NotFoundException('Seller not found');
     }
@@ -603,6 +748,100 @@ export class AccountManagerService {
     }
 
     return seller;
+  }
+
+  private repairConversionLeadFields(lead: LeadDocument) {
+    const now = new Date();
+    if (!lead.conversionRequestedAt) {
+      lead.conversionRequestedAt =
+        lead.convertedAt ??
+        (lead.paymentDetails?.paymentDate
+          ? new Date(lead.paymentDetails.paymentDate)
+          : now);
+    }
+    if (!lead.convertedAt) {
+      lead.convertedAt = lead.conversionRequestedAt;
+    }
+    const paymentDetails = lead.paymentDetails ?? {
+      link: 'manual-conversion',
+      status: 'completed' as const,
+      generatedBy: 'system',
+      generatedAt: now,
+    };
+    if (paymentDetails.status !== 'completed') {
+      paymentDetails.status = 'completed';
+    }
+    if (!paymentDetails.paymentDate) {
+      paymentDetails.paymentDate = lead.conversionRequestedAt ?? now;
+    }
+    lead.paymentDetails = paymentDetails;
+    lead.markModified('paymentDetails');
+  }
+
+  async findSellerByLeadId(leadId: string, user?: RequestUser) {
+    this.assertAccountManagerAccess(user);
+
+    const lead = await this.leadModel
+      .findOne(this.buildLeadIdentityFilter(leadId))
+      .exec();
+    if (!lead) {
+      throw new NotFoundException('Lead not found');
+    }
+
+    let seller: SellerDocument | null = null;
+    if (typeof lead.sellerId === 'string' && lead.sellerId.trim()) {
+      seller = await this.findSellerByIdentifier(lead.sellerId);
+    }
+    if (!seller && lead.leadId) {
+      seller = await this.findSellerByIdentifier(lead.leadId);
+    }
+    if (!seller && lead.email) {
+      seller = await this.sellerModel
+        .findOne({
+          email: lead.email.trim().toLowerCase(),
+          leadId: lead.leadId || lead._id.toString(),
+        })
+        .exec();
+    }
+    if (!seller) {
+      throw new NotFoundException('Seller not found for this lead');
+    }
+
+    if (!lead.sellerId) {
+      lead.sellerId = seller._id.toString();
+      await lead.save();
+    }
+
+    return this.findOne(seller._id.toString(), user);
+  }
+
+  private async repairStuckConversionLeads() {
+    const stuckLeads = await this.leadModel
+      .find({
+        leadStatus: 'converted',
+        $and: [
+          {
+            $or: [
+              { sellerId: { $exists: false } },
+              { sellerId: null },
+              { sellerId: '' },
+            ],
+          },
+          {
+            $or: [
+              { 'paymentDetails.status': { $ne: 'completed' } },
+              { conversionRequestedAt: { $exists: false } },
+              { conversionRequestedAt: null },
+            ],
+          },
+        ],
+      })
+      .exec();
+
+    for (const lead of stuckLeads) {
+      this.repairConversionLeadFields(lead);
+      await lead.save();
+    }
   }
 
   private async sendCredentialsEmail(

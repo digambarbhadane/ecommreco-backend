@@ -46,6 +46,13 @@ const blockedSellerLoginStatuses = new Set([
   'payment_pending',
 ]);
 
+/** Login allowed only after super admin approves credentials. */
+const allowedSellerLoginStatuses = new Set([
+  'training_pending',
+  'training_completed',
+  'active',
+]);
+
 const disabledAdminStatuses = new Set(['blocked', 'rejected']);
 
 @Injectable()
@@ -115,6 +122,24 @@ export class AuthService implements OnModuleInit {
             message: 'Account is pending approval',
             errorCode: 'ACCOUNT_PENDING',
           });
+        }
+        if (adminUser.role === 'seller') {
+          const sellerForLogin =
+            seller ??
+            (await this.sellerModel
+              .findOne({ email: adminUser.email })
+              .lean()
+              .exec());
+          const loginCheck = this.evaluateSellerLogin(
+            sellerForLogin ?? { onboardingStatus: 'payment_pending' },
+          );
+          if (!loginCheck.allowed) {
+            throw new UnauthorizedException({
+              success: false,
+              message: loginCheck.message,
+              errorCode: loginCheck.errorCode,
+            });
+          }
         }
         const user: AuthUser = {
           id: adminUser._id.toString(),
@@ -615,7 +640,8 @@ export class AuthService implements OnModuleInit {
     ) {
       return bcrypt.compare(provided, stored);
     }
-    return stored === provided;
+    this.logger.warn('Stored password is not bcrypt format; rejecting login');
+    return false;
   }
 
   private buildIdentifierQuery(identifier: string) {
@@ -652,6 +678,15 @@ export class AuthService implements OnModuleInit {
       };
     }
 
+    if (!allowedSellerLoginStatuses.has(status)) {
+      return {
+        allowed: false,
+        message:
+          'Your account is pending super admin approval. You can log in after credentials are approved.',
+        errorCode: 'SELLER_PENDING_APPROVAL',
+      };
+    }
+
     return { allowed: true };
   }
 
@@ -661,26 +696,20 @@ export class AuthService implements OnModuleInit {
 
   private assertSetupToken(params: { setupToken?: string }) {
     const expected = this.configService.get<string>('SUPER_ADMIN_SETUP_TOKEN');
-    const nodeEnv = this.configService.get<string>('NODE_ENV') ?? 'development';
-    if (nodeEnv === 'production') {
-      if (!expected || expected.length === 0) {
-        throw new UnauthorizedException({
-          success: false,
-          message: 'Bootstrap is not enabled',
-          errorCode: 'BOOTSTRAP_DISABLED',
-        });
-      }
-      if (!params.setupToken || params.setupToken !== expected) {
-        throw new UnauthorizedException({
-          success: false,
-          message: 'Invalid setup token',
-          errorCode: 'INVALID_SETUP_TOKEN',
-        });
-      }
-      return;
+    if (!expected || expected.length === 0) {
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Bootstrap is not enabled',
+        errorCode: 'BOOTSTRAP_DISABLED',
+      });
     }
-    void expected;
-    void params;
+    if (!params.setupToken || params.setupToken !== expected) {
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Invalid setup token',
+        errorCode: 'INVALID_SETUP_TOKEN',
+      });
+    }
   }
 
   private assertDatabaseConnected() {

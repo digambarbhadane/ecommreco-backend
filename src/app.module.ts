@@ -20,11 +20,17 @@ import { SubscriptionModule } from './subscription/subscription.module';
 import { EmailModule } from './email/email.module';
 import { SalesActivityModule } from './sales-activity/sales-activity.module';
 import { ReportImportModule } from './report-import/report-import.module';
+import { HealthModule } from './health/health.module';
+import { PanSlotRequestsModule } from './pan-slot-requests/pan-slot-requests.module';
+import { BillingModule } from './billing/billing.module';
+import { GstModule } from './common/gst/gst.module';
+import { SkuMasterModule } from './sku-master/sku-master.module';
 import { setMongoStorageMode } from './config/mongo-connection';
 import {
   getMongoUriCandidates,
   mongoConnectionHint,
 } from './config/mongo-uri';
+import { resolveEnvFile } from './config/env-file';
 
 const mongoLogger = new Logger('MongoDB');
 
@@ -37,7 +43,7 @@ const DEFAULT_LOCAL_MONGODB_URI = 'mongodb://127.0.0.1:27017/sellerspl';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      ignoreEnvFile: true,
+      envFilePath: resolveEnvFile(process.env.NODE_ENV),
     }),
     ThrottlerModule.forRoot([
       {
@@ -72,7 +78,9 @@ const DEFAULT_LOCAL_MONGODB_URI = 'mongodb://127.0.0.1:27017/sellerspl';
             uri,
             serverSelectionTimeoutMS: 10000,
             connectTimeoutMS: 10000,
-            socketTimeoutMS: 20000,
+            socketTimeoutMS: 120000,
+            maxPoolSize: 50,
+            minPoolSize: 2,
             bufferCommands: false,
             connectionFactory,
           };
@@ -236,7 +244,12 @@ const DEFAULT_LOCAL_MONGODB_URI = 'mongodb://127.0.0.1:27017/sellerspl';
     SubscriptionModule,
     EmailModule,
     SalesActivityModule,
+    GstModule,
     ReportImportModule,
+    HealthModule,
+    PanSlotRequestsModule,
+    BillingModule,
+    SkuMasterModule,
   ],
 })
 export class AppModule {}

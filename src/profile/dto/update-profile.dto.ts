@@ -50,4 +50,39 @@ export class UpdateProfileDto {
     typeof value === 'string' ? value.trim() : undefined,
   )
   businessType?: string;
+
+  @IsOptional()
+  @IsString()
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : undefined,
+  )
+  tradeName?: string;
+
+  @IsOptional()
+  @IsString()
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : undefined,
+  )
+  state?: string;
+
+  @IsOptional()
+  @IsString()
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : undefined,
+  )
+  city?: string;
+
+  @IsOptional()
+  @IsString()
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : undefined,
+  )
+  registrationDate?: string;
+
+  @IsOptional()
+  @IsString()
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : undefined,
+  )
+  gstStatus?: string;
 }

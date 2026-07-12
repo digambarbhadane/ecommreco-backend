@@ -12,13 +12,20 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
+import { Request } from 'express';
 import { AuthGuard } from '@nestjs/passport';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { CreateGstDto } from './dto/create-gst.dto';
+import { VerifyGstDto } from './dto/verify-gst.dto';
 import { GstsService } from './gsts.service';
+
+type RequestWithUser = Request & {
+  user?: { id?: string; role?: string; name?: string; email?: string };
+};
 
 @ApiTags('GST')
 @ApiBearerAuth()
@@ -27,11 +34,33 @@ import { GstsService } from './gsts.service';
 export class GstsController {
   constructor(private readonly gstsService: GstsService) {}
 
-  @Post()
-  @ApiOperation({ summary: 'Create GST entry', description: 'Add a single GST entry for a seller.' })
+  @Post('verify')
+  @ApiOperation({
+    summary: 'Verify GST number',
+    description:
+      'Verifies a GSTIN via Perione before it can be added to a seller profile.',
+  })
   @Roles('seller', 'super_admin')
-  create(@Body() dto: CreateGstDto) {
-    return this.gstsService.create(dto);
+  verify(@Body() dto: VerifyGstDto, @Req() req: RequestWithUser) {
+    const sellerId =
+      req.user?.role === 'seller' && typeof req.user.id === 'string'
+        ? req.user.id
+        : undefined;
+    return this.gstsService.verifyGst(dto, sellerId);
+  }
+
+  @Post()
+  @ApiOperation({
+    summary: 'Create GST entry',
+    description: 'Add a verified GST entry for a seller.',
+  })
+  @Roles('seller', 'super_admin')
+  create(@Body() dto: CreateGstDto, @Req() req: RequestWithUser) {
+    const actorName = req.user?.name ?? req.user?.email;
+    return this.gstsService.create(dto, {
+      actorRole: req.user?.role,
+      actorName: typeof actorName === 'string' ? actorName : undefined,
+    });
   }
 
   @Post('import')
@@ -50,6 +79,17 @@ export class GstsController {
     },
   ) {
     return this.gstsService.importRows(body);
+  }
+
+  @Get('oversight')
+  @ApiOperation({
+    summary: 'GST oversight overview',
+    description:
+      'Super admin view with seller names, linked marketplaces, imported revenue, and risk signals.',
+  })
+  @Roles('super_admin')
+  oversight() {
+    return this.gstsService.getOversight();
   }
 
   @Get()
@@ -87,7 +127,19 @@ export class GstsController {
   @Delete(':id')
   @ApiOperation({ summary: 'Delete GST entry' })
   @Roles('seller', 'super_admin')
-  remove(@Param('id') id: string) {
-    return this.gstsService.remove(id);
+  remove(
+    @Param('id') id: string,
+    @Query('unlinkMarketplaces') unlinkMarketplaces?: string,
+    @Req() req?: RequestWithUser,
+  ) {
+    const shouldUnlink =
+      unlinkMarketplaces === 'true' ||
+      unlinkMarketplaces === '1' ||
+      unlinkMarketplaces === 'yes';
+    return this.gstsService.remove(id, {
+      unlinkMarketplaces: shouldUnlink,
+      requesterId: req?.user?.id,
+      requesterRole: req?.user?.role,
+    });
   }
 }

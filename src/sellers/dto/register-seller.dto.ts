@@ -59,6 +59,14 @@ export class RegisterSellerDto {
   )
   ordersPerMonth: '0-1000' | '1000-2000' | '2000-3000' | '3000+';
 
+  @IsNotEmpty()
+  @IsString()
+  @IsIn(['ecommerce_accounting', 'reconciliation', 'both'])
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim().toLowerCase() : undefined,
+  )
+  servicesNeeded: 'ecommerce_accounting' | 'reconciliation' | 'both';
+
   @IsIn([true], {
     message: 'You must accept the Terms and Conditions and Privacy Policy',
   })
