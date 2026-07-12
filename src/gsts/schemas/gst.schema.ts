@@ -20,8 +20,26 @@ export class Gst {
   @Prop()
   state?: string;
 
+  @Prop()
+  tradeName?: string;
+
   @Prop({ default: 'active' })
   status: string;
+
+  @Prop()
+  taxpayerType?: string;
+
+  @Prop()
+  registrationDate?: string;
+
+  @Prop()
+  address?: string;
+
+  @Prop()
+  verifiedAt?: Date;
+
+  @Prop({ type: MongooseSchema.Types.Mixed })
+  verificationResponse?: Record<string, unknown>;
 
   @Prop({ type: MongooseSchema.Types.ObjectId, ref: 'GstinVerification' })
   gstinVerificationId?: string;

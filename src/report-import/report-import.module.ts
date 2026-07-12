@@ -9,6 +9,8 @@ import {
   PlatformMarketplace,
   PlatformMarketplaceSchema,
 } from '../platform-marketplaces/schemas/platform-marketplace.schema';
+import { Seller, SellerSchema } from '../sellers/schemas/seller.schema';
+import { User, UserSchema } from '../users/schemas/user.schema';
 import { ReportImportController } from './report-import.controller';
 import { ReportImportService } from './report-import.service';
 import {
@@ -23,18 +25,74 @@ import {
 import { FileParserService } from './services/file-parser.service';
 import { MappingService } from './services/mapping.service';
 import { MeeshoImportService } from './services/meesho-import.service';
+import { FlipkartImportService } from './services/flipkart-import.service';
+import { AmazonImportService } from './services/amazon-import.service';
 import { UploadService } from './services/upload.service';
+import { MyntraImportService } from './services/myntra-import.service';
 import { ValidationService } from './services/validation.service';
+import {
+  ImportSlotRecord,
+  ImportSlotRecordSchema,
+} from './schemas/import-slot-record.schema';
+import { ImportWorkflowService } from './services/import-workflow.service';
+import { ImportSessionService } from './services/import-session.service';
+import { ImportJob, ImportJobSchema } from './schemas/import-job.schema';
+import {
+  ReconTransaction,
+  ReconTransactionSchema,
+} from './schemas/recon-transaction.schema';
+import { ReconEvent, ReconEventSchema } from './schemas/recon-event.schema';
+import {
+  ReconAuditLog,
+  ReconAuditLogSchema,
+} from './schemas/recon-audit-log.schema';
+import {
+  ReconAdjustment,
+  ReconAdjustmentSchema,
+} from './schemas/recon-adjustment.schema';
+import { ImportJobService } from './services/import-job.service';
+import { ImportFileStoreService } from './services/import-file-store.service';
+import { ImportQueueService } from './services/import-queue.service';
+import { ImportJobOrchestratorService } from './services/import-job-orchestrator.service';
+import { ImportProgressGateway } from './gateways/import-progress.gateway';
+import { ReconciliationService } from './services/reconciliation.service';
+import { StateWiseReportService } from './services/state-wise-report.service';
+import { StateSkuWiseReportService } from './services/state-sku-wise-report.service';
+import { Gstr1B2csReportService } from './services/gstr1-b2cs-report.service';
+import {
+  SkuMasterMapping,
+  SkuMasterMappingSchema,
+} from '../sku-master/schemas/sku-master-mapping.schema';
+import { SkuMasterModule } from '../sku-master/sku-master.module';
+import {
+  FlipkartPaymentReport,
+  FlipkartPaymentReportSchema,
+} from './payments/flipkart/schemas/flipkart-payment-report.schema';
+import { FlipkartPaymentParser } from './payments/flipkart/flipkart-payment.parser';
+import { FlipkartPaymentRepository } from './payments/flipkart/flipkart-payment.repository';
+import { FlipkartPaymentService } from './payments/flipkart/flipkart-payment.service';
+import { AnalyticsPaymentsService } from './payments/analytics-payments.service';
 
 @Module({
   imports: [
+    SkuMasterModule,
     MongooseModule.forFeature([
       { name: Gst.name, schema: GstSchema },
+      { name: Seller.name, schema: SellerSchema },
+      { name: User.name, schema: UserSchema },
       { name: Marketplace.name, schema: MarketplaceSchema },
       { name: PlatformMarketplace.name, schema: PlatformMarketplaceSchema },
       { name: ImportUpload.name, schema: ImportUploadSchema },
       { name: ImportRow.name, schema: ImportRowSchema },
       { name: ImportRowError.name, schema: ImportRowErrorSchema },
+      { name: ImportSlotRecord.name, schema: ImportSlotRecordSchema },
+      { name: ImportJob.name, schema: ImportJobSchema },
+      { name: ReconTransaction.name, schema: ReconTransactionSchema },
+      { name: ReconEvent.name, schema: ReconEventSchema },
+      { name: ReconAuditLog.name, schema: ReconAuditLogSchema },
+      { name: ReconAdjustment.name, schema: ReconAdjustmentSchema },
+      { name: SkuMasterMapping.name, schema: SkuMasterMappingSchema },
+      { name: FlipkartPaymentReport.name, schema: FlipkartPaymentReportSchema },
     ]),
   ],
   controllers: [ReportImportController],
@@ -44,7 +102,25 @@ import { ValidationService } from './services/validation.service';
     ValidationService,
     MappingService,
     MeeshoImportService,
+    FlipkartImportService,
+    AmazonImportService,
+    MyntraImportService,
     UploadService,
+    ImportSessionService,
+    ImportWorkflowService,
+    ImportJobService,
+    ImportFileStoreService,
+    ImportQueueService,
+    ImportJobOrchestratorService,
+    ImportProgressGateway,
+    ReconciliationService,
+    StateWiseReportService,
+    StateSkuWiseReportService,
+    Gstr1B2csReportService,
+    FlipkartPaymentParser,
+    FlipkartPaymentRepository,
+    FlipkartPaymentService,
+    AnalyticsPaymentsService,
   ],
 })
 export class ReportImportModule {}

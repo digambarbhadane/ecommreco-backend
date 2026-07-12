@@ -17,6 +17,9 @@ export class ImportUpload {
   @Prop({ required: true, index: true })
   marketplace: string;
 
+  @Prop({ index: true })
+  reportMonth?: string;
+
   @Prop({ required: true, index: true })
   fileName: string;
 
@@ -25,6 +28,9 @@ export class ImportUpload {
 
   @Prop({ required: true, default: 0 })
   totalRecords: number;
+
+  @Prop({ default: 0 })
+  processedRecords?: number;
 
   @Prop()
   minInvoiceDate?: string;
@@ -40,6 +46,26 @@ export class ImportUpload {
 
   @Prop({ required: true, default: 'completed' })
   status: 'processing' | 'completed' | 'failed';
+
+  @Prop({ type: [String], default: [] })
+  uploadedSlots?: string[];
+
+  @Prop()
+  fileSize?: number;
+
+  @Prop()
+  uploadedBy?: string;
+
+  @Prop({ index: true })
+  importBatchId?: string;
+
+  @Prop({
+    enum: ['completed', 'processing', 'failed', 'deleted', 'reuploaded'],
+  })
+  lifecycleStatus?: 'completed' | 'processing' | 'failed' | 'deleted' | 'reuploaded';
+
+  @Prop()
+  errorMessage?: string;
 }
 
 export const ImportUploadSchema = SchemaFactory.createForClass(ImportUpload);
@@ -53,4 +79,11 @@ ImportUploadSchema.index(
     totalRecords: 1,
   },
   { name: 'import_duplicate_guard_idx' },
+);
+// Fast fileHash duplicate detection
+ImportUploadSchema.index({ fileHash: 1 }, { name: 'import_file_hash_idx' });
+// Payment upload lookup: completed uploads for a seller+gst+marketplace+month
+ImportUploadSchema.index(
+  { sellerId: 1, gstId: 1, marketplace: 1, reportMonth: 1, status: 1 },
+  { name: 'import_upload_payment_lookup_idx' },
 );

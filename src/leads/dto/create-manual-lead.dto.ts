@@ -1,6 +1,9 @@
 import { Transform } from 'class-transformer';
 import {
+  ArrayNotEmpty,
+  IsArray,
   IsEmail,
+  IsIn,
   IsNotEmpty,
   IsObject,
   IsOptional,
@@ -46,6 +49,22 @@ export class CreateManualLeadDto {
     message: 'gstNumber must be 16 alphanumeric characters',
   })
   gstNumber?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsString({ each: true })
+  marketplaces?: string[];
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['ecommerce_accounting', 'reconciliation', 'both'])
+  servicesNeeded?: 'ecommerce_accounting' | 'reconciliation' | 'both';
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['0-1000', '1000-2000', '2000-3000', '3000+'])
+  ordersPerMonth?: '0-1000' | '1000-2000' | '2000-3000' | '3000+';
 
   @IsOptional()
   @IsString()

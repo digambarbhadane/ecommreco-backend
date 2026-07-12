@@ -73,6 +73,18 @@ export class AccountManagerController {
     );
   }
 
+  @Get('seller/by-lead/:leadId')
+  @ApiOperation({ summary: 'Get seller linked to a lead' })
+  async getSellerByLead(
+    @Param('leadId') leadId: string,
+    @Req() req: RequestWithUser,
+  ) {
+    return this.accountManagerService.findSellerByLeadId(
+      leadId,
+      this.getUser(req),
+    );
+  }
+
   @Get('seller/:id')
   @ApiOperation({ summary: 'Get seller by ID' })
   async getSeller(@Param('id') id: string, @Req() req: RequestWithUser) {

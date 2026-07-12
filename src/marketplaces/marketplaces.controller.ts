@@ -11,14 +11,20 @@ import {
   Param,
   Post,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
+import { Request } from 'express';
 import { AuthGuard } from '@nestjs/passport';
 import { CreateMarketplaceDto } from './dto/create-marketplace.dto';
 import { MarketplacesService } from './marketplaces.service';
 import { PlatformMarketplacesService } from '../platform-marketplaces/platform-marketplaces.service';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
+
+type RequestWithUser = Request & {
+  user?: { id?: string; role?: string };
+};
 
 @ApiTags('Marketplaces')
 @ApiBearerAuth()
@@ -56,6 +62,16 @@ export class MarketplacesController {
     });
   }
 
+  @Get(':id')
+  @ApiOperation({ summary: 'Get seller marketplace link by ID' })
+  @Roles('super_admin', 'accounts_manager', 'seller')
+  getById(@Param('id') id: string, @Req() req: RequestWithUser) {
+    return this.marketplacesService.getById(id, {
+      requesterId: req.user?.id,
+      requesterRole: req.user?.role,
+    });
+  }
+
   @Post()
   @ApiOperation({ summary: 'Create marketplace integration' })
   @Roles('super_admin', 'accounts_manager', 'seller')
@@ -66,7 +82,10 @@ export class MarketplacesController {
   @Delete(':id')
   @ApiOperation({ summary: 'Remove marketplace integration' })
   @Roles('super_admin', 'accounts_manager', 'seller')
-  remove(@Param('id') id: string) {
-    return this.marketplacesService.remove(id);
+  remove(@Param('id') id: string, @Req() req: RequestWithUser) {
+    return this.marketplacesService.remove(id, {
+      requesterId: req.user?.id,
+      requesterRole: req.user?.role,
+    });
   }
 }

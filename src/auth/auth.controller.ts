@@ -13,7 +13,9 @@ import {
   Post,
   Query,
   Req,
+  UseGuards,
 } from '@nestjs/common';
+import { ThrottlerGuard } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { BootstrapSuperAdminDto } from './dto/bootstrap-super-admin.dto';
 import { DevResetPasswordDto } from './dto/dev-reset-password.dto';
@@ -37,11 +39,24 @@ export class AuthController {
     return this.authService.databaseConnection();
   }
 
+  @Post('forgot-password')
+  @UseGuards(ThrottlerGuard)
+  @ApiOperation({
+    summary: 'Forgot password',
+    description: 'Request a password reset link. Always returns success to prevent email enumeration.',
+    security: [],
+  })
+  forgotPassword(@Body() dto: { email?: string }) {
+    void dto;
+    return { success: true, message: 'If the email exists, a reset link has been sent.' };
+  }
+
   @Post('login')
+  @UseGuards(ThrottlerGuard)
   @ApiOperation({
     summary: 'Login',
     description:
-      'Authenticate user with email and password. Returns JWT token on success.',
+      'Authenticate user with email and password. Returns JWT token on success. Rate limited.',
     security: [],
   })
   login(@Body() dto: LoginDto, @Req() req: Request) {

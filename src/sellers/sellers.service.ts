@@ -5,13 +5,17 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import * as bcrypt from 'bcrypt';
 import { NotificationsService } from '../notifications/notifications.service';
+import { EmailService } from '../email/email.service';
+import { EmailType } from '../email/email.types';
 import { GenerateCredentialsDto } from './dto/generate-credentials.dto';
+import { ResetCredentialsDto } from './dto/reset-credentials.dto';
 import { RegisterSellerDto } from './dto/register-seller.dto';
 import { SendPaymentLinkDto } from './dto/send-payment-link.dto';
 import { Seller, SellerDocument } from './schemas/seller.schema';
+import { User, UserDocument } from '../users/schemas/user.schema';
 import { LeadsService } from '../leads/leads.service';
 import { generatePublicId } from '../common/public-id';
 
@@ -37,8 +41,11 @@ export class SellersService {
   constructor(
     @InjectModel(Seller.name)
     private readonly sellerModel: Model<SellerDocument>,
+    @InjectModel(User.name)
+    private readonly userModel: Model<UserDocument>,
     private readonly leadsService: LeadsService,
     private readonly notificationsService: NotificationsService,
+    private readonly emailService: EmailService,
   ) {}
 
   private sanitizeSellerForRole(
@@ -61,7 +68,30 @@ export class SellersService {
       delete sanitized.credentialsSentAt;
     }
 
+    const id = sanitized._id;
+    if (id !== undefined && id !== null) {
+      sanitized.id =
+        typeof id === 'string'
+          ? id
+          : typeof (id as { toString?: () => string }).toString === 'function'
+            ? (id as { toString: () => string }).toString()
+            : String(id);
+    }
     return sanitized;
+  }
+
+  private async findSellerByIdentifier(identifier: string) {
+    const value = String(identifier ?? '').trim();
+    if (!value) return null;
+    if (Types.ObjectId.isValid(value)) {
+      const sellerById = await this.sellerModel.findById(value).exec();
+      if (sellerById) return sellerById;
+    }
+    const sellerByPublicId = await this.sellerModel
+      .findOne({ publicId: value })
+      .exec();
+    if (sellerByPublicId) return sellerByPublicId;
+    return null;
   }
 
   async register(dto: RegisterSellerDto) {
@@ -131,10 +161,22 @@ export class SellersService {
         ],
       });
     } else if (role === 'training_and_support_manager') {
-      const viewStatus =
-        requestedStatus === 'active' ? 'active' : 'training_pending';
-      and.push({ onboardingStatus: viewStatus });
-      if (viewStatus === 'training_pending') {
+      const completedView =
+        requestedStatus === 'active' || requestedStatus === 'training_completed';
+      if (completedView) {
+        and.push({
+          $or: [
+            { onboardingStatus: 'training_completed' },
+            {
+              onboardingStatus: 'active',
+              trainingCompletedAt: { $exists: true, $ne: null },
+            },
+          ],
+        });
+      } else {
+        and.push({ onboardingStatus: 'training_pending' });
+      }
+      if (!completedView) {
         and.push({
           $or: [
             { assignedTrainingSupportManager: email },
@@ -185,7 +227,8 @@ export class SellersService {
     if (
       role === 'training_and_support_manager' &&
       email &&
-      requestedStatus !== 'active'
+      requestedStatus !== 'active' &&
+      requestedStatus !== 'training_completed'
     ) {
       const toAssign = data
         .filter((s) => !s.assignedTrainingSupportManager)
@@ -223,7 +266,7 @@ export class SellersService {
   }
 
   async getSeller(sellerId: string, role: ViewerRole, user?: RequestUser) {
-    const seller = await this.sellerModel.findById(sellerId).exec();
+    const seller = await this.findSellerByIdentifier(sellerId);
     if (!seller) {
       throw new NotFoundException({
         success: false,
@@ -434,11 +477,10 @@ export class SellersService {
     }
     const password =
       dto.password ??
-      Math.random().toString(36).slice(-8) +
-        Math.random().toString(36).slice(-2);
+      require('crypto').randomBytes(6).toString('hex');
     const hashedPassword = await bcrypt.hash(password, 10);
     seller.password = hashedPassword;
-    seller.username = seller.email;
+    seller.username = seller.email.trim().toLowerCase();
     const actorRole = typeof user?.role === 'string' ? user.role : undefined;
     const credentialsGeneratedAt = new Date();
     seller.credentialsGeneratedAt = credentialsGeneratedAt;
@@ -466,6 +508,24 @@ export class SellersService {
       recipientRole: 'super_admin',
       message: `Credentials generated for ${seller.fullName} (Seller ID: ${seller._id.toString()}, Username: ${seller.email}, Email: ${seller.email}, GST: ${seller.gstNumber || '—'}, GST Slots: ${typeof seller.gstSlots === 'number' ? seller.gstSlots : '—'}, Duration: ${typeof seller.durationYears === 'number' ? seller.durationYears : typeof seller.subscriptionDuration === 'number' ? seller.subscriptionDuration : '—'} year(s), Amount: ${typeof seller.amount === 'number' ? seller.amount : typeof seller.paymentAmount === 'number' ? seller.paymentAmount : '—'}).`,
     });
+
+    if (dto.sendEmail && actorRole === 'super_admin') {
+      const loginUrl =
+        process.env.FRONTEND_URL?.trim() ||
+        process.env.APP_URL?.trim() ||
+        'https://app.ecommreco.com/login';
+      await this.emailService.sendEmail({
+        to: seller.email,
+        type: EmailType.NOTIFICATION,
+        subject: 'Your EcommReco seller account credentials',
+        payload: {
+          message: `Hello ${seller.fullName},\n\nYour seller account is ready.\n\nUsername: ${seller.email}\nPassword: ${password}\n\nLogin: ${loginUrl}\n\nPlease change your password after signing in.`,
+          actionUrl: loginUrl,
+          actionText: 'Sign in to EcommReco',
+        },
+      });
+    }
+
     return {
       success: true,
       data: {
@@ -550,7 +610,9 @@ export class SellersService {
         message: 'Seller is not ready for training completion',
       });
     }
-    seller.onboardingStatus = 'active';
+    seller.onboardingStatus = 'training_completed';
+    seller.accountStatus = 'active';
+    seller.trainingStatus = 'completed';
     seller.trainingCompletedAt = new Date();
     seller.trainingCompletedBy = user?.email || 'admin';
     await seller.save();
@@ -605,6 +667,113 @@ export class SellersService {
         'super_admin',
       ),
     };
+  }
+
+  async resetCredentials(
+    sellerId: string,
+    dto: ResetCredentialsDto,
+    user?: RequestUser,
+  ) {
+    const seller = await this.sellerModel.findById(sellerId).exec();
+    if (!seller) {
+      throw new NotFoundException({
+        success: false,
+        message: 'Seller not found',
+      });
+    }
+
+    const email = seller.email.trim().toLowerCase();
+    if (!email) {
+      throw new BadRequestException({
+        success: false,
+        message: 'Seller email is required to reset credentials',
+      });
+    }
+
+    const password =
+      typeof dto.password === 'string' && dto.password.length >= 6
+        ? dto.password
+        : this.generatePassword();
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const actorEmail = user?.email || 'super_admin';
+    const credentialsGeneratedAt = new Date();
+
+    seller.password = hashedPassword;
+    seller.username = email;
+    seller.credentialsGeneratedAt = credentialsGeneratedAt;
+    seller.credentialGeneratedBy = actorEmail;
+    await seller.save();
+
+    await this.syncSellerLoginUser(seller, {
+      password: hashedPassword,
+      actorEmail,
+      credentialsGeneratedAt,
+    });
+
+    await this.notificationsService.createNotification({
+      event: 'credentials_reset',
+      recipientRole: 'super_admin',
+      message: `Credentials reset for ${seller.fullName} (${email}) by ${actorEmail}.`,
+    });
+
+    return {
+      success: true,
+      data: this.sanitizeSellerForRole(
+        seller.toObject() as unknown as Record<string, unknown>,
+        'super_admin',
+      ),
+      credentials: { username: email, password },
+    };
+  }
+
+  private generatePassword() {
+    const base = Math.random().toString(36).slice(-10);
+    const extra = Math.floor(Math.random() * 90 + 10).toString();
+    return `${base}A1!${extra}`;
+  }
+
+  private async syncSellerLoginUser(
+    seller: SellerDocument,
+    options: {
+      password: string;
+      actorEmail: string;
+      credentialsGeneratedAt: Date;
+    },
+  ) {
+    const email = seller.email.trim().toLowerCase();
+    const existing = await this.userModel.findOne({ email }).exec();
+    if (existing && existing.role !== 'seller') {
+      throw new BadRequestException({
+        success: false,
+        message: 'A user with this email already exists with a different role',
+      });
+    }
+
+    const companyName = seller.firmName || seller.tradeName || '';
+    const update = {
+      fullName: seller.fullName,
+      email,
+      username: email,
+      mobile: seller.contactNumber,
+      companyName,
+      role: 'seller',
+      status: 'approved' as const,
+      profileCompleted: true,
+      password: options.password,
+      mustChangePassword: true,
+      credentialsGeneratedAt: options.credentialsGeneratedAt,
+      credentialsGeneratedBy: options.actorEmail,
+    };
+
+    if (existing) {
+      await this.userModel.updateOne({ _id: existing._id }, { $set: update }).exec();
+      return;
+    }
+
+    await this.userModel.create({
+      publicId: generatePublicId('user', email),
+      ...update,
+    });
   }
 
   private generateSubscriptionId() {
