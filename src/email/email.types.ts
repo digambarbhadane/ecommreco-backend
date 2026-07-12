@@ -4,6 +4,7 @@ export enum EmailType {
   INVOICE = 'INVOICE',
   SUBSCRIPTION = 'SUBSCRIPTION',
   NOTIFICATION = 'NOTIFICATION',
+  REGISTRATION_WELCOME = 'REGISTRATION_WELCOME',
 }
 
 export type EmailPayload = Record<string, any>;

@@ -1,15 +1,19 @@
 /// <reference types="node" />
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe, Logger } from '@nestjs/common';
+import { Logger, RequestMethod, ValidationPipe } from '@nestjs/common';
 import { SwaggerModule } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
+import { IoAdapter } from '@nestjs/platform-socket.io';
 import * as express from 'express';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const compression = require('compression') as () => ReturnType<typeof import('compression')>;
 import { AppModule } from './app.module';
 import {
   buildSwaggerConfig,
   createDocumentOptions,
   normalizeSwaggerDocument,
 } from '../config/swagger';
+import { MongoServerExceptionFilter } from './common/filters/mongo-server-exception.filter';
 
 const normalizeOrigin = (value: string) => value.trim().replace(/\/+$/, '');
 
@@ -31,6 +35,20 @@ const isRenderOrigin = (origin: string) => {
   try {
     const url = new URL(origin);
     return url.hostname.toLowerCase().endsWith('.onrender.com');
+  } catch {
+    return false;
+  }
+};
+
+/** Any HTTPS origin on ecommreco.com or its subdomains (dev, uat, www, etc.). */
+const isEcommRecoHttpsOrigin = (origin: string) => {
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== 'https:') {
+      return false;
+    }
+    const host = url.hostname.toLowerCase();
+    return host === 'ecommreco.com' || host.endsWith('.ecommreco.com');
   } catch {
     return false;
   }
@@ -82,8 +100,10 @@ const DEFAULT_DEV_ORIGINS = [
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-  app.use(express.json({ limit: '50mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+  app.useWebSocketAdapter(new IoAdapter(app));
+  app.use(compression());
+  app.use(express.json({ limit: '10mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '10mb' }));
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -91,7 +111,10 @@ async function bootstrap() {
       forbidNonWhitelisted: true,
     }),
   );
-  app.setGlobalPrefix('api/v1');
+  app.useGlobalFilters(new MongoServerExceptionFilter());
+  app.setGlobalPrefix('api/v1', {
+    exclude: [{ path: '', method: RequestMethod.GET }],
+  });
 
   const config = app.get(ConfigService);
   const nodeEnv = config.get<string>('NODE_ENV') ?? 'development';
@@ -111,6 +134,7 @@ async function bootstrap() {
       'https://ecommreco.com',
       'https://www.ecommreco.com',
       'https://uat.ecommreco.com',
+      'https://dev.ecommreco.com',
       ...configuredOrigins,
     ].map(normalizeOrigin),
   );
@@ -122,9 +146,6 @@ async function bootstrap() {
     if (allowAllOrigins) {
       return origin;
     }
-    if (!isProduction) {
-      return origin;
-    }
     const normalizedOrigin = normalizeOrigin(origin);
     if (isPrivateNetworkOrigin(normalizedOrigin)) {
       return origin;
@@ -132,13 +153,16 @@ async function bootstrap() {
     if (allowRenderOrigins && isRenderOrigin(normalizedOrigin)) {
       return origin;
     }
+    if (isEcommRecoHttpsOrigin(normalizedOrigin)) {
+      return origin;
+    }
     if (whitelist.has(normalizedOrigin)) {
       return origin;
     }
     Logger.warn(
-      `CORS: origin not in whitelist (${origin}); allowing to avoid browser preflight failure.`,
+      `CORS: origin not in whitelist (${origin}); denying.`,
     );
-    return origin;
+    return false;
   };
 
   app.enableCors({
@@ -218,13 +242,9 @@ async function bootstrap() {
     );
   }
 
-  const http = app.getHttpAdapter().getInstance();
-  http.get('/api/v1/health', (_req: express.Request, res: express.Response) => {
-    res.status(200).json({ status: 'ok', env: nodeEnv });
-  });
-
   await app.listen(port, '0.0.0.0');
   Logger.log(`API running on http://0.0.0.0:${port}`);
+  Logger.log(`Health: http://0.0.0.0:${port}/ and http://0.0.0.0:${port}/api/v1/health`);
   Logger.log(
     `CORS: allowAll=${allowAllOrigins} env=${nodeEnv} whitelist=${whitelist.size} origins`,
   );

@@ -1,8 +1,5 @@
-import {
-  DocumentBuilder,
-  SwaggerDocumentOptions,
-  type OpenAPIObject,
-} from '@nestjs/swagger';
+import { DocumentBuilder, SwaggerDocumentOptions } from '@nestjs/swagger';
+import type { OpenAPIObject } from '@nestjs/swagger';
 
 const API_PREFIX = '/api/v1';
 

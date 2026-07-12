@@ -67,6 +67,53 @@ export class ProfileService {
     return undefined;
   }
 
+  private async resolveSellerForProfile(user?: RequestUser) {
+    const id = this.getUserId(user);
+    if (!id) return { seller: null, sellerUser: null };
+
+    const seller = await this.sellerModel.findById(id).exec();
+    if (seller) {
+      return { seller, sellerUser: null };
+    }
+
+    const sellerUser = await this.userModel
+      .findOne({ _id: id, role: 'seller' })
+      .exec();
+    if (!sellerUser?.email) {
+      return { seller: null, sellerUser };
+    }
+
+    const email = sellerUser.email.trim().toLowerCase();
+    const sellerByEmail = await this.sellerModel
+      .findOne({
+        $or: [{ email }, { username: email }],
+      })
+      .exec();
+
+    return { seller: sellerByEmail, sellerUser };
+  }
+
+  private mapSellerProfile(seller: SellerDocument) {
+    return {
+      _id: seller._id.toString(),
+      fullName: seller.fullName,
+      email: seller.email,
+      role: 'seller' as const,
+      companyName: seller.firmName || '',
+      tradeName: seller.tradeName || '',
+      mobile: seller.contactNumber,
+      address: seller.address || '',
+      bio: seller.bio || '',
+      profileCompleted: true,
+      gstNumber: seller.gstNumber || '',
+      businessType: seller.businessType || '',
+      state: seller.state || '',
+      city: seller.city || '',
+      registrationDate: seller.registrationDate || '',
+      gstStatus: seller.gstStatus || '',
+    };
+  }
+
   async getProfile(user?: RequestUser) {
     const id = this.getUserId(user);
     const role = typeof user?.role === 'string' ? user.role : undefined;
@@ -78,35 +125,13 @@ export class ProfileService {
     }
 
     if (role === 'seller') {
-      const seller = await this.sellerModel
-        .findById(id)
-        .select('-password')
-        .lean()
-        .exec();
+      const { seller, sellerUser } = await this.resolveSellerForProfile(user);
       if (seller) {
         return {
           success: true,
-          data: {
-            _id: seller._id.toString(),
-            fullName: seller.fullName,
-            email: seller.email,
-            role: 'seller',
-            companyName: seller.firmName || seller.gstNumber,
-            mobile: seller.contactNumber,
-            address: seller.address || '',
-            bio: seller.bio || '',
-            profileCompleted: true,
-            gstNumber: seller.gstNumber,
-            businessType: seller.businessType || '',
-          },
+          data: this.mapSellerProfile(seller),
         };
       }
-
-      const sellerUser = await this.userModel
-        .findOne({ _id: id, role: 'seller' })
-        .select('-password')
-        .lean()
-        .exec();
 
       if (!sellerUser) {
         throw new NotFoundException({
@@ -171,7 +196,7 @@ export class ProfileService {
     }
 
     if (role === 'seller') {
-      const seller = await this.sellerModel.findById(id).exec();
+      const { seller, sellerUser } = await this.resolveSellerForProfile(user);
       if (seller) {
         if (typeof dto.fullName === 'string' && dto.fullName.length > 0) {
           seller.fullName = dto.fullName;
@@ -181,6 +206,9 @@ export class ProfileService {
         }
         if (typeof dto.companyName === 'string') {
           seller.firmName = dto.companyName;
+        }
+        if (typeof dto.tradeName === 'string') {
+          seller.tradeName = dto.tradeName;
         }
         if (typeof dto.address === 'string') {
           seller.address = dto.address;
@@ -194,29 +222,36 @@ export class ProfileService {
         if (typeof dto.businessType === 'string') {
           seller.businessType = dto.businessType;
         }
+        if (typeof dto.state === 'string') {
+          seller.state = dto.state;
+        }
+        if (typeof dto.city === 'string') {
+          seller.city = dto.city;
+        }
+        if (typeof dto.registrationDate === 'string') {
+          seller.registrationDate = dto.registrationDate;
+        }
+        if (typeof dto.gstStatus === 'string') {
+          seller.gstStatus = dto.gstStatus;
+        }
 
         const updated = await seller.save();
+        const companyName = updated.firmName || updated.tradeName || '';
+        const sellerEmail = String(updated.email ?? '').trim().toLowerCase();
+        if (companyName && sellerEmail) {
+          await this.userModel
+            .updateMany(
+              { role: 'seller', email: sellerEmail },
+              { $set: { companyName } },
+            )
+            .exec();
+        }
         return {
           success: true,
-          data: {
-            _id: updated._id.toString(),
-            fullName: updated.fullName,
-            email: updated.email,
-            role: 'seller',
-            companyName: updated.firmName || updated.gstNumber,
-            mobile: updated.contactNumber,
-            address: updated.address || '',
-            bio: updated.bio || '',
-            profileCompleted: true,
-            gstNumber: updated.gstNumber,
-            businessType: updated.businessType || '',
-          },
+          data: this.mapSellerProfile(updated),
         };
       }
 
-      const sellerUser = await this.userModel
-        .findOne({ _id: id, role: 'seller' })
-        .exec();
       if (!sellerUser) {
         throw new NotFoundException({
           success: false,
@@ -249,12 +284,17 @@ export class ProfileService {
           email: updated.email,
           role: 'seller',
           companyName: updated.companyName || '',
+          tradeName: '',
           mobile: updated.mobile || '',
           address: updated.address || '',
           bio: updated.bio || '',
           profileCompleted: updated.profileCompleted ?? true,
           gstNumber: '',
           businessType: '',
+          state: '',
+          city: '',
+          registrationDate: '',
+          gstStatus: '',
         },
       };
     }

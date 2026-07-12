@@ -25,15 +25,49 @@ export class ListImportedRowsDto {
   @IsString()
   toDate?: string;
 
+  /** Filter rows with settlement/payment enrichment (Flipkart, Meesho) or payment mode. */
   @IsOptional()
   @IsString()
-  @IsIn(['documentType', 'invoiceDate', 'gstin', 'invoiceAmount', 'taxableAmount'])
+  @IsIn(['yes', 'no'])
+  hasPaymentData?: 'yes' | 'no';
+
+  @IsOptional()
+  @IsString()
+  paymentDateFrom?: string;
+
+  @IsOptional()
+  @IsString()
+  paymentDateTo?: string;
+
+  @IsOptional()
+  @IsString()
+  paymentMode?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn([
+    'documentType',
+    'invoiceDate',
+    'orderCancelDate',
+    'frRefundedDate',
+    'gstin',
+    'invoiceAmount',
+    'taxableAmount',
+    'paymentDate',
+    'finalSettlementAmount',
+    'orderID',
+  ])
   sortBy?:
     | 'documentType'
     | 'invoiceDate'
+    | 'orderCancelDate'
+    | 'frRefundedDate'
     | 'gstin'
     | 'invoiceAmount'
-    | 'taxableAmount';
+    | 'taxableAmount'
+    | 'paymentDate'
+    | 'finalSettlementAmount'
+    | 'orderID';
 
   @IsOptional()
   @IsString()
@@ -47,4 +81,8 @@ export class ListImportedRowsDto {
   @IsOptional()
   @IsString()
   skip?: string;
+
+  @IsOptional()
+  @IsString()
+  search?: string;
 }

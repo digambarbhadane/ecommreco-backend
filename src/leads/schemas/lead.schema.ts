@@ -38,6 +38,12 @@ export class Lead {
   @Prop()
   ordersPerMonth?: '0-1000' | '1000-2000' | '2000-3000' | '3000+';
 
+  @Prop({
+    type: String,
+    enum: ['ecommerce_accounting', 'reconciliation', 'both'],
+  })
+  servicesNeeded?: 'ecommerce_accounting' | 'reconciliation' | 'both';
+
   @Prop()
   firmName?: string;
 

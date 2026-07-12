@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
@@ -8,6 +9,7 @@ import { Model, PipelineStage, Types, UpdateQuery } from 'mongoose';
 import * as bcrypt from 'bcrypt';
 import { NotificationsService } from '../notifications/notifications.service';
 import { EmailService } from '../email/email.service';
+import { EmailConfigService } from '../email/config/email.config';
 import { EmailType } from '../email/email.types';
 import { Seller, SellerDocument } from '../sellers/schemas/seller.schema';
 import { User, UserDocument } from '../users/schemas/user.schema';
@@ -34,6 +36,8 @@ type RequestUser = {
 
 @Injectable()
 export class LeadsService {
+  private readonly logger = new Logger(LeadsService.name);
+
   constructor(
     @InjectModel(Lead.name)
     private readonly leadModel: Model<LeadDocument>,
@@ -45,6 +49,7 @@ export class LeadsService {
     private readonly counterModel: Model<CounterDocument>,
     private readonly notificationsService: NotificationsService,
     private readonly emailService: EmailService,
+    private readonly emailConfig: EmailConfigService,
   ) {}
 
   private async getNextLeadId(date = new Date()): Promise<string> {
@@ -1065,7 +1070,7 @@ export class LeadsService {
       ],
       notes: [
         {
-          content: `Lead created by seller ${dto.fullName}. Source: ${source}`,
+          content: `Lead created by seller ${dto.fullName}. Source: ${source}. Services: ${dto.servicesNeeded}`,
           addedBy: dto.fullName,
           createdAt: new Date(),
         },
@@ -1078,10 +1083,79 @@ export class LeadsService {
       message: `New lead created for ${created.fullName}. Score: ${leadScore}`,
     });
 
+    void this.sendRegistrationWelcomeEmail(dto, created.leadId).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `Failed to send registration welcome email to ${dto.email}: ${message}`,
+      );
+    });
+
     return {
       success: true,
       data: created,
     };
+  }
+
+  private async sendRegistrationWelcomeEmail(
+    dto: CreateLeadDto,
+    leadId?: string,
+  ) {
+    const recipient = this.normalizeEmail(dto.email);
+    if (!recipient) return;
+
+    await this.emailService.sendEmail({
+      to: recipient,
+      type: EmailType.REGISTRATION_WELCOME,
+      fromOverride: this.emailConfig.formatFromAddress(
+        this.emailConfig.defaultFrom,
+      ),
+      replyTo: this.emailConfig.supportEmail,
+      subject: 'Welcome to EcommReco — we will connect within 24 hours',
+      payload: {
+        fullName: dto.fullName,
+        email: recipient,
+        contactNumber: dto.contactNumber,
+        servicesLabel: this.formatServicesNeededLabel(dto.servicesNeeded),
+        marketplacesLabel: this.formatMarketplacesLabel(dto.marketplaces),
+        ordersPerMonth: dto.ordersPerMonth,
+        leadId: leadId ?? '',
+        websiteUrl: this.emailConfig.frontendUrl,
+        supportEmail: this.emailConfig.supportEmail,
+        year: new Date().getFullYear(),
+      },
+    });
+  }
+
+  private formatServicesNeededLabel(
+    value?: CreateLeadDto['servicesNeeded'],
+  ): string {
+    switch (value) {
+      case 'ecommerce_accounting':
+        return 'Ecommerce Accounting';
+      case 'reconciliation':
+        return 'Reconciliation';
+      case 'both':
+        return 'Ecommerce Accounting & Reconciliation';
+      default:
+        return '';
+    }
+  }
+
+  private formatMarketplacesLabel(marketplaces?: string[]): string {
+    if (!Array.isArray(marketplaces) || marketplaces.length === 0) {
+      return '';
+    }
+    const labels: Record<string, string> = {
+      amazon: 'Amazon',
+      flipkart: 'Flipkart',
+      myntra: 'Myntra',
+      meesho: 'Meesho',
+      shopify: 'Shopify',
+      other: 'Other',
+    };
+    return marketplaces
+      .map((item) => labels[item.toLowerCase()] ?? item)
+      .join(', ');
   }
 
   async importLeads(dto: ImportLeadsDto, user?: RequestUser) {
@@ -2896,6 +2970,7 @@ export class LeadsService {
         message: 'Lead not found',
       });
     }
+
     if (typeof lead.sellerId === 'string' && lead.sellerId.trim().length > 0) {
       const existingSeller = await this.sellerModel
         .findById(lead.sellerId)
@@ -2924,6 +2999,7 @@ export class LeadsService {
         },
       };
     }
+
     if (!lead.leadId) {
       lead.leadId = await this.getNextLeadId(
         this.toDate((lead as unknown as { createdAt?: unknown }).createdAt),
@@ -2938,12 +3014,61 @@ export class LeadsService {
     if (lead.isModified()) {
       await lead.save();
     }
-    if (lead.leadStatus === 'converted') {
+
+    const leadEmail = typeof lead.email === 'string' ? lead.email.trim().toLowerCase() : '';
+    if (!leadEmail) {
       throw new BadRequestException({
         success: false,
-        message: 'Lead already converted',
+        message: 'Lead email is required before conversion',
       });
     }
+
+    if (lead.leadStatus === 'converted') {
+      const orphanSeller = await this.sellerModel
+        .findOne({ email: leadEmail, leadId: lead.leadId })
+        .exec();
+      if (orphanSeller) {
+        lead.sellerId = orphanSeller._id.toString();
+        await lead.save();
+        const userSync = await this.ensureSellerUserAccount(
+          orphanSeller.email,
+          orphanSeller.fullName,
+          orphanSeller.contactNumber,
+          user?.email || 'system',
+        );
+        return {
+          success: true,
+          message: 'Lead linked to existing seller record.',
+          data: {
+            leadId: lead.leadId,
+            sellerId: orphanSeller._id.toString(),
+            userId: userSync.userId,
+          },
+        };
+      }
+
+      this.repairLeadConversionQueue(lead, user?.email || 'system');
+      lead.markModified('paymentDetails');
+      await lead.save();
+
+      const isSuperAdmin = user?.role === 'super_admin';
+      return {
+        success: true,
+        message: isSuperAdmin
+          ? 'Lead is ready for seller account setup.'
+          : 'Lead is already queued for account manager review.',
+        data: {
+          leadId: lead.leadId,
+          status: isSuperAdmin
+            ? 'ready_for_seller_creation'
+            : 'queued_for_account_manager',
+          paymentStatus: lead.paymentDetails?.status,
+          conversionRequestedAt: lead.conversionRequestedAt,
+          sellerId: lead.sellerId,
+        },
+      };
+    }
+
     if (lead.leadStatus === 'rejected') {
       throw new BadRequestException({
         success: false,
@@ -2951,7 +3076,16 @@ export class LeadsService {
       });
     }
 
-    // Determine subscription details
+    const existingSellerByEmail = await this.sellerModel
+      .findOne({ email: leadEmail })
+      .exec();
+    if (existingSellerByEmail) {
+      throw new BadRequestException({
+        success: false,
+        message: 'A seller with this email already exists.',
+      });
+    }
+
     let gstSlots = dto.gstSlots;
     let durationYears = dto.durationYears;
     let amount = 0;
@@ -2962,7 +3096,6 @@ export class LeadsService {
         durationYears = lead.subscriptionConfig.durationYears;
         amount = lead.subscriptionConfig.amount;
       } else {
-        // Default to 1 GST, 1 Year if nothing configured
         gstSlots = 1;
         durationYears = 1;
         amount = PRICE_PER_GST_PER_YEAR;
@@ -2971,32 +3104,29 @@ export class LeadsService {
       amount = gstSlots * durationYears * PRICE_PER_GST_PER_YEAR;
     }
 
-    // Force payment completion as per Sales Manager action
     const paymentCompletedAt = new Date();
     const subscriptionId = this.generateSubscriptionId();
     const leadCreatedAt = (lead as unknown as { createdAt?: Date }).createdAt;
-    const leadEmail = typeof lead.email === 'string' ? lead.email.trim() : '';
-    if (!leadEmail) {
-      throw new BadRequestException({
-        success: false,
-        message: 'Lead email is required before conversion',
-      });
-    }
-    const leadContactNumber =
-      typeof lead.contactNumber === 'string' ? lead.contactNumber.trim() : '';
-    const leadGstNumber =
-      typeof lead.gstNumber === 'string' ? lead.gstNumber.trim() : '';
+    const sellerFullName =
+      (typeof lead.fullName === 'string' ? lead.fullName.trim() : '') ||
+      leadEmail.split('@')[0] ||
+      'Seller';
+    const actorEmail = user?.email || 'system';
 
-    // Update Lead Status
     lead.leadStatus = 'converted';
     lead.pipelineStage = 'Converted to Seller';
+    lead.convertedAt = paymentCompletedAt;
+    lead.conversionRequestedAt = paymentCompletedAt;
+    lead.conversionRequestedBy = actorEmail;
+    lead.conversionSubscriptionId = subscriptionId;
+    lead.conversionAmount = amount;
+    lead.conversionLeadCreatedAt = leadCreatedAt;
 
-    // Mark Lead Payment as Completed
     const paymentDetails = lead.paymentDetails ?? {
       link: 'manual-conversion',
-      status: 'completed',
-      generatedBy: 'system',
-      generatedAt: new Date(),
+      status: 'completed' as const,
+      generatedBy: actorEmail,
+      generatedAt: paymentCompletedAt,
     };
     paymentDetails.status = 'completed';
     paymentDetails.paymentDate = paymentCompletedAt;
@@ -3006,106 +3136,98 @@ export class LeadsService {
       gstSlots,
       durationYears,
       amount,
-      updatedAt: new Date(),
-      updatedBy: user?.email || 'sales_manager',
+      updatedAt: paymentCompletedAt,
+      updatedBy: actorEmail,
     };
 
-    (
-      lead as unknown as { conversionRequestedAt?: Date }
-    ).conversionRequestedAt = paymentCompletedAt;
-    (
-      lead as unknown as { conversionRequestedBy?: string }
-    ).conversionRequestedBy = user?.email || 'system';
-    (
-      lead as unknown as { conversionSubscriptionId?: string }
-    ).conversionSubscriptionId = subscriptionId;
-    (lead as unknown as { conversionAmount?: number }).conversionAmount =
-      amount;
-    (
-      lead as unknown as { conversionLeadCreatedAt?: Date }
-    ).conversionLeadCreatedAt = leadCreatedAt;
+    lead.activityTimeline = Array.isArray(lead.activityTimeline)
+      ? lead.activityTimeline
+      : [];
+    lead.activityTimeline.push({
+      action: 'lead_conversion_requested',
+      description: 'Lead sent to account manager for seller onboarding',
+      performedBy: actorEmail,
+      timestamp: paymentCompletedAt,
+    });
 
     await lead.save();
 
-    const salesManagerEmail =
-      typeof user?.email === 'string' ? user.email.toLowerCase() : '';
-
-    const seller = await this.sellerModel.create({
-      publicId: generatePublicId('seller', leadEmail.toLowerCase()),
-      fullName: lead.fullName,
-      contactNumber: leadContactNumber,
-      email: leadEmail.toLowerCase(),
-      gstNumber: leadGstNumber,
-      leadId: lead.leadId || lead._id.toString(),
-      gstSlots,
-      gstSlotsPurchased: gstSlots,
-      gstSlotsUsed: 0,
-      durationYears,
-      subscriptionDuration: durationYears,
-      amount,
-      subscriptionId,
-      onboardingStatus: 'payment_completed',
-      paymentStatus: 'payment_completed',
-      paymentDate: paymentCompletedAt,
-      paymentCompletedAt,
-      paymentCompletedBy: salesManagerEmail || 'sales_manager',
-      paymentAmount: amount,
-      paymentId: '',
-      transactionId: '',
-      username: '',
-      trainingStatus: '',
-      salesManager: salesManagerEmail,
-      firmName: '',
-      city: '',
-      state: '',
-      salesNotes: '',
-      verificationNotes: '',
-      credentialGeneratedBy: '',
-      businessType: lead.businessType || '',
-      leadSource: lead.source || '',
-      leadCreatedAt: leadCreatedAt || new Date(),
-      leadContactedAt: undefined,
-      leadConvertedAt: paymentCompletedAt,
-      leadConvertedBy: salesManagerEmail || 'sales_manager',
-      leadCreatedBy: lead.createdBy || '',
-      leadContactedBy: '',
-      paymentLinkGeneratedBy: lead.paymentDetails?.generatedBy || '',
-      accountCreatedBy: '',
-      adminApprovalRequestedBy: '',
-    });
-
-    const userSync = await this.ensureSellerUserAccount(
-      leadEmail.toLowerCase(),
-      lead.fullName || leadEmail,
-      leadContactNumber,
-      user?.email || 'sales_manager',
+    await this.notifyLeadConverted(
+      lead.fullName || sellerFullName,
+      lead.leadId,
+      undefined,
     );
-
-    lead.sellerId = String((seller as unknown as { _id: unknown })._id);
-    await lead.save();
-
-    await this.notificationsService.createNotification({
-      event: 'lead_converted',
-      recipientRole: 'operations_admin', // Notify ops/accounts
-      message: `Lead ${lead.fullName} converted to seller ${seller.id}. Payment marked as completed.`,
-    });
-
-    await this.notificationsService.createNotification({
-      event: 'lead_conversion_requested',
-      recipientRole: 'accounts_manager',
-      message: `New conversion request: ${lead.fullName} (Lead ID: ${lead.leadId}). Payment marked completed.`,
-    });
 
     return {
       success: true,
+      message: 'Lead converted and sent to account manager for seller setup.',
       data: {
         leadId: lead.leadId,
-        sellerId: seller._id.toString(),
-        userId: userSync.userId,
+        status: 'queued_for_account_manager',
         amount,
         paymentCompletedAt,
       },
     };
+  }
+
+  private repairLeadConversionQueue(lead: LeadDocument, actorEmail: string) {
+    const now = new Date();
+    if (!lead.conversionRequestedAt) {
+      lead.conversionRequestedAt =
+        lead.convertedAt ??
+        (lead.paymentDetails?.paymentDate
+          ? new Date(lead.paymentDetails.paymentDate)
+          : now);
+    }
+    if (!lead.conversionRequestedBy) {
+      lead.conversionRequestedBy = actorEmail;
+    }
+    if (!lead.convertedAt) {
+      lead.convertedAt = lead.conversionRequestedAt;
+    }
+    const paymentDetails = lead.paymentDetails ?? {
+      link: 'manual-conversion',
+      status: 'completed' as const,
+      generatedBy: actorEmail,
+      generatedAt: now,
+    };
+    if (paymentDetails.status !== 'completed') {
+      paymentDetails.status = 'completed';
+    }
+    if (!paymentDetails.paymentDate) {
+      paymentDetails.paymentDate = lead.conversionRequestedAt ?? now;
+    }
+    lead.paymentDetails = paymentDetails;
+    lead.markModified('paymentDetails');
+    if (!lead.pipelineStage || lead.pipelineStage === 'Interested') {
+      lead.pipelineStage = 'Converted to Seller';
+    }
+  }
+
+  private async notifyLeadConverted(
+    leadName: string,
+    leadPublicId: string | undefined,
+    sellerId?: string,
+  ) {
+    try {
+      const sellerNote = sellerId ? ` Seller ID: ${sellerId}.` : '';
+      await this.notificationsService.createNotification({
+        event: 'lead_converted',
+        recipientRole: 'operations_admin',
+        message: `Lead ${leadName} converted.${sellerNote} Payment marked as completed.`,
+      });
+      await this.notificationsService.createNotification({
+        event: 'lead_conversion_requested',
+        recipientRole: 'accounts_manager',
+        message: `New conversion request: ${leadName} (Lead ID: ${leadPublicId ?? 'N/A'}). Payment marked completed. Please create the seller account.`,
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        `Lead converted but notification dispatch failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 
   private generateTempPassword() {
