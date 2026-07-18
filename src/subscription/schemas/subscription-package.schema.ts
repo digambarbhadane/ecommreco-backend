@@ -38,6 +38,18 @@ export class SubscriptionPackage {
   @Prop({ required: true, min: 1 })
   durationInDays: number;
 
+  /**
+   * single_gst — one GST + one marketplace portal (e.g. ₹999 + 18% GST)
+   * multi_gst_pan — monthly plan billed per selected months under one PAN/APOB
+   */
+  @Prop({
+    type: String,
+    enum: ['single_gst', 'multi_gst_pan'],
+    default: 'multi_gst_pan',
+    index: true,
+  })
+  planType?: 'single_gst' | 'multi_gst_pan';
+
   @Prop({ required: true, default: true, index: true })
   isActive: boolean;
 

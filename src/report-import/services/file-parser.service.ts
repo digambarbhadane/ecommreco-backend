@@ -13,13 +13,29 @@ import {
 import { ParsedSheetRow } from './mapping.service';
 import {
   MEESHO_PAYMENT_HEADER_ALIASES,
-  MEESHO_PAYMENT_HEADER_ROW_INDEX,
   MEESHO_PAYMENT_SHEET_NAMES,
 } from '../config/importMappings/meesho-payment.mapping';
+import {
+  MEESHO_PAYMENT_DATA_START_OFFSET,
+  MEESHO_PAYMENT_HEADER_ROW_INDEX,
+  MEESHO_PAYMENT_SHEETS,
+  resolveMeeshoPaymentSheetName,
+  type MeeshoPaymentSheetKind,
+} from '../payments/meesho/meesho-payment-sheet-kinds';
 import {
   FLIPKART_PAYMENT_HEADER_ALIASES,
   FLIPKART_PAYMENT_SHEET_NAMES,
 } from '../config/importMappings/flipkart-payment.mapping';
+import {
+  FLIPKART_PAYMENT_SECONDARY_HEADER_ROW_INDEX,
+  FLIPKART_PAYMENT_SECONDARY_SHEETS,
+  matchSecondarySheetKind,
+  type FlipkartPaymentSecondarySheetKind,
+} from '../payments/flipkart/sheets/flipkart-payment-sheet-kinds';
+import {
+  enrichStorageRecallSheetRows,
+  forwardFillSecondaryPaymentIds,
+} from '../payments/flipkart/sheets/enrich-storage-recall-rows.util';
 import {
   FLIPKART_RETURN_HEADER_ALIASES,
   FLIPKART_RETURN_SHEET_NAMES,
@@ -47,6 +63,33 @@ type ParsedWorkbook = {
 type ParsedSingleSheetWorkbook = {
   rows: ParsedSheetRow[];
   headers: string[];
+};
+
+export type ParsedMeeshoPaymentSheet = {
+  kind: MeeshoPaymentSheetKind;
+  sheetName: string;
+  headers: string[];
+  rows: ParsedSheetRow[];
+  /** Column-indexed cell values (Order Payments — preserves duplicate headers). */
+  indexedRows?: unknown[][];
+};
+
+export type ParsedMeeshoPaymentAllSheets = {
+  sheets: ParsedMeeshoPaymentSheet[];
+};
+
+export type ParsedFlipkartPaymentSecondarySheet = {
+  kind: FlipkartPaymentSecondarySheetKind;
+  sheetName: string;
+  rows: ParsedSheetRow[];
+  headers: string[];
+};
+
+export type ParsedFlipkartPaymentAllSheets = {
+  orders: ParsedSingleSheetWorkbook & { sheetName: string };
+  secondary: ParsedFlipkartPaymentSecondarySheet[];
+  /** Secondary sheet labels present in workbook config but missing from file */
+  missingSheetLabels: string[];
 };
 
 export type MeeshoFileKind =
@@ -364,6 +407,89 @@ export class FileParserService {
     };
   }
 
+  /**
+   * Parse Orders sheet (required) plus optional secondary Flipkart payment sheets.
+   * Missing secondary sheets are listed in missingSheetLabels — never fails for them.
+   */
+  parseFlipkartPaymentAllSheetsWorkbook(
+    buffer: Buffer,
+  ): ParsedFlipkartPaymentAllSheets {
+    const workbook = XLSX.read(buffer, {
+      type: 'buffer',
+      cellDates: true,
+      cellText: true,
+    });
+    if (!workbook.SheetNames.length) {
+      throw new BadRequestException('Payment workbook does not contain any sheet');
+    }
+
+    const resolvedOrders = this.resolveFlipkartPaymentSheet(workbook);
+    if (!resolvedOrders) {
+      throw new BadRequestException(
+        'Payment workbook must contain an "Orders" sheet or recognizable Flipkart settlement report headers',
+      );
+    }
+
+    const orderRows = this.parseSheetData(
+      resolvedOrders.sheet,
+      resolvedOrders.sheetName,
+      resolvedOrders.headerRowIndex,
+      [],
+    );
+    const orders = {
+      rows: orderRows,
+      headers: this.resolveHeaders(
+        resolvedOrders.sheet,
+        resolvedOrders.headerRowIndex,
+        orderRows,
+      ),
+      sheetName: resolvedOrders.sheetName,
+    };
+
+    const secondary: ParsedFlipkartPaymentSecondarySheet[] = [];
+    const foundKinds = new Set<FlipkartPaymentSecondarySheetKind>();
+
+    for (const sheetName of workbook.SheetNames) {
+      if (sheetName === resolvedOrders.sheetName) continue;
+      const kind = matchSecondarySheetKind(sheetName);
+      if (!kind) continue;
+      if (foundKinds.has(kind)) continue;
+
+      const sheet = workbook.Sheets[sheetName];
+      if (!sheet) continue;
+
+      const headerRowIndex =
+        this.resolveFlipkartSecondaryPaymentHeaderRowIndex(sheet);
+      if (headerRowIndex < 0) continue;
+
+      // Prefer cell-by-cell parse for secondary sheets (formula / fee columns).
+      let rows = this.parseSheetRows(sheet, sheetName, headerRowIndex, []);
+
+      if (kind === 'storageRecall') {
+        rows = this.enrichFlipkartStorageRecallRows(sheet, rows);
+      } else {
+        rows = forwardFillSecondaryPaymentIds(rows) as ParsedSheetRow[];
+      }
+
+      // Drop formula-legend rows (A / B / SUM labels) that sometimes sit under headers.
+      rows = rows.filter((row) => !this.isFlipkartFormulaLegendRow(row));
+
+      secondary.push({
+        kind,
+        sheetName,
+        rows,
+        headers: this.resolveHeaders(sheet, headerRowIndex, rows),
+      });
+      foundKinds.add(kind);
+    }
+
+    const missingSheetLabels = FLIPKART_PAYMENT_SECONDARY_SHEETS.filter(
+      (def) => !foundKinds.has(def.kind),
+    ).map((def) => def.label);
+
+    return { orders, secondary, missingSheetLabels };
+  }
+
   parseFlipkartReturnWorkbook(buffer: Buffer): ParsedSingleSheetWorkbook {
     const workbook = XLSX.read(buffer, {
       type: 'buffer',
@@ -450,11 +576,118 @@ export class FileParserService {
     }
 
     const { sheet, sheetName, headerRowIndex } = resolved;
-    const rows = this.parseSheetData(sheet, sheetName, headerRowIndex, []);
+    const rows = this.parseSheetData(
+      sheet,
+      sheetName,
+      headerRowIndex,
+      [],
+      MEESHO_PAYMENT_DATA_START_OFFSET,
+    );
     return {
       rows,
       headers: this.resolveHeaders(sheet, headerRowIndex, rows),
     };
+  }
+
+  parseMeeshoPaymentAllSheetsWorkbook(
+    buffer: Buffer,
+  ): ParsedMeeshoPaymentAllSheets {
+    const workbook = XLSX.read(buffer, {
+      type: 'buffer',
+      cellDates: true,
+    });
+    if (!workbook.SheetNames.length) {
+      throw new BadRequestException('Payment workbook does not contain any sheet');
+    }
+
+    const sheets: ParsedMeeshoPaymentSheet[] = [];
+    for (const def of MEESHO_PAYMENT_SHEETS) {
+      const sheetName = resolveMeeshoPaymentSheetName(workbook.SheetNames, def.kind);
+      if (!sheetName) {
+        throw new BadRequestException(
+          `Required sheet '${def.label}' not found.`,
+        );
+      }
+      const sheet = workbook.Sheets[sheetName];
+      if (!sheet) {
+        throw new BadRequestException(
+          `Required sheet '${def.label}' not found.`,
+        );
+      }
+
+      const headerRowIndex = MEESHO_PAYMENT_HEADER_ROW_INDEX;
+
+      if (def.kind === 'orderPayments') {
+        const indexed = this.parseMeeshoPaymentIndexedSheet(sheet);
+        sheets.push({
+          kind: def.kind,
+          sheetName,
+          headers: indexed.headers,
+          rows: [],
+          indexedRows: indexed.rows,
+        });
+        continue;
+      }
+
+      const rows = this.parseSheetData(
+        sheet,
+        sheetName,
+        headerRowIndex,
+        [],
+        MEESHO_PAYMENT_DATA_START_OFFSET,
+      );
+      const headers = this.resolveHeaders(sheet, headerRowIndex, rows).map(
+        (header) =>
+          String(header ?? '')
+            .trim()
+            .replace(/\n/g, ' ')
+            .replace(/\s+/g, ' '),
+      );
+
+      sheets.push({
+        kind: def.kind,
+        sheetName,
+        headers,
+        rows,
+      });
+    }
+
+    return { sheets };
+  }
+
+  /** Meesho Order Payments: headers row 2, data row 4+, preserve duplicate columns by index. */
+  parseMeeshoPaymentIndexedSheet(sheet: XLSX.WorkSheet): {
+    headers: string[];
+    rows: unknown[][];
+  } {
+    const matrixRows = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+      header: 1,
+      defval: null,
+      raw: false,
+      blankrows: true,
+    });
+    const headerRow = matrixRows[MEESHO_PAYMENT_HEADER_ROW_INDEX] ?? [];
+    const headers = headerRow.map((cell) =>
+      String(cell ?? '')
+        .trim()
+        .replace(/\n/g, ' ')
+        .replace(/\s+/g, ' '),
+    );
+    const dataStart =
+      MEESHO_PAYMENT_HEADER_ROW_INDEX + MEESHO_PAYMENT_DATA_START_OFFSET;
+    const rows: unknown[][] = [];
+
+    for (let rowIndex = dataStart; rowIndex < matrixRows.length; rowIndex += 1) {
+      const cells = matrixRows[rowIndex];
+      if (!Array.isArray(cells)) continue;
+      const isEmpty = cells.every(
+        (cell) => cell === null || cell === '' || cell === undefined,
+      );
+      if (isEmpty) continue;
+      rows.push(cells);
+    }
+
+    return { headers, rows };
   }
 
   parseMyntraWorkbook(
@@ -493,12 +726,14 @@ export class FileParserService {
     sheetName: string,
     headerRowIndex: number,
     gstColumnsForDataStart: string[] = [],
+    dataStartOffsetAfterHeader = 1,
   ): ParsedSheetRow[] {
     const fast = this.parseSheetRowsFast(
       sheet,
       sheetName,
       headerRowIndex,
       gstColumnsForDataStart,
+      dataStartOffsetAfterHeader,
     );
     if (fast.length > 0) {
       return fast;
@@ -508,6 +743,7 @@ export class FileParserService {
       sheetName,
       headerRowIndex,
       gstColumnsForDataStart,
+      dataStartOffsetAfterHeader,
     );
   }
 
@@ -675,6 +911,7 @@ export class FileParserService {
     sheetName: string,
     headerRowIndex: number,
     gstColumnsForDataStart: string[] = [],
+    dataStartOffsetAfterHeader = 1,
   ): ParsedSheetRow[] {
     const matrix = this.sheetToMatrix(sheet);
 
@@ -691,7 +928,7 @@ export class FileParserService {
     const dataStartRow =
       gstColumnsForDataStart.length > 0
         ? this.resolveDataStartRow(matrix, headerRowIndex, gstColumnsForDataStart)
-        : headerRowIndex + 1;
+        : headerRowIndex + dataStartOffsetAfterHeader;
 
     const parsed: ParsedSheetRow[] = [];
     for (
@@ -801,6 +1038,10 @@ export class FileParserService {
       }
       return '#N/A';
     }
+    // Prefer raw numeric values for formula / currency cells so SUM columns are usable.
+    if (typeof cell.v === 'number' && Number.isFinite(cell.v)) {
+      return cell.v;
+    }
     if (cell.w != null && String(cell.w).trim() !== '') {
       return cell.w;
     }
@@ -860,6 +1101,7 @@ export class FileParserService {
     sheetName: string,
     headerRowIndex: number,
     gstColumnsForDataStart: string[] = [],
+    dataStartOffsetAfterHeader = 1,
   ): ParsedSheetRow[] {
     const range = this.getSheetRange(sheet);
     // blankrows: true keeps matrix indices in sync with the headerRowIndex that
@@ -879,9 +1121,10 @@ export class FileParserService {
             headerRowIndex,
             gstColumnsForDataStart,
           )
-        : headerRowIndex + 1;
+        : headerRowIndex + dataStartOffsetAfterHeader;
     const absoluteHeaderRow = this.toAbsoluteRow(sheet, headerRowIndex);
     const subHeaderRow =
+      gstColumnsForDataStart.length > 0 &&
       dataStartMatrixIndex > headerRowIndex + 1
         ? this.toAbsoluteRow(sheet, headerRowIndex + 1)
         : undefined;
@@ -1294,6 +1537,9 @@ export class FileParserService {
 
   private isFlipkartPaymentSheetName(sheetName: string): boolean {
     const normalized = normalizeHeader(sheetName);
+    if (matchSecondarySheetKind(sheetName)) {
+      return false;
+    }
     if (
       FLIPKART_PAYMENT_SHEET_NAMES.some(
         (target) => normalizeHeader(target) === normalized,
@@ -1329,6 +1575,16 @@ export class FileParserService {
     );
   }
 
+  /** Enrich Storage_Recall: forward-fill NEFT, compute SUM(J:K) when formula is blank. */
+  private enrichFlipkartStorageRecallRows(
+    sheet: XLSX.WorkSheet,
+    rows: ParsedSheetRow[],
+  ): ParsedSheetRow[] {
+    return enrichStorageRecallSheetRows(rows, (absoluteRow, absoluteCol) =>
+      this.getCellValue(sheet, absoluteRow, absoluteCol),
+    ) as ParsedSheetRow[];
+  }
+
   private detectFlipkartPaymentHeaderRowIndex(sheet: XLSX.WorkSheet): number {
     const matrix = this.sheetPreviewMatrix(sheet, 200);
     let bestIndex = -1;
@@ -1355,6 +1611,102 @@ export class FileParserService {
       return -1;
     }
     return bestIndex;
+  }
+
+  /** Secondary Flipkart payment sheets are keyed by NEFT ID + settlement value. */
+  private detectFlipkartSecondaryPaymentHeaderRowIndex(
+    sheet: XLSX.WorkSheet,
+  ): number {
+    const matrix = this.sheetPreviewMatrix(sheet, 80);
+    let bestIndex = -1;
+    let bestScore = -1;
+    const scanLimit = Math.min(matrix.length, 80);
+
+    for (let i = 0; i < scanLimit; i += 1) {
+      const row = matrix[i];
+      if (!Array.isArray(row)) continue;
+      const normalizedCells = this.normalizePreviewRow(row);
+      if (!normalizedCells.length || !rowLooksLikeHeaderRow(normalizedCells)) {
+        continue;
+      }
+      const hasNeft = normalizedCells.some(
+        (cell) =>
+          cell === 'neft id' ||
+          cell === 'neftid' ||
+          cell.includes('neft id') ||
+          (cell.includes('neft') && !cell.includes('type')),
+      );
+      const hasSettlement = normalizedCells.some(
+        (cell) =>
+          cell.includes('settlement value') ||
+          cell.includes('settlement amount') ||
+          cell.includes('settlement type'),
+      );
+      if (!hasNeft) continue;
+      const score =
+        (hasNeft ? 3 : 0) +
+        (hasSettlement ? 2 : 0) +
+        this.scoreMeeshoHeaderRow(normalizedCells, [
+          'neft id',
+          'payment date',
+          'settlement value',
+          'service name',
+          'claim id',
+          'order id',
+          'transaction id',
+        ]);
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = i;
+      }
+    }
+
+    return bestScore >= 3 ? bestIndex : -1;
+  }
+
+  /**
+   * Prefer auto-detected header row; fall back to Flipkart's standard Excel row 2
+   * (index 1), then row 1 (index 0).
+   */
+  private resolveFlipkartSecondaryPaymentHeaderRowIndex(
+    sheet: XLSX.WorkSheet,
+  ): number {
+    const detected = this.detectFlipkartSecondaryPaymentHeaderRowIndex(sheet);
+    if (detected >= 0) return detected;
+
+    for (const candidate of [
+      FLIPKART_PAYMENT_SECONDARY_HEADER_ROW_INDEX,
+      0,
+    ]) {
+      const matrix = this.sheetPreviewMatrix(sheet, candidate + 1);
+      const row = matrix[candidate];
+      if (!Array.isArray(row)) continue;
+      const normalizedCells = this.normalizePreviewRow(row);
+      const hasNeft = normalizedCells.some(
+        (cell) =>
+          cell.includes('neft') ||
+          cell.includes('payment date') ||
+          cell.includes('settlement'),
+      );
+      if (hasNeft && normalizedCells.length >= 2) return candidate;
+    }
+
+    // Last resort: Flipkart docs say headers are on row 2.
+    return FLIPKART_PAYMENT_SECONDARY_HEADER_ROW_INDEX;
+  }
+
+  private isFlipkartFormulaLegendRow(row: ParsedSheetRow): boolean {
+    const values = Object.entries(row)
+      .filter(([key]) => !key.startsWith('__'))
+      .map(([, value]) => String(value ?? '').trim())
+      .filter(Boolean);
+    if (!values.length) return true;
+    const legendLike = values.filter((value) =>
+      /^[A-Z]{1,3}(?:\s*[+\-=].*)?$/i.test(value) ||
+      /^sum\(/i.test(value) ||
+      /^\([a-z0-9+\-\s]+\)$/i.test(value),
+    ).length;
+    return legendLike >= Math.max(2, Math.ceil(values.length * 0.6));
   }
 
   private resolveFlipkartPaymentSheet(workbook: XLSX.WorkBook): {

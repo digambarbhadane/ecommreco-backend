@@ -17,6 +17,7 @@ import {
 import { Request } from 'express';
 import { AuthGuard } from '@nestjs/passport';
 import { CreateMarketplaceDto } from './dto/create-marketplace.dto';
+import { DeleteMarketplaceDto } from './dto/delete-marketplace.dto';
 import { MarketplacesService } from './marketplaces.service';
 import { PlatformMarketplacesService } from '../platform-marketplaces/platform-marketplaces.service';
 import { Roles } from '../auth/roles.decorator';
@@ -86,6 +87,31 @@ export class MarketplacesController {
     return this.marketplacesService.remove(id, {
       requesterId: req.user?.id,
       requesterRole: req.user?.role,
+      ipAddress: req.ip,
+      userAgent: Array.isArray(req.headers?.['user-agent'])
+        ? req.headers?.['user-agent']?.[0]
+        : req.headers?.['user-agent'],
+    });
+  }
+
+  @Delete(':id/permanent')
+  @ApiOperation({ summary: 'Permanently disconnect marketplace with cascade delete' })
+  @Roles('super_admin', 'accounts_manager', 'seller')
+  removePermanently(
+    @Param('id') id: string,
+    @Body() body: DeleteMarketplaceDto,
+    @Req() req: RequestWithUser,
+  ) {
+    return this.marketplacesService.remove(id, {
+      requesterId: req.user?.id,
+      requesterRole: req.user?.role,
+      permanentDelete: true,
+      confirmedGstNumber: body?.gstNumber,
+      confirmationText: body?.confirmation,
+      ipAddress: req.ip,
+      userAgent: Array.isArray(req.headers?.['user-agent'])
+        ? req.headers?.['user-agent']?.[0]
+        : req.headers?.['user-agent'],
     });
   }
 }

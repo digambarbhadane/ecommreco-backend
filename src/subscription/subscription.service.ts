@@ -137,6 +137,7 @@ export class SubscriptionService {
       gstAmount: pricing.gstAmount,
       finalPayableAmount: pricing.finalPayableAmount,
       durationInDays: dto.durationInDays,
+      planType: dto.planType ?? 'multi_gst_pan',
       isActive: dto.isActive ?? true,
       createdBy: this.getActor(user),
     });
@@ -193,6 +194,9 @@ export class SubscriptionService {
     current.gstAmount = pricing.gstAmount;
     current.finalPayableAmount = pricing.finalPayableAmount;
     current.durationInDays = dto.durationInDays ?? current.durationInDays;
+    if (dto.planType) {
+      current.planType = dto.planType;
+    }
     current.isActive =
       typeof dto.isActive === 'boolean' ? dto.isActive : current.isActive;
     current.createdBy = this.getActor(user);

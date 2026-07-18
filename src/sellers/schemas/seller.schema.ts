@@ -238,6 +238,69 @@ export class Seller {
 
   @Prop({ default: 'active' })
   accountStatus: 'active' | 'paused' | 'suspended' | 'suspected';
+
+  /** Self-service trial flags — additive; admin-onboarded sellers remain unset/false. */
+  @Prop({ default: false, index: true })
+  isTrial?: boolean;
+
+  @Prop({
+    type: String,
+    enum: [
+      'pending_payment',
+      'active',
+      'expired',
+      'converted',
+      'suspended',
+      'data_deleted',
+    ],
+    index: true,
+  })
+  trialStatus?:
+    | 'pending_payment'
+    | 'active'
+    | 'expired'
+    | 'converted'
+    | 'suspended'
+    | 'data_deleted';
+
+  @Prop()
+  trialStart?: Date;
+
+  @Prop()
+  trialEnd?: Date;
+
+  @Prop({ default: false, index: true })
+  convertedToPaid?: boolean;
+
+  @Prop()
+  convertedAt?: Date;
+
+  @Prop()
+  cleanupDate?: Date;
+
+  @Prop({ uppercase: true, trim: true, index: true })
+  panNumber?: string;
+
+  @Prop()
+  trialSubscriptionId?: string;
+
+  @Prop({ default: false })
+  trialDataDeleted?: boolean;
+
+  @Prop()
+  trialDataDeletedAt?: Date;
+
+  /** single_gst | multi_gst_pan — set on trial→paid conversion */
+  @Prop({ type: String, enum: ['single_gst', 'multi_gst_pan'] })
+  subscriptionPlanType?: 'single_gst' | 'multi_gst_pan';
+
+  /** Locked PAN for multi_gst_pan plans — additional GSTs must match this PAN */
+  @Prop({ uppercase: true, trim: true, index: true })
+  lockedPanNumber?: string;
+
+  /** YYYY-MM months purchased for reconciliation access */
+  @Prop({ type: [String], default: [] })
+  reconciliationMonths?: string[];
 }
 
 export const SellerSchema = SchemaFactory.createForClass(Seller);

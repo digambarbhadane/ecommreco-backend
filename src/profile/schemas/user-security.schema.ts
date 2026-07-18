@@ -42,6 +42,28 @@ export class UserSecurity {
 
   @Prop({ type: [UserSessionSchema], default: [] })
   activeSessions: UserSession[];
+
+  /** Hashed refresh tokens keyed by jti for revocation. */
+  @Prop({
+    type: [
+      {
+        _id: false,
+        jti: { type: String, required: true },
+        sessionId: { type: String, required: true },
+        tokenHash: { type: String, required: true },
+        expiresAt: { type: Date, required: true },
+        createdAt: { type: Date, required: true },
+      },
+    ],
+    default: [],
+  })
+  refreshTokens?: Array<{
+    jti: string;
+    sessionId: string;
+    tokenHash: string;
+    expiresAt: Date;
+    createdAt: Date;
+  }>;
 }
 
 export const UserSecuritySchema = SchemaFactory.createForClass(UserSecurity);

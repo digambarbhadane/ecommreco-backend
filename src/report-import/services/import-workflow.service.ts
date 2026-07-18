@@ -55,9 +55,12 @@ import {
   buildPaymentSummaryByNeftPipeline,
   summarizePaymentNeftRows,
   type PaymentNeftSummaryRow,
+  type PaymentSheetBreakdownItem,
 } from '../utils/payment-summary.aggregation';
 import { ReconAdjustment } from '../schemas/recon-adjustment.schema';
 import { FlipkartPaymentRepository } from '../payments/flipkart/flipkart-payment.repository';
+import { AmazonPaymentRepository } from '../payments/amazon/amazon-payment.repository';
+import { AnalyticsPayoutsService } from '../payments/analytics-payouts.service';
 
 const MEESHO_PAYMENT_FIELDS = [
   'liveOrderStatus',
@@ -152,6 +155,8 @@ export class ImportWorkflowService {
     private readonly adjustmentModel: Model<ReconAdjustment>,
     private readonly validationService: ValidationService,
     private readonly flipkartPaymentRepository: FlipkartPaymentRepository,
+    private readonly amazonPaymentRepository: AmazonPaymentRepository,
+    private readonly analyticsPayoutsService: AnalyticsPayoutsService,
   ) {}
 
   async clearFailedSlotRecords(params: {
@@ -916,6 +921,7 @@ export class ImportWorkflowService {
     let rowErrorCount = 0;
     let hasImportedData = false;
     let paymentSummaryRows: PaymentNeftSummaryRow[] = [];
+    let paymentSheetBreakdown: PaymentSheetBreakdownItem[] = [];
 
     if (primaryUploadId || amazonUploadIds.length) {
       const rowFilter =
@@ -1020,20 +1026,25 @@ export class ImportWorkflowService {
           .select('gstin')
           .lean()
           .exec();
-        const flipkartNeftRows =
-          await this.flipkartPaymentRepository.aggregateSettlementByNeft({
+        const flipkartSummary =
+          await this.analyticsPayoutsService.summarizeFlipkartPaymentForMonth({
             sellerIds: sellerAliases,
             gstin: gstinRow?.gstin,
             marketplace: marketplaceId,
             reportMonth,
           });
-        if (flipkartNeftRows.length) {
-          paymentSummaryRows = flipkartNeftRows.map((row) => ({
-            neftNo: row.neftId,
+        if (flipkartSummary.rows.length) {
+          paymentSummaryRows = flipkartSummary.rows.map((row) => ({
+            neftNo: row.neftNo,
             bankSettlementTotal: row.bankSettlementTotal,
             salesCount: row.salesCount,
             returnsCount: row.returnsCount,
+            paymentDate: row.paymentDate,
+            orderTotal: row.orderTotal,
+            sheetTotals: row.sheetTotals,
+            sheetCounts: row.sheetCounts,
           }));
+          paymentSheetBreakdown = flipkartSummary.totals.sheetBreakdown;
         }
       }
 
@@ -1563,7 +1574,14 @@ export class ImportWorkflowService {
         salesReturnTable,
         paymentSummary: {
           rows: paymentSummaryRows,
-          totals: summarizePaymentNeftRows(paymentSummaryRows),
+          totals: {
+            ...summarizePaymentNeftRows(paymentSummaryRows),
+            orderTotal: paymentSummaryRows.reduce(
+              (sum, row) => sum + Number(row.orderTotal ?? 0),
+              0,
+            ),
+            sheetBreakdown: paymentSheetBreakdown,
+          },
         },
         paymentAmounts,
         byDocumentType,
@@ -1759,6 +1777,13 @@ export class ImportWorkflowService {
       : inferUploadedSlotsFromFileHash(String(upload.fileHash ?? ''));
 
     if (slot === 'paymentReportFile') {
+      if (marketplace === 'amazon') {
+        await this.amazonPaymentRepository.deleteByScope({
+          sellerIds: sellerAliases,
+          marketplace: marketplaceId,
+          reportMonth,
+        });
+      }
       const salesUploads = await this.uploadModel
         .find({
           sellerId: { $in: sellerAliases },

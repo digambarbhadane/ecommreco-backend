@@ -10,9 +10,9 @@ import { JwtService } from '@nestjs/jwt';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { Connection, Model } from 'mongoose';
 import * as bcrypt from 'bcrypt';
+import { createHash, randomUUID } from 'crypto';
 import { LoginDto } from './dto/login.dto';
 import type { Request } from 'express';
-import { randomUUID } from 'crypto';
 import { Seller, SellerDocument } from '../sellers/schemas/seller.schema';
 import { User, UserDocument } from '../users/schemas/user.schema';
 import { generatePublicId } from '../common/public-id';
@@ -38,6 +38,21 @@ type AuthUser = {
   mobile?: string;
   password: string;
 };
+
+type TokenPairPayload = {
+  sub: string;
+  role: string;
+  email: string;
+  tokenVersion: number;
+  sessionId: string;
+  typ: 'access' | 'refresh';
+  jti?: string;
+};
+
+const ACCESS_TOKEN_TTL = '30m';
+const ACCESS_TOKEN_TTL_MS = 30 * 60 * 1000;
+const REFRESH_TOKEN_TTL = '7d';
+const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Sellers in these stages cannot log in yet (no credentials / payment not done). */
 const blockedSellerLoginStatuses = new Set([
@@ -205,8 +220,10 @@ export class AuthService implements OnModuleInit {
   private async issueToken(user: AuthUser, req: Request) {
     const now = new Date();
     const sessionId = randomUUID();
+    const refreshJti = randomUUID();
     const ipAddress = this.getIp(req);
     const device = this.getDevice(req);
+    const refreshExpiresAt = new Date(now.getTime() + REFRESH_TOKEN_TTL_MS);
 
     const security = await this.userSecurityModel
       .findOneAndUpdate(
@@ -248,13 +265,50 @@ export class AuthService implements OnModuleInit {
     const tokenVersion =
       typeof security?.tokenVersion === 'number' ? security.tokenVersion : 0;
 
-    const accessToken = await this.jwtService.signAsync({
-      sub: user.id,
-      role: user.role,
-      email: user.email,
-      tokenVersion,
-      sessionId,
-    });
+    const accessToken = await this.jwtService.signAsync(
+      {
+        sub: user.id,
+        role: user.role,
+        email: user.email,
+        tokenVersion,
+        sessionId,
+        typ: 'access',
+      } satisfies TokenPairPayload,
+      { expiresIn: ACCESS_TOKEN_TTL },
+    );
+
+    const refreshToken = await this.jwtService.signAsync(
+      {
+        sub: user.id,
+        role: user.role,
+        email: user.email,
+        tokenVersion,
+        sessionId,
+        typ: 'refresh',
+        jti: refreshJti,
+      } satisfies TokenPairPayload,
+      { expiresIn: REFRESH_TOKEN_TTL },
+    );
+
+    await this.userSecurityModel.updateOne(
+      { userId: user.id },
+      {
+        $push: {
+          refreshTokens: {
+            $each: [
+              {
+                jti: refreshJti,
+                sessionId,
+                tokenHash: this.hashToken(refreshToken),
+                expiresAt: refreshExpiresAt,
+                createdAt: now,
+              },
+            ],
+            $slice: -20,
+          },
+        },
+      },
+    );
 
     const { password, ...safeUser } = user;
     void password;
@@ -264,8 +318,292 @@ export class AuthService implements OnModuleInit {
       message: 'Login successful',
       data: {
         accessToken,
+        refreshToken,
+        expiresAt: new Date(now.getTime() + ACCESS_TOKEN_TTL_MS).toISOString(),
+        expiresIn: Math.floor(ACCESS_TOKEN_TTL_MS / 1000),
         user: safeUser,
       },
+    };
+  }
+
+  async refreshAccessToken(refreshToken: string, req?: Request) {
+    const token = String(refreshToken ?? '').trim();
+    if (!token) {
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Refresh token is required',
+        errorCode: 'REFRESH_TOKEN_REQUIRED',
+      });
+    }
+
+    let payload: TokenPairPayload;
+    try {
+      payload = await this.jwtService.verifyAsync<TokenPairPayload>(token);
+    } catch {
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Your session has expired. Please login again.',
+        errorCode: 'REFRESH_TOKEN_INVALID',
+      });
+    }
+
+    if (payload.typ !== 'refresh' || !payload.jti || !payload.sessionId) {
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Your session has expired. Please login again.',
+        errorCode: 'REFRESH_TOKEN_INVALID',
+      });
+    }
+
+    const security = await this.userSecurityModel
+      .findOne({ userId: payload.sub })
+      .lean()
+      .exec();
+    if (!security) {
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Your session has expired. Please login again.',
+        errorCode: 'REFRESH_TOKEN_REVOKED',
+      });
+    }
+
+    const currentVersion =
+      typeof security.tokenVersion === 'number' ? security.tokenVersion : 0;
+    if (payload.tokenVersion !== currentVersion) {
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Your session has expired. Please login again.',
+        errorCode: 'REFRESH_TOKEN_REVOKED',
+      });
+    }
+
+    const sessionActive = (security.activeSessions ?? []).some(
+      (session) => session.sessionId === payload.sessionId,
+    );
+    if (!sessionActive) {
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Your session has expired. Please login again.',
+        errorCode: 'SESSION_REVOKED',
+      });
+    }
+
+    const stored = (security.refreshTokens ?? []).find(
+      (entry) => entry.jti === payload.jti,
+    );
+    if (!stored || stored.tokenHash !== this.hashToken(token)) {
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Your session has expired. Please login again.',
+        errorCode: 'REFRESH_TOKEN_REVOKED',
+      });
+    }
+    if (new Date(stored.expiresAt).getTime() <= Date.now()) {
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Your session has expired. Please login again.',
+        errorCode: 'REFRESH_TOKEN_EXPIRED',
+      });
+    }
+
+    const account = await this.loadActiveAuthAccount(payload.sub, payload.role);
+    const now = new Date();
+
+    if (req) {
+      await this.userSecurityModel.updateOne(
+        {
+          userId: payload.sub,
+          'activeSessions.sessionId': payload.sessionId,
+        },
+        {
+          $set: {
+            'activeSessions.$.lastSeenAt': now,
+          },
+        },
+      );
+    }
+
+    const accessToken = await this.jwtService.signAsync(
+      {
+        sub: account.id,
+        role: account.role,
+        email: account.email,
+        tokenVersion: currentVersion,
+        sessionId: payload.sessionId,
+        typ: 'access',
+      } satisfies TokenPairPayload,
+      { expiresIn: ACCESS_TOKEN_TTL },
+    );
+
+    return {
+      success: true,
+      message: 'Token refreshed',
+      data: {
+        accessToken,
+        expiresAt: new Date(now.getTime() + ACCESS_TOKEN_TTL_MS).toISOString(),
+        expiresIn: Math.floor(ACCESS_TOKEN_TTL_MS / 1000),
+        user: account,
+      },
+    };
+  }
+
+  async logout(params: {
+    userId?: string;
+    sessionId?: string;
+    refreshToken?: string;
+  }) {
+    const userId = String(params.userId ?? '').trim();
+    const sessionId = String(params.sessionId ?? '').trim();
+    const refreshToken = String(params.refreshToken ?? '').trim();
+
+    if (!userId) {
+      return { success: true, message: 'Logged out' };
+    }
+
+    const pull: Record<string, unknown> = {};
+    if (sessionId) {
+      pull.activeSessions = { sessionId };
+    }
+    if (refreshToken) {
+      try {
+        const payload = await this.jwtService.verifyAsync<TokenPairPayload>(
+          refreshToken,
+          { ignoreExpiration: true },
+        );
+        if (payload.jti) {
+          pull.refreshTokens = { jti: payload.jti };
+        }
+      } catch {
+        // ignore invalid refresh on logout
+      }
+    } else if (sessionId) {
+      pull.refreshTokens = { sessionId };
+    }
+
+    if (Object.keys(pull).length) {
+      await this.userSecurityModel.updateOne({ userId }, { $pull: pull }).exec();
+    }
+
+    return { success: true, message: 'Logged out' };
+  }
+
+  private hashToken(token: string) {
+    return createHash('sha256').update(token).digest('hex');
+  }
+
+  /** Best-effort decode for logout when access token may already be expired. */
+  async decodeAccessToken(token: string) {
+    const payload = await this.jwtService.verifyAsync<TokenPairPayload>(token, {
+      ignoreExpiration: true,
+    });
+    return {
+      sub: String(payload.sub ?? ''),
+      sessionId: String(payload.sessionId ?? ''),
+      typ: payload.typ,
+    };
+  }
+
+  private async loadActiveAuthAccount(userId: string, role?: string) {
+    if (role === 'seller') {
+      const seller = await this.sellerModel
+        .findById(userId)
+        .select('-password')
+        .lean()
+        .exec();
+      if (seller) {
+        const onboarding = String(
+          (seller as { onboardingStatus?: string }).onboardingStatus ?? '',
+        );
+        if (
+          onboarding &&
+          blockedSellerLoginStatuses.has(onboarding) &&
+          !allowedSellerLoginStatuses.has(onboarding)
+        ) {
+          throw new UnauthorizedException({
+            success: false,
+            message: 'Account is disabled',
+            errorCode: 'ACCOUNT_DISABLED',
+          });
+        }
+        return {
+          id: String(seller._id),
+          name: String(
+            (seller as { fullName?: string }).fullName ??
+              (seller as { email?: string }).email ??
+              '',
+          ),
+          email: String((seller as { email?: string }).email ?? ''),
+          role: 'seller',
+          status: 'approved' as const,
+          profileCompleted: true,
+          companyName: String(
+            (seller as { firmName?: string }).firmName ??
+              (seller as { tradeName?: string }).tradeName ??
+              '',
+          ),
+          mobile: String((seller as { mobile?: string }).mobile ?? ''),
+        };
+      }
+
+      const sellerUser = await this.userModel
+        .findOne({ _id: userId, role: 'seller' })
+        .select('-password')
+        .lean()
+        .exec();
+      if (!sellerUser) {
+        throw new UnauthorizedException({
+          success: false,
+          message: 'Your session has expired. Please login again.',
+          errorCode: 'ACCOUNT_NOT_FOUND',
+        });
+      }
+      if (disabledAdminStatuses.has(String(sellerUser.status ?? ''))) {
+        throw new UnauthorizedException({
+          success: false,
+          message: 'Account is disabled',
+          errorCode: 'ACCOUNT_DISABLED',
+        });
+      }
+      return {
+        id: String(sellerUser._id),
+        name: String(sellerUser.fullName ?? sellerUser.email ?? ''),
+        email: String(sellerUser.email ?? ''),
+        role: 'seller',
+        status: (sellerUser.status ?? 'approved') as AuthUser['status'],
+        profileCompleted: Boolean(sellerUser.profileCompleted),
+        companyName: String(sellerUser.companyName ?? ''),
+        mobile: String(sellerUser.mobile ?? ''),
+      };
+    }
+
+    const user = await this.userModel
+      .findById(userId)
+      .select('-password')
+      .lean()
+      .exec();
+    if (!user) {
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Your session has expired. Please login again.',
+        errorCode: 'ACCOUNT_NOT_FOUND',
+      });
+    }
+    if (disabledAdminStatuses.has(String(user.status ?? ''))) {
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Account is disabled',
+        errorCode: 'ACCOUNT_DISABLED',
+      });
+    }
+    return {
+      id: String(user._id),
+      name: String(user.fullName ?? user.email ?? ''),
+      email: String(user.email ?? ''),
+      role: String(user.role ?? ''),
+      status: (user.status ?? 'approved') as AuthUser['status'],
+      profileCompleted: Boolean(user.profileCompleted),
+      companyName: String(user.companyName ?? ''),
+      mobile: String(user.mobile ?? ''),
     };
   }
 
@@ -655,6 +993,8 @@ export class AuthService implements OnModuleInit {
   private evaluateSellerLogin(seller: {
     onboardingStatus?: string;
     password?: string;
+    isTrial?: boolean;
+    trialStatus?: string;
   }): { allowed: boolean; message?: string; errorCode?: string } {
     const status = seller.onboardingStatus ?? 'payment_pending';
     const hasPassword =
@@ -667,6 +1007,34 @@ export class AuthService implements OnModuleInit {
           'Login credentials are not set yet. Contact support to complete onboarding.',
         errorCode: 'SELLER_NO_CREDENTIALS',
       };
+    }
+
+    // Self-service trial: allow login after payment so sellers can use the app
+    // or reach the subscription page after expiry. Pending trial payment stays blocked.
+    if (seller.isTrial) {
+      if (seller.trialStatus === 'pending_payment') {
+        return {
+          allowed: false,
+          message:
+            'Complete your trial payment of ₹499 + GST to activate your account.',
+          errorCode: 'TRIAL_PAYMENT_PENDING',
+        };
+      }
+      if (seller.trialStatus === 'suspended') {
+        return {
+          allowed: false,
+          message: 'Your trial account is suspended. Contact support.',
+          errorCode: 'TRIAL_SUSPENDED',
+        };
+      }
+      if (
+        seller.trialStatus === 'active' ||
+        seller.trialStatus === 'expired' ||
+        seller.trialStatus === 'converted' ||
+        seller.trialStatus === 'data_deleted'
+      ) {
+        return { allowed: true };
+      }
     }
 
     if (blockedSellerLoginStatuses.has(status)) {

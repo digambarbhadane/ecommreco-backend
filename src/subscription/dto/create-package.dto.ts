@@ -13,6 +13,9 @@ import {
 export const discountTypes = ['percentage', 'flat', 'none'] as const;
 export type DiscountType = (typeof discountTypes)[number];
 
+export const packagePlanTypes = ['single_gst', 'multi_gst_pan'] as const;
+export type PackagePlanType = (typeof packagePlanTypes)[number];
+
 export class CreateSubscriptionPackageDto {
   @IsNotEmpty()
   @IsString()
@@ -37,6 +40,10 @@ export class CreateSubscriptionPackageDto {
   @IsNumber()
   @Min(1)
   durationInDays: number;
+
+  @IsOptional()
+  @IsIn(packagePlanTypes)
+  planType?: PackagePlanType;
 
   @IsOptional()
   @IsBoolean()

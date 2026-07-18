@@ -38,7 +38,12 @@ const REQUIRED_SLOTS: Record<MarketplaceUploadKey, string[]> = {
 
 const OPTIONAL_SLOTS: Partial<Record<MarketplaceUploadKey, string[]>> = {
   flipkart: ['file', 'returnReportFile', 'paymentReportFile'],
-  amazon: ['mtrB2cFile', 'mtrB2bFile', 'amazonReturnReportFile'],
+  amazon: [
+    'mtrB2cFile',
+    'mtrB2bFile',
+    'amazonReturnReportFile',
+    'paymentReportFile',
+  ],
   meesho: [
     'tcsSalesFile',
     'tcsSalesReturnFile',
@@ -75,6 +80,10 @@ export class ImportSessionService {
     dto: UploadReportDto,
   ) {
     const ctx = await this.validation.validateOwnership(dto);
+    await this.validation.assertTrialImportAllowed(
+      dto.sellerId,
+      dto.reportMonth,
+    );
     if (!ctx.marketplaceIdentifier.includes(marketplaceType)) {
       throw new BadRequestException(
         `Selected marketplace does not match ${marketplaceType} import.`,
@@ -167,11 +176,18 @@ export class ImportSessionService {
       }
       const hasMtr =
         session.files.has('mtrB2cFile') || session.files.has('mtrB2bFile');
-      const hasReturnOnly =
-        session.files.has('amazonReturnReportFile') && !hasMtr;
-      if (!hasMtr && !hasReturnOnly) {
+      const hasPayment = session.files.has('paymentReportFile');
+      const hasReturn = session.files.has('amazonReturnReportFile');
+      if (hasPayment && (hasMtr || hasReturn)) {
         throw new BadRequestException(
-          'Amazon upload requires at least an MTR B2C or MTR B2B file',
+          'Amazon Payment Report must be uploaded separately from MTR and return reports',
+        );
+      }
+      const hasReturnOnly =
+        hasReturn && !hasMtr;
+      if (!hasMtr && !hasReturnOnly && !hasPayment) {
+        throw new BadRequestException(
+          'Amazon upload requires an MTR, return, or payment report file',
         );
       }
       if (hasReturnOnly) {

@@ -7,7 +7,8 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
+import { InjectConnection } from '@nestjs/mongoose';
+import { Connection, Model, Types } from 'mongoose';
 import { CreateMarketplaceDto } from './dto/create-marketplace.dto';
 import { Marketplace, MarketplaceDocument } from './schemas/marketplace.schema';
 import {
@@ -16,6 +17,11 @@ import {
 } from '../platform-marketplaces/schemas/platform-marketplace.schema';
 import { Seller, SellerDocument } from '../sellers/schemas/seller.schema';
 import { User, UserDocument } from '../users/schemas/user.schema';
+import { Gst, GstDocument } from '../gsts/schemas/gst.schema';
+import {
+  DeletionAuditLog,
+  DeletionAuditLogDocument,
+} from '../gsts/schemas/deletion-audit-log.schema';
 import { rethrowMongoWriteError } from '../common/utils/mongo-errors';
 import {
   findSellerByIdentifier,
@@ -23,6 +29,10 @@ import {
   getSellerObjectIdString,
   resolveSellerIdAliases,
 } from '../common/utils/seller-id.util';
+import {
+  cascadeDeleteAcrossCollections,
+  type MarketplaceScopeToken,
+} from '../common/utils/permanent-delete.util';
 
 @Injectable()
 export class MarketplacesService implements OnModuleInit {
@@ -37,6 +47,12 @@ export class MarketplacesService implements OnModuleInit {
     private readonly sellerModel: Model<SellerDocument>,
     @InjectModel(User.name)
     private readonly userModel: Model<UserDocument>,
+    @InjectModel(Gst.name)
+    private readonly gstModel: Model<GstDocument>,
+    @InjectModel(DeletionAuditLog.name)
+    private readonly deletionAuditModel: Model<DeletionAuditLogDocument>,
+    @InjectConnection()
+    private readonly connection: Connection,
   ) {}
 
   async onModuleInit() {
@@ -93,6 +109,20 @@ export class MarketplacesService implements OnModuleInit {
         message: 'This marketplace is already connected to the selected GST profile',
         errorCode: 'DUPLICATE_MARKETPLACE',
       });
+    }
+
+    if (seller.subscriptionPlanType === 'single_gst') {
+      const linkedCount = await this.marketplaceModel.countDocuments({
+        sellerId: { $in: sellerIdAliases },
+      });
+      if (linkedCount >= 1) {
+        throw new BadRequestException({
+          success: false,
+          message:
+            'Single GST plan allows only one marketplace portal. Upgrade to Multi GST / PAN to connect more.',
+          errorCode: 'SINGLE_GST_MARKETPLACE_LIMIT',
+        });
+      }
     }
 
     const created = await this.marketplaceModel.create({
@@ -169,7 +199,15 @@ export class MarketplacesService implements OnModuleInit {
 
   async remove(
     id: string,
-    options?: { requesterId?: string; requesterRole?: string },
+    options?: {
+      requesterId?: string;
+      requesterRole?: string;
+      permanentDelete?: boolean;
+      confirmedGstNumber?: string;
+      confirmationText?: string;
+      ipAddress?: string;
+      userAgent?: string;
+    },
   ) {
     if (!Types.ObjectId.isValid(id)) {
       throw new BadRequestException({
@@ -180,26 +218,157 @@ export class MarketplacesService implements OnModuleInit {
     }
 
     const link = await this.findOwnedLink(id, options);
-    let removed;
+    if (!options?.permanentDelete) {
+      let removed;
+      try {
+        removed = await this.marketplaceModel
+          .findByIdAndDelete(link._id)
+          .lean()
+          .exec();
+      } catch (error) {
+        rethrowMongoWriteError(error);
+      }
+      if (!removed) {
+        throw new NotFoundException({
+          success: false,
+          message: 'Marketplace not found',
+          errorCode: 'NOT_FOUND',
+        });
+      }
+      return {
+        success: true,
+        data: this.mapMarketplace(removed),
+      };
+    }
+
+    const confirmationText = String(options.confirmationText ?? '').trim();
+    if (confirmationText !== 'DELETE') {
+      throw new BadRequestException('Confirmation text must be DELETE.');
+    }
+
+    const gst = await this.gstModel.findById(String(link.gstId ?? '')).lean().exec();
+    if (!gst) {
+      throw new NotFoundException('GST not found');
+    }
+    const confirmedGst = String(options.confirmedGstNumber ?? '')
+      .trim()
+      .toUpperCase();
+    if (confirmedGst !== String(gst.gstNumber ?? '').trim().toUpperCase()) {
+      throw new BadRequestException('Entered GST Number does not match.');
+    }
+
+    const sellerAliases =
+      options?.requesterRole === 'seller' && options.requesterId
+        ? await resolveSellerIdAliases(
+            this.sellerModel,
+            this.userModel,
+            options.requesterId,
+          )
+        : [String(link.sellerId ?? '')];
+    const platform = await this.platformMarketplaceModel
+      .findById(link.platformMarketplaceId)
+      .lean()
+      .exec();
+    const marketplaceTokens: MarketplaceScopeToken[] = [
+      {
+        linkId: String(link._id ?? ''),
+        platformId: String(link.platformMarketplaceId ?? ''),
+        platformSlug: String(platform?.slug ?? '').trim().toLowerCase(),
+        platformName: String(platform?.name ?? '').trim().toLowerCase(),
+      },
+    ];
+    const marketplaceLabel =
+      String(platform?.slug ?? '').trim().toLowerCase() ||
+      String(platform?.name ?? '').trim().toLowerCase() ||
+      '';
+
     try {
-      removed = await this.marketplaceModel
-        .findByIdAndDelete(link._id)
-        .lean()
-        .exec();
+      await this.marketplaceModel.deleteOne({ _id: link._id }).exec();
+
+      const auditInsert = await this.deletionAuditModel.collection.insertOne({
+        sellerId: String(link.sellerId ?? ''),
+        userId: String(options?.requesterId ?? ''),
+        action: 'disconnect_marketplace_permanently',
+        gstNumber: String(gst.gstNumber ?? ''),
+        marketplace: marketplaceLabel,
+        deletedCollections: [],
+        totalRecordsDeleted: 0,
+        cleanupStatus: 'pending',
+        deletedAt: new Date(),
+        ipAddress: options?.ipAddress,
+        userAgent: options?.userAgent,
+      });
+
+      void this.runMarketplaceCascadeCleanup({
+        auditId: auditInsert.insertedId,
+        sellerAliases,
+        gstId: String(link.gstId ?? ''),
+        gstNumber: String(gst.gstNumber ?? ''),
+        marketplaceTokens,
+        marketplaceLabel,
+      });
     } catch (error) {
       rethrowMongoWriteError(error);
+      throw error;
     }
-    if (!removed) {
-      throw new NotFoundException({
-        success: false,
-        message: 'Marketplace not found',
-        errorCode: 'NOT_FOUND',
-      });
-    }
+
     return {
       success: true,
-      data: this.mapMarketplace(removed),
+      message:
+        'Marketplace disconnected successfully. Associated data cleanup is running in the background. Other marketplaces connected to this GST remain unaffected.',
+      data: this.mapMarketplace(link as never),
     };
+  }
+
+  private async runMarketplaceCascadeCleanup(input: {
+    auditId: Types.ObjectId;
+    sellerAliases: string[];
+    gstId: string;
+    gstNumber: string;
+    marketplaceTokens: MarketplaceScopeToken[];
+    marketplaceLabel: string;
+  }) {
+    try {
+      const summary = await cascadeDeleteAcrossCollections(this.connection, {
+        sellerAliases: input.sellerAliases,
+        gstId: input.gstId,
+        gstNumber: input.gstNumber,
+        marketplaceTokens: input.marketplaceTokens,
+        mode: 'marketplace',
+      });
+      await this.deletionAuditModel.collection.updateOne(
+        { _id: input.auditId },
+        {
+          $set: {
+            deletedCollections: summary.deletedCollections,
+            totalRecordsDeleted: summary.totalRecordsDeleted,
+            cleanupStatus: 'completed',
+          },
+        },
+      );
+      this.logger.log(
+        `Marketplace cascade cleanup completed for ${input.marketplaceLabel || input.gstNumber}: ${summary.totalRecordsDeleted} records`,
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Unknown cascade cleanup error';
+      this.logger.error(
+        `Marketplace cascade cleanup failed for ${input.marketplaceLabel || input.gstNumber}: ${message}`,
+      );
+      try {
+        await this.deletionAuditModel.collection.updateOne(
+          { _id: input.auditId },
+          {
+            $set: {
+              cleanupStatus: 'failed',
+              cleanupError: message,
+            },
+          },
+        );
+      } catch {
+        // ignore secondary audit update failures
+      }
+    }
   }
 
   private async findOwnedLink(

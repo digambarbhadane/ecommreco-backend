@@ -59,6 +59,13 @@ export const MARKETPLACE_REPORT_DEFINITIONS: Record<
       description:
         'Amazon return report — enriches return transactions with Customer Return / RTO classification',
     },
+    {
+      slot: 'paymentReportFile',
+      label: 'Payment Report',
+      required: false,
+      description:
+        'Amazon payment report for settlement and fee reconciliation. Upload separately or with other reports.',
+    },
   ],
   meesho: [
     {

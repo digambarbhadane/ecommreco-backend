@@ -68,14 +68,84 @@ import {
   FlipkartPaymentReport,
   FlipkartPaymentReportSchema,
 } from './payments/flipkart/schemas/flipkart-payment-report.schema';
+import {
+  SellerPayoutRecord,
+  SellerPayoutRecordSchema,
+} from './payments/schemas/seller-payout-record.schema';
 import { FlipkartPaymentParser } from './payments/flipkart/flipkart-payment.parser';
 import { FlipkartPaymentRepository } from './payments/flipkart/flipkart-payment.repository';
 import { FlipkartPaymentService } from './payments/flipkart/flipkart-payment.service';
 import { AnalyticsPaymentsService } from './payments/analytics-payments.service';
+import { AnalyticsPayoutsService } from './payments/analytics-payouts.service';
+import {
+  FlipkartPaymentMpFeeRebate,
+  FlipkartPaymentMpFeeRebateSchema,
+} from './payments/flipkart/sheets/schemas/mp-fee-rebate.schema';
+import {
+  FlipkartPaymentNonOrderSpf,
+  FlipkartPaymentNonOrderSpfSchema,
+} from './payments/flipkart/sheets/schemas/non-order-spf.schema';
+import {
+  FlipkartPaymentStorageRecall,
+  FlipkartPaymentStorageRecallSchema,
+} from './payments/flipkart/sheets/schemas/storage-recall.schema';
+import {
+  FlipkartPaymentValueAddedServices,
+  FlipkartPaymentValueAddedServicesSchema,
+} from './payments/flipkart/sheets/schemas/value-added-services.schema';
+import {
+  FlipkartPaymentGoogleAdsServices,
+  FlipkartPaymentGoogleAdsServicesSchema,
+} from './payments/flipkart/sheets/schemas/google-ads-services.schema';
+import {
+  FlipkartPaymentAds,
+  FlipkartPaymentAdsSchema,
+} from './payments/flipkart/sheets/schemas/ads.schema';
+import {
+  FlipkartPaymentTcsRecovery,
+  FlipkartPaymentTcsRecoverySchema,
+} from './payments/flipkart/sheets/schemas/tcs-recovery.schema';
+import {
+  FlipkartPaymentTds,
+  FlipkartPaymentTdsSchema,
+} from './payments/flipkart/sheets/schemas/tds.schema';
+import { FlipkartPaymentSecondaryRepository } from './payments/flipkart/sheets/flipkart-payment-secondary.repository';
+import { FlipkartPaymentSecondaryService } from './payments/flipkart/sheets/flipkart-payment-secondary.service';
+import {
+  MeeshoOrderPayments,
+  MeeshoOrderPaymentsSchema,
+} from './payments/meesho/schemas/order-payments.schema';
+import {
+  MeeshoAdsCost,
+  MeeshoAdsCostSchema,
+} from './payments/meesho/schemas/ads-cost.schema';
+import {
+  MeeshoReferralPayments,
+  MeeshoReferralPaymentsSchema,
+} from './payments/meesho/schemas/referral-payments.schema';
+import {
+  MeeshoCompensationRecovery,
+  MeeshoCompensationRecoverySchema,
+} from './payments/meesho/schemas/compensation-recovery.schema';
+import { MeeshoPaymentParser } from './payments/meesho/meesho-payment.parser';
+import { MeeshoPaymentRepository } from './payments/meesho/meesho-payment.repository';
+import { MeeshoPaymentService } from './payments/meesho/meesho-payment.service';
+import {
+  AmazonPaymentTransaction,
+  AmazonPaymentTransactionSchema,
+} from './payments/amazon/schemas/amazon-payment-transaction.schema';
+import { AmazonPaymentParser } from './payments/amazon/amazon-payment.parser';
+import { AmazonPaymentRepository } from './payments/amazon/amazon-payment.repository';
+import { AmazonPaymentService } from './payments/amazon/amazon-payment.service';
+import { SettlementModule } from '../settlement/settlement.module';
+import { SettlementBackfillService } from './services/settlement-backfill.service';
+import { TrialModule } from '../trial/trial.module';
 
 @Module({
   imports: [
     SkuMasterModule,
+    SettlementModule,
+    TrialModule,
     MongooseModule.forFeature([
       { name: Gst.name, schema: GstSchema },
       { name: Seller.name, schema: SellerSchema },
@@ -93,6 +163,47 @@ import { AnalyticsPaymentsService } from './payments/analytics-payments.service'
       { name: ReconAdjustment.name, schema: ReconAdjustmentSchema },
       { name: SkuMasterMapping.name, schema: SkuMasterMappingSchema },
       { name: FlipkartPaymentReport.name, schema: FlipkartPaymentReportSchema },
+      { name: SellerPayoutRecord.name, schema: SellerPayoutRecordSchema },
+      {
+        name: FlipkartPaymentMpFeeRebate.name,
+        schema: FlipkartPaymentMpFeeRebateSchema,
+      },
+      {
+        name: FlipkartPaymentNonOrderSpf.name,
+        schema: FlipkartPaymentNonOrderSpfSchema,
+      },
+      {
+        name: FlipkartPaymentStorageRecall.name,
+        schema: FlipkartPaymentStorageRecallSchema,
+      },
+      {
+        name: FlipkartPaymentValueAddedServices.name,
+        schema: FlipkartPaymentValueAddedServicesSchema,
+      },
+      {
+        name: FlipkartPaymentGoogleAdsServices.name,
+        schema: FlipkartPaymentGoogleAdsServicesSchema,
+      },
+      { name: FlipkartPaymentAds.name, schema: FlipkartPaymentAdsSchema },
+      {
+        name: FlipkartPaymentTcsRecovery.name,
+        schema: FlipkartPaymentTcsRecoverySchema,
+      },
+      { name: FlipkartPaymentTds.name, schema: FlipkartPaymentTdsSchema },
+      { name: MeeshoOrderPayments.name, schema: MeeshoOrderPaymentsSchema },
+      { name: MeeshoAdsCost.name, schema: MeeshoAdsCostSchema },
+      {
+        name: MeeshoReferralPayments.name,
+        schema: MeeshoReferralPaymentsSchema,
+      },
+      {
+        name: MeeshoCompensationRecovery.name,
+        schema: MeeshoCompensationRecoverySchema,
+      },
+      {
+        name: AmazonPaymentTransaction.name,
+        schema: AmazonPaymentTransactionSchema,
+      },
     ]),
   ],
   controllers: [ReportImportController],
@@ -121,6 +232,16 @@ import { AnalyticsPaymentsService } from './payments/analytics-payments.service'
     FlipkartPaymentRepository,
     FlipkartPaymentService,
     AnalyticsPaymentsService,
+    AnalyticsPayoutsService,
+    FlipkartPaymentSecondaryRepository,
+    FlipkartPaymentSecondaryService,
+    MeeshoPaymentParser,
+    MeeshoPaymentRepository,
+    MeeshoPaymentService,
+    AmazonPaymentParser,
+    AmazonPaymentRepository,
+    AmazonPaymentService,
+    SettlementBackfillService,
   ],
 })
 export class ReportImportModule {}

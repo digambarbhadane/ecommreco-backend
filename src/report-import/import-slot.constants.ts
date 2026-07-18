@@ -3,7 +3,12 @@ import type { MarketplaceUploadKey } from './marketplace-upload.routes';
 /** Backend multipart / session slot names present in upload payloads. */
 export const MARKETPLACE_TRACKED_SLOTS: Record<MarketplaceUploadKey, string[]> = {
   flipkart: ['file', 'returnReportFile', 'paymentReportFile'],
-  amazon: ['mtrB2cFile', 'mtrB2bFile', 'amazonReturnReportFile'],
+  amazon: [
+    'mtrB2cFile',
+    'mtrB2bFile',
+    'amazonReturnReportFile',
+    'paymentReportFile',
+  ],
   meesho: [
     'tcsSalesFile',
     'tcsSalesReturnFile',
@@ -92,6 +97,10 @@ export function inferUploadedSlotsFromFileHash(fileHash: string): string[] {
   }
 
   if (hash.startsWith('flipkart-payment|')) {
+    return ['paymentReportFile'];
+  }
+
+  if (hash.startsWith('amazon-payment|')) {
     return ['paymentReportFile'];
   }
 

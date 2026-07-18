@@ -46,6 +46,7 @@ import {
   MyntraReportValidationInput,
 } from '../utils/myntra-import.validation';
 import { cacheKey, sellerAliasCache } from '../../common/ttl-cache';
+import { TrialValidationService } from '../../trial/trial-validation.service';
 
 @Injectable()
 export class ValidationService {
@@ -59,8 +60,25 @@ export class ValidationService {
     private readonly platformMarketplaceModel: Model<PlatformMarketplaceDocument>,
     @InjectModel(ImportUpload.name)
     private readonly uploadModel: Model<ImportUploadDocument>,
+    private readonly trialValidation: TrialValidationService,
   ) {}
 
+  async assertTrialImportAllowed(sellerId: string, reportMonth?: string) {
+    const seller = await this.findSellerByIdentifier(sellerId);
+    if (!seller) return;
+    const access = this.trialValidation.assertTrialApiAccess(seller);
+    if (access === 'expired' || access === 'suspended') {
+      throw new BadRequestException(
+        'Trial expired. Please purchase a subscription to continue imports.',
+      );
+    }
+    if (access === 'pending_payment') {
+      throw new BadRequestException(
+        'Complete trial payment before uploading reports.',
+      );
+    }
+    this.trialValidation.assertTrialImportMonth(seller, reportMonth);
+  }
   async validateOwnership(payload: {
     sellerId: string;
     gstId: string;
