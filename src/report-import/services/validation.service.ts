@@ -34,6 +34,7 @@ import {
   headerMatchesExcelColumn,
   hydrateFlipkartRowsWithProfileGstin,
 } from '../config/importMappings/gst-column.util';
+import { amazonImportMapping } from '../config/importMappings/amazon.mapping';
 import { flipkartImportMapping } from '../config/importMappings/flipkart.mapping';
 import { ParsedSheetRow } from './mapping.service';
 import {
@@ -43,6 +44,7 @@ import {
 import { sellerStateKeysFromRegistration } from '../utils/state-wise-gst-split.util';
 import {
   buildMyntraValidationMessage,
+  filterMyntraReportsBySelectedGstin,
   MyntraReportValidationInput,
 } from '../utils/myntra-import.validation';
 import { cacheKey, sellerAliasCache } from '../../common/ttl-cache';
@@ -245,10 +247,59 @@ export class ValidationService {
     reports: MyntraReportValidationInput[],
     expectedGstin: string,
   ) {
-    const message = buildMyntraValidationMessage(reports, expectedGstin);
-    if (message) {
-      throw new BadRequestException(message);
+    this.filterMyntraGstinBundle(reports, expectedGstin);
+  }
+
+  filterAmazonRowsBySelectedGstin(
+    rows: ParsedSheetRow[],
+    expectedGstin: string,
+    fileHeaders: string[] = [],
+    context?: { reportLabel?: string; fileName?: string },
+  ): { rows: ParsedSheetRow[]; skippedCount: number } {
+    const filtered = filterRowsBySelectedGstin(
+      rows,
+      amazonImportMapping,
+      fileHeaders,
+      expectedGstin,
+    );
+    const problems = collectGstinRowFilterProblems({
+      rows,
+      expectedGstin,
+      mapping: amazonImportMapping,
+      fileHeaders,
+      matchedRowCount: filtered.matchedCount,
+      fileGstins: filtered.fileGstins,
+    });
+    if (problems.length) {
+      const prefix =
+        context?.fileName || context?.reportLabel
+          ? [
+              context.reportLabel ? `Report: ${context.reportLabel}` : '',
+              context.fileName ? `File: ${context.fileName}` : '',
+            ]
+              .filter(Boolean)
+              .join('\n')
+          : 'Marketplace: Amazon';
+
+      throw new BadRequestException(
+        ['GSTIN validation failed.', prefix, '', ...problems.map((p) => `• ${p}`)].join(
+          '\n',
+        ),
+      );
     }
+
+    return { rows: filtered.rows, skippedCount: filtered.skippedCount };
+  }
+
+  filterMyntraGstinBundle(
+    reports: MyntraReportValidationInput[],
+    expectedGstin: string,
+  ): { reports: MyntraReportValidationInput[]; skippedCount: number } {
+    const result = filterMyntraReportsBySelectedGstin(reports, expectedGstin);
+    if (!result.ok) {
+      throw new BadRequestException(result.message);
+    }
+    return { reports: result.reports, skippedCount: result.skippedCount };
   }
 
   validateGstinMatch(

@@ -1697,6 +1697,9 @@ export class UploadService {
     const isMyntra = marketplaceIdentifier.includes('myntra');
     const isFlipkart = expectedMarketplace === 'flipkart';
     let flipkartGstSkippedRows = 0;
+    let amazonGstSkippedRows = 0;
+    let meeshoGstSkippedRows = 0;
+    let myntraGstSkippedRows = 0;
     if (!existingUploadId) {
       const marketplaceId = marketplace._id?.toString?.() ?? dto.marketplaceId;
       await this.assertRequiredFiles(
@@ -1871,14 +1874,17 @@ export class UploadService {
           requiredAmazonHeaderGroups,
           'Amazon MTR B2C Report',
         );
-        this.validation.validateGstinMatch(
+        const amazonB2cGstFilter = this.validation.filterAmazonRowsBySelectedGstin(
           parsedAmazonB2c.rows,
           gst.gstNumber,
-          marketplaceIdentifier,
           parsedAmazonB2c.headers,
-          [],
-          amazonImportMapping,
+          {
+            reportLabel: 'Amazon MTR B2C Report',
+            fileName: files.mtrB2cFile?.originalname,
+          },
         );
+        parsedAmazonB2c.rows = amazonB2cGstFilter.rows;
+        amazonGstSkippedRows += amazonB2cGstFilter.skippedCount;
       }
       if (parsedAmazonB2b) {
         this.validation.validateRequiredHeaderGroups(
@@ -1891,14 +1897,17 @@ export class UploadService {
           [['Customer Bill To Gstid'], ['Buyer Name']],
           'Amazon MTR B2B Report',
         );
-        this.validation.validateGstinMatch(
+        const amazonB2bGstFilter = this.validation.filterAmazonRowsBySelectedGstin(
           parsedAmazonB2b.rows,
           gst.gstNumber,
-          marketplaceIdentifier,
           parsedAmazonB2b.headers,
-          [],
-          amazonImportMapping,
+          {
+            reportLabel: 'Amazon MTR B2B Report',
+            fileName: files.mtrB2bFile?.originalname,
+          },
         );
+        parsedAmazonB2b.rows = amazonB2bGstFilter.rows;
+        amazonGstSkippedRows += amazonB2bGstFilter.skippedCount;
       }
     } else if (parsedFlipkart) {
       const requiredSalesHeaderGroups = [
@@ -2075,6 +2084,7 @@ export class UploadService {
           meeshoGstReports,
           gst.gstNumber,
         );
+        meeshoGstSkippedRows = meeshoGstFilter.skippedCount;
         for (const report of meeshoGstFilter.reports) {
           switch (report.reportLabel) {
             case 'TCS Sales Report':
@@ -2150,7 +2160,35 @@ export class UploadService {
           requiredHeaderGroups: MYNTRA_MDIRECT_RETURNS_HEADERS,
         });
       }
-      this.validation.validateMyntraImportBundle(myntraValidationReports, gst.gstNumber);
+      const myntraGstFilter = this.validation.filterMyntraGstinBundle(
+        myntraValidationReports,
+        gst.gstNumber,
+      );
+      myntraGstSkippedRows = myntraGstFilter.skippedCount;
+      for (const report of myntraGstFilter.reports) {
+        switch (report.reportLabel) {
+          case 'GSTR Report Packed':
+            parsedMyntra.gstrReportPacked.rows = report.rows;
+            break;
+          case 'Sales Revenue Packed B2C':
+            parsedMyntra.salesRevenueB2c.rows = report.rows;
+            break;
+          case 'MDirect Orders Report':
+            parsedMyntra.mDirectOrders.rows = report.rows;
+            break;
+          case 'GSTR Report RTO':
+            parsedMyntra.gstrReportRto.rows = report.rows;
+            break;
+          case 'GSTR Report RT':
+            parsedMyntra.gstrReportRt.rows = report.rows;
+            break;
+          case 'MDirect Returns Report':
+            parsedMyntra.mDirectReturns.rows = report.rows;
+            break;
+          default:
+            break;
+        }
+      }
     }
     timer?.endStage('columnMapping');
 
@@ -2693,12 +2731,18 @@ export class UploadService {
     timer?.endStage('postProcessing');
     onProgress?.('completed', 100, normalizedRows.length);
 
+    const gstSkippedRows =
+      flipkartGstSkippedRows +
+      amazonGstSkippedRows +
+      meeshoGstSkippedRows +
+      myntraGstSkippedRows;
+
     return {
       success: true,
       status: 'completed' as const,
       message:
-        flipkartGstSkippedRows > 0
-          ? `Imported ${normalizedRows.length} record(s) for the selected GSTIN. ${flipkartGstSkippedRows} row(s) for other GSTINs were skipped.`
+        gstSkippedRows > 0
+          ? `Imported ${normalizedRows.length} record(s) for the selected GSTIN. ${gstSkippedRows} row(s) for other GSTINs were skipped.`
           : 'File uploaded successfully',
       uploadId,
       count: normalizedRows.length,

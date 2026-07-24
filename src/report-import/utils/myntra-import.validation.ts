@@ -1,4 +1,10 @@
-import { headerMatchesExcelColumn } from '../config/importMappings/gst-column.util';
+import {
+  collectGstinRowFilterProblems,
+  filterRowsBySelectedGstin,
+  headerMatchesExcelColumn,
+  headersHaveGstColumn,
+} from '../config/importMappings/gst-column.util';
+import { myntraImportMapping } from '../config/importMappings/myntra.mapping';
 import {
   MYNTRA_GSTR_PACKED_HEADERS,
   MYNTRA_GSTR_RTO_HEADERS,
@@ -34,69 +40,121 @@ const hasRequiredHeaders = (
   return missing;
 };
 
-export const buildMyntraValidationMessage = (
+export type MyntraGstinFilterResult =
+  | { ok: true; reports: MyntraReportValidationInput[]; skippedCount: number }
+  | { ok: false; message: string };
+
+const formatMyntraReportBlock = (
+  index: number,
+  reportLabel: string,
+  fileName: string | undefined,
+  problems: string[],
+): string => {
+  const lines = [
+    `${index}) ${reportLabel}`,
+    `   File: ${fileName || '(unknown)'}`,
+    ...problems.map((p) => `   • ${p}`),
+  ];
+  return lines.join('\n');
+};
+
+/**
+ * Validates report structure and keeps only rows matching the selected seller GSTIN.
+ * Reports without a GSTIN column are passed through unchanged.
+ */
+export const filterMyntraReportsBySelectedGstin = (
   reports: MyntraReportValidationInput[],
   expectedGstin: string,
-): string | null => {
-  const problems: string[] = [];
+): MyntraGstinFilterResult => {
+  const blocks: string[] = [];
+  let skippedCount = 0;
 
-  for (const report of reports) {
+  const filteredReports = reports.map((report) => {
+    const structuralProblems: string[] = [];
     const missing = hasRequiredHeaders(
       report.headers,
       report.requiredHeaderGroups,
     );
     if (missing.length) {
-      problems.push(
-        `${report.reportLabel}: missing columns — ${missing.join(', ')}`,
+      structuralProblems.push(
+        `missing columns — ${missing.join(', ')}`,
       );
     }
     if (!report.rows.length) {
-      problems.push(`${report.reportLabel}: file has no data rows`);
+      structuralProblems.push('file has no data rows');
     }
-    if (report.checkGstin && report.rows.length) {
-      const gstinAliases = [
-        'seller_gstin',
-        'tax_seller_gstin',
-        'Seller Gstin',
-        'GST NO',
-        'GSTIN',
-      ];
-      const normalizedExpected = String(expectedGstin ?? '')
-        .trim()
-        .toUpperCase();
-      let foundGstin = false;
-      for (const row of report.rows.slice(0, 500)) {
-        for (const [key, value] of Object.entries(row)) {
-          if (key.startsWith('__')) continue;
-          if (
-            !gstinAliases.some((alias) =>
-              headerMatchesExcelColumn(key, alias),
-            )
-          ) {
-            continue;
-          }
-          const cell = String(value ?? '')
-            .trim()
-            .toUpperCase();
-          if (cell && cell === normalizedExpected) {
-            foundGstin = true;
-            break;
-          }
-        }
-        if (foundGstin) break;
-      }
-      if (!foundGstin) {
-        problems.push(
-          `${report.reportLabel}: no rows match selected GSTIN ${expectedGstin}`,
-        );
-      }
+    if (structuralProblems.length) {
+      blocks.push(
+        formatMyntraReportBlock(
+          blocks.length + 1,
+          report.reportLabel,
+          report.fileName,
+          structuralProblems,
+        ),
+      );
+      return report;
     }
+
+    const hasGstColumn = headersHaveGstColumn(
+      report.headers,
+      myntraImportMapping.gstin.excelColumns,
+    );
+    if (!hasGstColumn) {
+      return report;
+    }
+
+    const filtered = filterRowsBySelectedGstin(
+      report.rows,
+      myntraImportMapping,
+      report.headers,
+      expectedGstin,
+    );
+    skippedCount += filtered.skippedCount;
+
+    const gstProblems = collectGstinRowFilterProblems({
+      rows: report.rows,
+      expectedGstin,
+      mapping: myntraImportMapping,
+      fileHeaders: report.headers,
+      matchedRowCount: filtered.matchedCount,
+      fileGstins: filtered.fileGstins,
+    });
+    if (gstProblems.length) {
+      blocks.push(
+        formatMyntraReportBlock(
+          blocks.length + 1,
+          report.reportLabel,
+          report.fileName,
+          gstProblems,
+        ),
+      );
+    }
+
+    return { ...report, rows: filtered.rows };
+  });
+
+  if (!blocks.length) {
+    return { ok: true, reports: filteredReports, skippedCount };
   }
 
-  if (!problems.length) return null;
-  return ['Myntra import validation failed:', ...problems.map((p) => `• ${p}`)].join(
-    '\n',
-  );
+  return {
+    ok: false,
+    message: [
+      `Myntra import failed — GSTIN mismatch in ${blocks.length} file(s):`,
+      '',
+      ...blocks,
+      '',
+      'Ensure the GSTIN in each report matches the GST profile you selected (seller GSTIN, not marketplace or tax columns).',
+    ].join('\n'),
+  };
+};
+
+export const buildMyntraValidationMessage = (
+  reports: MyntraReportValidationInput[],
+  expectedGstin: string,
+): string | null => {
+  const result = filterMyntraReportsBySelectedGstin(reports, expectedGstin);
+  return result.ok ? null : result.message;
 };
 
 export const formatMyntraJoinIssues = (issues: {

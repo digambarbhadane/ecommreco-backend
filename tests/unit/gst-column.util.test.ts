@@ -239,6 +239,38 @@ describe('gst-column.util', () => {
     );
   });
 
+  it('filters Amazon rows by selected GSTIN when file has multiple seller GSTINs', () => {
+    const rows: ParsedSheetRow[] = [
+      {
+        __sheetName: 'Sheet1',
+        __rowNumber: 2,
+        'Seller Gstin': '27AAAAA0000A1Z5',
+        'Order Id': 'O1',
+      },
+      {
+        __sheetName: 'Sheet1',
+        __rowNumber: 3,
+        'Seller Gstin': '29BBBBB0000B1Z5',
+        'Order Id': 'O2',
+      },
+      {
+        __sheetName: 'Sheet1',
+        __rowNumber: 4,
+        'Seller Gstin': '27AAAAA0000A1Z5',
+        'Order Id': 'O3',
+      },
+    ];
+    const result = filterRowsBySelectedGstin(
+      rows,
+      amazonImportMapping,
+      ['Seller Gstin', 'Order Id'],
+      '27AAAAA0000A1Z5',
+    );
+    expect(result.matchedCount).toBe(2);
+    expect(result.skippedCount).toBe(1);
+    expect(result.rows.map((r) => r['Order Id'])).toEqual(['O1', 'O3']);
+  });
+
   it('does not reject files with multiple GSTINs when filtering', () => {
     const problems = collectGstinRowFilterProblems({
       rows: [
