@@ -400,6 +400,49 @@ describe('FileParserService Flipkart', () => {
     expect(filtered.matchedCount).toBe(3);
   });
 
+  it('filters multi-GST Flipkart workbook to selected GSTIN using per-row column GSTIN', () => {
+    const salesData = [
+      ['Seller GSTIN', 'Order ID', 'Taxable Value', 'Event Type'],
+      ['27AAAAA0000A1Z5', 'ORD-A1', '100', 'Sale'],
+      ['', 'ORD-A2', '200', 'Sale'],
+      ['29BBBBB0000B1Z5', 'ORD-B1', '300', 'Sale'],
+      ['', 'ORD-B2', '400', 'Sale'],
+    ];
+    const cashbackData = [
+      ['Seller GSTIN', 'Order ID', 'Taxable Value', 'Document Type'],
+      ['27AAAAA0000A1Z5', 'ORD-A3', '50', 'Credit Note'],
+    ];
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.aoa_to_sheet(salesData),
+      'Sales Report',
+    );
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.aoa_to_sheet(cashbackData),
+      'Cash Back Report',
+    );
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+    const parsed = parser.parseFlipkartWorkbook(buffer);
+
+    const filtered = filterRowsBySelectedGstin(
+      [...parsed.salesRows, ...parsed.cashbackRows],
+      flipkartImportMapping,
+      [
+        ...parsed.headers['Sales Report'],
+        ...parsed.headers['Cash Back Report'],
+      ],
+      '27AAAAA0000A1Z5',
+    );
+    expect(filtered.matchedCount).toBe(3);
+    expect(filtered.skippedCount).toBe(2);
+    const orderIds = filtered.rows.map((row) => String(row['Order ID'] ?? ''));
+    expect(orderIds).toEqual(expect.arrayContaining(['ORD-A1', 'ORD-A2', 'ORD-A3']));
+    expect(orderIds).not.toContain('ORD-B1');
+    expect(orderIds).not.toContain('ORD-B2');
+  });
+
   it('parses data rows when workbook !ref only covers the header row', () => {
     const salesSheet = XLSX.utils.aoa_to_sheet([
       ['Seller GSTIN', 'Order ID', 'Taxable Value', 'Event Type'],

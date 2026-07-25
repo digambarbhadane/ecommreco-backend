@@ -56,13 +56,8 @@ export class AmazonPaymentService {
           row.calculationRole !== 'sale' &&
           row.calculationRole !== 'return',
       );
-    await this.settlementService.replaceNormalizedScope(
-      {
-        sellerId: input.sellerId,
-        marketplace: 'amazon',
-        reportMonth: input.reportMonth,
-        sourceType: 'amazon-payment',
-      },
+    await this.settlementService.replaceNormalizedUpload(
+      input.uploadId,
       normalized,
     );
 

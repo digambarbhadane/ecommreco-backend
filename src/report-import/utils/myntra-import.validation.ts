@@ -44,6 +44,104 @@ export type MyntraGstinFilterResult =
   | { ok: true; reports: MyntraReportValidationInput[]; skippedCount: number }
   | { ok: false; message: string };
 
+export type MyntraParsedReturnBundle = {
+  gstrReportRto: { rows: ParsedSheetRow[]; headers: string[] };
+  gstrReportRt: { rows: ParsedSheetRow[]; headers: string[] };
+};
+
+const RTO_CANCEL_DATE_ALIASES = [
+  'order_cancel_date',
+  'Order Cancel Date',
+  'Cancel Date',
+];
+
+const RT_REFUND_DATE_ALIASES = [
+  'fr_refunded_date',
+  'FR Refunded Date',
+  'Refunded Date',
+  'refund_date',
+  'Refund Date',
+  'return_refund_date',
+  'Return Refund Date',
+  'customer_return_date',
+  'Customer Return Date',
+];
+
+const RT_PACKET_ALIASES = [
+  'packet_id',
+  'Packet ID',
+  'Packet_Id',
+  'shipment_id',
+  'Shipment ID',
+];
+
+const headersMatchAnyAlias = (headers: string[], aliases: string[]): boolean =>
+  aliases.some((alias) =>
+    headers.some((header) => headerMatchesExcelColumn(header, alias)),
+  );
+
+/** Detect whether a GSTR return workbook is RTO or RT from its headers. */
+export const detectMyntraGstrReturnFileKind = (
+  headers: string[],
+): 'rto' | 'rt' | 'unknown' => {
+  const hasRefundDate = headersMatchAnyAlias(headers, RT_REFUND_DATE_ALIASES);
+  const hasPacket = headersMatchAnyAlias(headers, RT_PACKET_ALIASES);
+  const hasCancelDate = headersMatchAnyAlias(headers, RTO_CANCEL_DATE_ALIASES);
+
+  // RTO exports often include packet/shipment columns; cancel date is the definitive RTO marker.
+  if (hasCancelDate) return 'rto';
+  if (hasRefundDate) return 'rt';
+  if (hasPacket) return 'rt';
+  return 'unknown';
+};
+
+/**
+ * Auto-correct when RTO and RT files were uploaded to the wrong slots.
+ * Returns an error message when a file is clearly in the wrong slot.
+ */
+export const correctMyntraReturnFileAssignment = (
+  parsed: MyntraParsedReturnBundle,
+  fileNames?: { rto?: string; rt?: string },
+): { swapped: boolean; message?: string; error?: string } => {
+  const rtoKind = detectMyntraGstrReturnFileKind(parsed.gstrReportRto.headers);
+  const rtKind = detectMyntraGstrReturnFileKind(parsed.gstrReportRt.headers);
+
+  if (rtoKind === 'rt' && rtKind === 'rto') {
+    const rto = parsed.gstrReportRto;
+    parsed.gstrReportRto = parsed.gstrReportRt;
+    parsed.gstrReportRt = rto;
+    return {
+      swapped: true,
+      message:
+        'Detected RTO and RT files in the wrong upload slots and swapped them automatically.',
+    };
+  }
+
+  if (rtKind === 'rto') {
+    return {
+      swapped: false,
+      error: [
+        `The file "${fileNames?.rt ?? 'GSTR Report RT'}" looks like a GSTR RTO report`,
+        '(it has order cancel date columns, not FR refunded date / packet id).',
+        'Upload it under "GSTR Report RTO — RTO", not "GSTR Report RT — Customer Return".',
+      ].join(' '),
+    };
+  }
+
+  if (rtoKind === 'rt') {
+    return {
+      swapped: false,
+      error: [
+        `The file "${fileNames?.rto ?? 'GSTR Report RTO'}" looks like a GSTR RT / customer return report`,
+        '(it has FR refunded date columns and no order cancel date).',
+        'Upload it under "GSTR Report RT — Customer Return", not "GSTR Report RTO — RTO".',
+      ].join(' '),
+    };
+  }
+
+  return { swapped: false };
+};
+
 const formatMyntraReportBlock = (
   index: number,
   reportLabel: string,
@@ -66,7 +164,8 @@ export const filterMyntraReportsBySelectedGstin = (
   reports: MyntraReportValidationInput[],
   expectedGstin: string,
 ): MyntraGstinFilterResult => {
-  const blocks: string[] = [];
+  const structuralBlocks: string[] = [];
+  const gstBlocks: string[] = [];
   let skippedCount = 0;
 
   const filteredReports = reports.map((report) => {
@@ -76,17 +175,36 @@ export const filterMyntraReportsBySelectedGstin = (
       report.requiredHeaderGroups,
     );
     if (missing.length) {
-      structuralProblems.push(
-        `missing columns — ${missing.join(', ')}`,
-      );
+      const detectedKind =
+        report.reportLabel === 'GSTR Report RT' ||
+        report.reportLabel === 'GSTR Report RTO'
+          ? detectMyntraGstrReturnFileKind(report.headers)
+          : 'unknown';
+      if (
+        report.reportLabel === 'GSTR Report RT' &&
+        detectedKind === 'rto'
+      ) {
+        structuralProblems.push(
+          'this file looks like a GSTR RTO report — upload it under GSTR Report RTO, not GSTR Report RT',
+        );
+      } else if (
+        report.reportLabel === 'GSTR Report RTO' &&
+        detectedKind === 'rt'
+      ) {
+        structuralProblems.push(
+          'this file looks like a GSTR RT / customer return report — upload it under GSTR Report RT, not GSTR Report RTO',
+        );
+      } else {
+        structuralProblems.push(`missing columns — ${missing.join(', ')}`);
+      }
     }
     if (!report.rows.length) {
       structuralProblems.push('file has no data rows');
     }
     if (structuralProblems.length) {
-      blocks.push(
+      structuralBlocks.push(
         formatMyntraReportBlock(
-          blocks.length + 1,
+          structuralBlocks.length + 1,
           report.reportLabel,
           report.fileName,
           structuralProblems,
@@ -120,9 +238,9 @@ export const filterMyntraReportsBySelectedGstin = (
       fileGstins: filtered.fileGstins,
     });
     if (gstProblems.length) {
-      blocks.push(
+      gstBlocks.push(
         formatMyntraReportBlock(
-          blocks.length + 1,
+          gstBlocks.length + 1,
           report.reportLabel,
           report.fileName,
           gstProblems,
@@ -133,19 +251,32 @@ export const filterMyntraReportsBySelectedGstin = (
     return { ...report, rows: filtered.rows };
   });
 
-  if (!blocks.length) {
+  if (!structuralBlocks.length && !gstBlocks.length) {
     return { ok: true, reports: filteredReports, skippedCount };
+  }
+
+  const lines: string[] = [];
+  if (structuralBlocks.length) {
+    lines.push(
+      `Myntra import failed — fix file format or upload slot in ${structuralBlocks.length} file(s):`,
+      '',
+      ...structuralBlocks,
+    );
+  }
+  if (gstBlocks.length) {
+    if (lines.length) lines.push('');
+    lines.push(
+      `GSTIN mismatch in ${gstBlocks.length} file(s):`,
+      '',
+      ...gstBlocks,
+      '',
+      'Ensure the GSTIN in each report matches the GST profile you selected (seller GSTIN, not marketplace or tax columns).',
+    );
   }
 
   return {
     ok: false,
-    message: [
-      `Myntra import failed — GSTIN mismatch in ${blocks.length} file(s):`,
-      '',
-      ...blocks,
-      '',
-      'Ensure the GSTIN in each report matches the GST profile you selected (seller GSTIN, not marketplace or tax columns).',
-    ].join('\n'),
+    message: lines.join('\n'),
   };
 };
 

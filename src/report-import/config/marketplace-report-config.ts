@@ -149,6 +149,20 @@ export const MARKETPLACE_REPORT_DEFINITIONS: Record<
       required: false,
       description: 'Optional return reasons via order_id',
     },
+    {
+      slot: 'pgForwardSettledFile',
+      label: 'PG Forward Settled',
+      required: false,
+      description:
+        'Myntra PG Forward Settled payment report — upload separately after sales and return reports',
+    },
+    {
+      slot: 'pgReverseSettledFile',
+      label: 'PG Reverse Settled',
+      required: false,
+      description:
+        'Myntra PG Reverse Settled payment report — upload separately after sales and return reports',
+    },
   ],
 };
 

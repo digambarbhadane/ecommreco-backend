@@ -8,6 +8,8 @@ import { ValidationService } from '../services/validation.service';
 import { applyPaymentFiltersToMongoFilter } from '../utils/payment-filter.util';
 import {
   buildPaymentSummaryByNeftPipeline,
+  summarizePaymentNeftRows,
+  type PaymentNeftSummaryRow,
 } from '../utils/payment-summary.aggregation';
 import { FlipkartPaymentRepository } from './flipkart/flipkart-payment.repository';
 import {
@@ -40,6 +42,7 @@ import {
   AmazonPaymentTransaction,
   AmazonPaymentTransactionDocument,
 } from './amazon/schemas/amazon-payment-transaction.schema';
+import { MyntraPgRepository } from './myntra/myntra-pg.repository';
 
 export type MeeshoPayoutSheetKind =
   | 'ads'
@@ -63,12 +66,18 @@ const AMAZON_PAYOUT_SHEETS = [
   },
 ] as const;
 
+const MYNTRA_PAYOUT_SHEETS = [
+  { kind: 'pg-forward', label: 'PG Forward Settled' },
+  { kind: 'pg-reverse', label: 'PG Reverse Settled' },
+] as const;
+
 const PAYOUT_SHEET_LABELS: Record<string, string> = {
   ...Object.fromEntries(
     FLIPKART_PAYMENT_SECONDARY_SHEETS.map((def) => [def.kind, def.label]),
   ),
   ...Object.fromEntries(MEESHO_PAYOUT_SHEETS.map((def) => [def.kind, def.label])),
   ...Object.fromEntries(AMAZON_PAYOUT_SHEETS.map((def) => [def.kind, def.label])),
+  ...Object.fromEntries(MYNTRA_PAYOUT_SHEETS.map((def) => [def.kind, def.label])),
   ads: 'Ads Cost',
 };
 
@@ -128,6 +137,9 @@ function emptySheetTotals(): PayoutSheetTotals {
   for (const def of AMAZON_PAYOUT_SHEETS) {
     totals[def.kind] = 0;
   }
+  for (const def of MYNTRA_PAYOUT_SHEETS) {
+    totals[def.kind] = 0;
+  }
   return totals;
 }
 
@@ -140,6 +152,9 @@ function emptySheetCounts(): PayoutSheetCounts {
     counts[def.kind] = 0;
   }
   for (const def of AMAZON_PAYOUT_SHEETS) {
+    counts[def.kind] = 0;
+  }
+  for (const def of MYNTRA_PAYOUT_SHEETS) {
     counts[def.kind] = 0;
   }
   return counts;
@@ -158,6 +173,7 @@ function knownSheetKinds(): string[] {
       ...FLIPKART_PAYMENT_SECONDARY_SHEETS.map((def) => def.kind),
       ...MEESHO_PAYOUT_SHEETS.map((def) => def.kind),
       ...AMAZON_PAYOUT_SHEETS.map((def) => def.kind),
+      ...MYNTRA_PAYOUT_SHEETS.map((def) => def.kind),
     ]),
   );
 }
@@ -232,6 +248,7 @@ export class AnalyticsPayoutsService {
   constructor(
     private readonly flipkartPaymentRepository: FlipkartPaymentRepository,
     private readonly secondaryRepository: FlipkartPaymentSecondaryRepository,
+    private readonly myntraPgRepository: MyntraPgRepository,
     private readonly validationService: ValidationService,
     @InjectModel(ImportRow.name)
     private readonly rowModel: Model<ImportRowDocument>,
@@ -332,6 +349,23 @@ export class AnalyticsPayoutsService {
         normalizedQuery,
         sellerAliases,
       );
+    } else if (marketplaceSlug === 'myntra') {
+      const hasMyntra = await this.hasMyntraPaymentData(
+        normalizedQuery,
+        sellerAliases,
+      );
+      if (hasMyntra) {
+        aggregated = await this.aggregateMyntraPayouts(
+          normalizedQuery,
+          sellerAliases,
+        );
+      } else {
+        useLegacy = true;
+        aggregated = await this.aggregateLegacyPayouts(
+          normalizedQuery,
+          sellerAliases,
+        );
+      }
     } else if (marketplaceSlug) {
       // Myntra and future marketplaces currently use normalized legacy rows.
       useLegacy = true;
@@ -349,7 +383,7 @@ export class AnalyticsPayoutsService {
       ]);
       useLegacy = flipkartUsesLegacy;
 
-      const [meeshoRows, flipkartRows, amazonRows] = await Promise.all([
+      const [meeshoRows, flipkartRows, amazonRows, myntraRows] = await Promise.all([
         hasMeesho
           ? this.aggregateMeeshoPayouts(
               { ...query, marketplace: 'meesho' },
@@ -369,8 +403,12 @@ export class AnalyticsPayoutsService {
           { ...query, marketplace: undefined },
           sellerAliases,
         ),
+        this.aggregateMyntraPayouts(
+          { ...query, marketplace: undefined },
+          sellerAliases,
+        ),
       ]);
-      aggregated = [...meeshoRows, ...flipkartRows, ...amazonRows];
+      aggregated = [...meeshoRows, ...flipkartRows, ...amazonRows, ...myntraRows];
     }
 
     const receipts = await this.payoutRecordModel
@@ -756,6 +794,118 @@ export class AnalyticsPayoutsService {
     };
   }
 
+  /**
+   * Month-summary / Payments-tab Amazon settlement view (from payment report uploads).
+   */
+  async summarizeAmazonPaymentForMonth(query: {
+    sellerIds: string[];
+    gstin?: string;
+    marketplace: string;
+    reportMonth: string;
+  }) {
+    const match: Record<string, unknown> = {
+      sellerId: { $in: query.sellerIds },
+      marketplace: query.marketplace,
+      reportMonth: query.reportMonth,
+    };
+    const gstin = query.gstin?.trim().toUpperCase();
+    if (gstin) {
+      match.gstin = gstin;
+    }
+
+    const returnLikeExpr = {
+      $or: [
+        {
+          $regexMatch: {
+            input: { $toLower: { $ifNull: ['$transactionType', ''] } },
+            regex: 'refund|return',
+          },
+        },
+        {
+          $regexMatch: {
+            input: { $toLower: { $ifNull: ['$amountDescription', ''] } },
+            regex: 'refund|return',
+          },
+        },
+      ],
+    };
+
+    const aggregated = await this.amazonPaymentTransactionModel
+      .aggregate<{
+        settlementId: string;
+        paymentDate: Date | string;
+        bankSettlementTotal: number;
+        salesCount: number;
+        returnsCount: number;
+      }>([
+        { $match: match },
+        {
+          $group: {
+            _id: { $trim: { input: { $ifNull: ['$settlementId', ''] } } },
+            paymentDate: { $max: '$depositDate' },
+            bankSettlementTotal: { $sum: { $ifNull: ['$amount', 0] } },
+            salesCount: {
+              $sum: {
+                $cond: [
+                  {
+                    $and: [
+                      {
+                        $ne: [
+                          { $trim: { input: { $ifNull: ['$orderId', ''] } } },
+                          '',
+                        ],
+                      },
+                      { $not: returnLikeExpr },
+                    ],
+                  },
+                  1,
+                  0,
+                ],
+              },
+            },
+            returnsCount: {
+              $sum: { $cond: [returnLikeExpr, 1, 0] },
+            },
+          },
+        },
+        { $match: { _id: { $ne: '' } } },
+        { $sort: { bankSettlementTotal: -1, _id: 1 } },
+        {
+          $project: {
+            _id: 0,
+            settlementId: '$_id',
+            paymentDate: 1,
+            bankSettlementTotal: 1,
+            salesCount: 1,
+            returnsCount: 1,
+          },
+        },
+      ])
+      .allowDiskUse(true)
+      .exec();
+
+    const rows = aggregated.map((row) => ({
+      neftNo: row.settlementId,
+      bankSettlementTotal: Number(row.bankSettlementTotal ?? 0),
+      salesCount: Number(row.salesCount ?? 0),
+      returnsCount: Number(row.returnsCount ?? 0),
+      paymentDate:
+        row.paymentDate instanceof Date
+          ? row.paymentDate.toISOString()
+          : String(row.paymentDate ?? ''),
+      orderTotal: 0,
+    }));
+
+    return {
+      rows,
+      totals: {
+        ...summarizePaymentNeftRows(rows),
+        orderTotal: 0,
+        sheetBreakdown: [],
+      },
+    };
+  }
+
   private async aggregateFlipkartPayouts(
     query: ListAnalyticsPayoutsDto,
     sellerAliases: string[],
@@ -945,6 +1095,31 @@ export class AnalyticsPayoutsService {
     const meeshoRows = nonAmazonRows.filter(
       (row) => slugByMarketplace.get(row.marketplace) === 'meesho',
     );
+    const myntraRows = nonAmazonRows.filter(
+      (row) => slugByMarketplace.get(row.marketplace) === 'myntra',
+    );
+    if (myntraRows.length) {
+      await Promise.all(
+        myntraRows.map(async (row) => {
+          const records = await this.myntraPgRepository.findRowsByNeft({
+            sellerIds: sellerAliases,
+            marketplace: row.marketplace,
+            gstin,
+            neftId: row.neftId,
+          });
+          this.setExpandedRows(
+            row,
+            'pg-forward',
+            records.filter((record) => record.reportKind === 'forward'),
+          );
+          this.setExpandedRows(
+            row,
+            'pg-reverse',
+            records.filter((record) => record.reportKind === 'reverse'),
+          );
+        }),
+      );
+    }
     if (meeshoRows.length) {
       const dates = meeshoRows
         .map((row) => new Date(row.paymentDate))
@@ -1599,6 +1774,60 @@ export class AnalyticsPayoutsService {
     }
 
     return Array.from(byDate.values());
+  }
+
+  private async hasMyntraPaymentData(
+    query: ListAnalyticsPayoutsDto,
+    sellerAliases: string[],
+  ): Promise<boolean> {
+    const count = await this.myntraPgRepository.countByFilter({
+      sellerIds: sellerAliases,
+      gstin: query.gstin,
+      marketplace: this.resolveMyntraMarketplaceFilter(query.marketplace),
+    });
+    return count > 0;
+  }
+
+  private resolveMyntraMarketplaceFilter(marketplace?: string): string | undefined {
+    const value = String(marketplace ?? '').trim();
+    if (!value || value.toLowerCase() === 'myntra') {
+      return undefined;
+    }
+    return value;
+  }
+
+  private async aggregateMyntraPayouts(
+    query: ListAnalyticsPayoutsDto,
+    sellerAliases: string[],
+  ) {
+    const rows = await this.myntraPgRepository.aggregatePayoutsByNeft({
+      sellerIds: sellerAliases,
+      gstin: query.gstin,
+      marketplace: this.resolveMyntraMarketplaceFilter(query.marketplace),
+      paymentDateFrom: query.paymentDateFrom,
+      paymentDateTo: query.paymentDateTo,
+    });
+
+    return rows.map((row) => ({
+      neftId: row.neftId,
+      marketplace: row.marketplace,
+      paymentDate: row.paymentDate,
+      orderTotal: 0,
+      orderCount: 0,
+      bankSettlementTotal: Number(row.bankSettlementTotal ?? 0),
+      sheetTotals: {
+        ...emptySheetTotals(),
+        'pg-forward': Number(row.sheetTotals['pg-forward'] ?? 0),
+        'pg-reverse': Number(row.sheetTotals['pg-reverse'] ?? 0),
+      },
+      sheetCounts: {
+        ...emptySheetCounts(),
+        'pg-forward': Number(row.sheetCounts['pg-forward'] ?? 0),
+        'pg-reverse': Number(row.sheetCounts['pg-reverse'] ?? 0),
+      },
+      salesCount: Number(row.salesCount ?? 0),
+      returnsCount: Number(row.returnsCount ?? 0),
+    }));
   }
 
   private async aggregateLegacyPayouts(

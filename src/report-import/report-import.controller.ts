@@ -404,7 +404,7 @@ export class ReportImportController {
   @ApiOperation({
     summary: 'Upload Myntra reports',
     description:
-      'Upload Myntra reports: gstrReportPackedFile, salesRevenuePackedB2cFile, gstrReportRtoFile, gstrReportRtFile (required). mDirectOrdersReportFile and mDirectReturnsReportFile are optional.',
+      'Upload Myntra reports: gstrReportPackedFile, salesRevenuePackedB2cFile, gstrReportRtoFile, gstrReportRtFile (required). mDirectOrdersReportFile and mDirectReturnsReportFile are optional. PG Forward/Reverse Settled payment reports via pgForwardSettledFile and pgReverseSettledFile.',
   })
   @ReportUploadMultipart()
   uploadMyntra(
@@ -439,6 +439,8 @@ export class ReportImportController {
     const gstrReportRtoFile = files?.gstrReportRtoFile?.[0];
     const gstrReportRtFile = files?.gstrReportRtFile?.[0];
     const mDirectReturnsReportFile = files?.mDirectReturnsReportFile?.[0];
+    const pgForwardSettledFile = files?.pgForwardSettledFile?.[0];
+    const pgReverseSettledFile = files?.pgReverseSettledFile?.[0];
     const amazonReturnReportFile = files?.amazonReturnReportFile?.[0];
     if (
       !singleFile &&
@@ -457,7 +459,9 @@ export class ReportImportController {
       !salesRevenuePackedB2cFile &&
       !gstrReportRtoFile &&
       !gstrReportRtFile &&
-      !mDirectReturnsReportFile
+      !mDirectReturnsReportFile &&
+      !pgForwardSettledFile &&
+      !pgReverseSettledFile
     ) {
       throw new BadRequestException('At least one file is required');
     }
@@ -480,6 +484,8 @@ export class ReportImportController {
         gstrReportRtoFile,
         gstrReportRtFile,
         mDirectReturnsReportFile,
+        pgForwardSettledFile,
+        pgReverseSettledFile,
         amazonReturnReportFile,
       },
       dto,

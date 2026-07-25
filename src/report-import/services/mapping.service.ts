@@ -716,7 +716,17 @@ const MYNTRA_GSTR_RT_MAPPINGS: MappingConfig[] = [
     transform: asString,
   },
   {
-    source: ['fr_refunded_date', 'FR Refunded Date', 'Refunded Date'],
+    source: [
+      'fr_refunded_date',
+      'FR Refunded Date',
+      'Refunded Date',
+      'refund_date',
+      'Refund Date',
+      'return_refund_date',
+      'Return Refund Date',
+      'customer_return_date',
+      'Customer Return Date',
+    ],
     target: 'frRefundedDate',
     transform: asDate,
   },

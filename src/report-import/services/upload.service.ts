@@ -61,6 +61,7 @@ import {
 import { isAmazonCancellationTransaction, isAmazonCountableReturnTransaction, buildAmazonImportDebugReport, shouldSkipAmazonMtrImportRow } from '../utils/amazon-analytics.util';
 import { ValidationService } from './validation.service';
 import {
+  correctMyntraReturnFileAssignment,
   formatMyntraEmptyImport,
   formatMyntraJoinIssues,
   MYNTRA_GSTR_PACKED_HEADERS,
@@ -90,6 +91,19 @@ import { FlipkartPaymentService } from '../payments/flipkart/flipkart-payment.se
 import { MeeshoPaymentService } from '../payments/meesho/meesho-payment.service';
 import { AmazonPaymentService } from '../payments/amazon/amazon-payment.service';
 import { AnalyticsPayoutsService } from '../payments/analytics-payouts.service';
+import {
+  AMAZON_MAX_PAYMENT_FILES,
+  buildAmazonPaymentFileHash,
+  buildAmazonPaymentSlotKey,
+  isAmazonPaymentSlot,
+} from '../utils/amazon-payment-upload.util';
+import { MyntraPaymentService } from '../payments/myntra/myntra-payment.service';
+import {
+  buildMyntraPaymentFileHash,
+  hasMyntraPaymentFiles,
+  isMyntraPaymentSlot,
+  MYNTRA_PAYMENT_SLOTS,
+} from '../utils/myntra-payment-upload.util';
 
 type UploadContext = Awaited<
   ReturnType<ValidationService['validateOwnership']>
@@ -108,6 +122,7 @@ type MarketplaceFilesInput = {
   returnOutForDeliveryReportFile?: UploadedFileInput;
   returnDeliveryCompleteReportFile?: UploadedFileInput;
   paymentReportFile?: UploadedFileInput;
+  paymentReportFiles?: UploadedFileInput[];
   returnReportFile?: UploadedFileInput;
   amazonReturnReportFile?: UploadedFileInput;
   gstrReportPackedFile?: UploadedFileInput;
@@ -116,6 +131,8 @@ type MarketplaceFilesInput = {
   gstrReportRtoFile?: UploadedFileInput;
   gstrReportRtFile?: UploadedFileInput;
   mDirectReturnsReportFile?: UploadedFileInput;
+  pgForwardSettledFile?: UploadedFileInput;
+  pgReverseSettledFile?: UploadedFileInput;
 };
 
 @Injectable()
@@ -144,6 +161,7 @@ export class UploadService {
     private readonly flipkartPaymentService: FlipkartPaymentService,
     private readonly meeshoPaymentService: MeeshoPaymentService,
     private readonly amazonPaymentService: AmazonPaymentService,
+    private readonly myntraPaymentService: MyntraPaymentService,
     private readonly analyticsPayoutsService: AnalyticsPayoutsService,
     private readonly settlementService: SettlementService,
     @Inject(forwardRef(() => ImportJobOrchestratorService))
@@ -168,9 +186,13 @@ export class UploadService {
         : Number(upload.processedRecords ?? 0);
     const fileLabel = String(upload.fileName ?? '').toLowerCase();
     const isPaymentOnly =
-      Array.isArray(upload.uploadedSlots) &&
-      upload.uploadedSlots.length === 1 &&
-      upload.uploadedSlots[0] === 'paymentReportFile';
+      String(upload.fileHash ?? '').includes('-payment|') ||
+      (Array.isArray(upload.uploadedSlots) &&
+        upload.uploadedSlots.length >= 1 &&
+        upload.uploadedSlots.every(
+          (slot) =>
+            slot === 'paymentReportFile' || isMyntraPaymentSlot(slot),
+        ));
     const processingHint = isPaymentOnly
       ? 'Parsing payment report and saving settlement rows — large files may take 1–2 minutes.'
       : fileLabel.includes('myntra')
@@ -199,26 +221,7 @@ export class UploadService {
 
   async uploadMarketplaceReport(
     expectedMarketplace: 'flipkart' | 'amazon' | 'meesho' | 'myntra',
-    files: {
-      file?: UploadedFileInput;
-      mtrB2bFile?: UploadedFileInput;
-      mtrB2cFile?: UploadedFileInput;
-      tcsSalesFile?: UploadedFileInput;
-      tcsSalesReturnFile?: UploadedFileInput;
-      orderReportFile?: UploadedFileInput;
-      returnInTransitReportFile?: UploadedFileInput;
-      returnOutForDeliveryReportFile?: UploadedFileInput;
-      returnDeliveryCompleteReportFile?: UploadedFileInput;
-      paymentReportFile?: UploadedFileInput;
-      returnReportFile?: UploadedFileInput;
-      amazonReturnReportFile?: UploadedFileInput;
-      gstrReportPackedFile?: UploadedFileInput;
-      mDirectOrdersReportFile?: UploadedFileInput;
-      salesRevenuePackedB2cFile?: UploadedFileInput;
-      gstrReportRtoFile?: UploadedFileInput;
-      gstrReportRtFile?: UploadedFileInput;
-      mDirectReturnsReportFile?: UploadedFileInput;
-    },
+    files: MarketplaceFilesInput,
     dto: UploadReportDto,
     options?: { reportType?: string; createdBy?: string },
   ) {
@@ -371,8 +374,17 @@ export class UploadService {
     stored: Record<string, { buffer: Buffer; originalname: string }>,
   ): MarketplaceFilesInput {
     const out: MarketplaceFilesInput = {};
+    const paymentReportFiles: UploadedFileInput[] = [];
     for (const [slot, file] of Object.entries(stored)) {
-      out[slot as keyof MarketplaceFilesInput] = file;
+      if (slot === 'paymentReportFile' || slot.startsWith('amazonPaymentFile:')) {
+        paymentReportFiles.push(file);
+        continue;
+      }
+      (out as Record<string, UploadedFileInput>)[slot] = file;
+    }
+    if (paymentReportFiles.length) {
+      out.paymentReportFiles = paymentReportFiles;
+      out.paymentReportFile = paymentReportFiles[0];
     }
     return out;
   }
@@ -509,6 +521,9 @@ export class UploadService {
         files.returnDeliveryCompleteReportFile,
       ),
       paymentReportFile: this.cloneFile(files.paymentReportFile),
+      paymentReportFiles: files.paymentReportFiles?.map(
+        (file) => this.cloneFile(file)!,
+      ),
       returnReportFile: this.cloneFile(files.returnReportFile),
       amazonReturnReportFile: this.cloneFile(files.amazonReturnReportFile),
       gstrReportPackedFile: this.cloneFile(files.gstrReportPackedFile),
@@ -517,6 +532,8 @@ export class UploadService {
       gstrReportRtoFile: this.cloneFile(files.gstrReportRtoFile),
       gstrReportRtFile: this.cloneFile(files.gstrReportRtFile),
       mDirectReturnsReportFile: this.cloneFile(files.mDirectReturnsReportFile),
+      pgForwardSettledFile: this.cloneFile(files.pgForwardSettledFile),
+      pgReverseSettledFile: this.cloneFile(files.pgReverseSettledFile),
     };
   }
 
@@ -613,7 +630,8 @@ export class UploadService {
     const { isAmazon, isMeesho, isMyntra } = flags;
     if (isAmazon) {
       const hasMtr = Boolean(files.mtrB2cFile || files.mtrB2bFile);
-      const hasPayment = Boolean(files.paymentReportFile);
+      const hasPayment =
+        Boolean(files.paymentReportFile) || Boolean(files.paymentReportFiles?.length);
       if (
         hasPayment &&
         (hasMtr || Boolean(files.amazonReturnReportFile))
@@ -683,14 +701,82 @@ export class UploadService {
         }
       }
     } else if (isMyntra) {
-      if (
-        !files.gstrReportPackedFile ||
-        !files.salesRevenuePackedB2cFile ||
-        !files.gstrReportRtoFile ||
-        !files.gstrReportRtFile
+      const hasSalesFile = Boolean(
+        files.gstrReportPackedFile ||
+          files.salesRevenuePackedB2cFile ||
+          files.gstrReportRtoFile ||
+          files.gstrReportRtFile ||
+          files.mDirectOrdersReportFile ||
+          files.mDirectReturnsReportFile,
+      );
+      const hasPaymentOnly = hasMyntraPaymentFiles(files) && !hasSalesFile;
+      if (hasPaymentOnly && ownership) {
+        const requiredSlots = [
+          'gstrReportPackedFile',
+          'salesRevenuePackedB2cFile',
+          'gstrReportRtoFile',
+          'gstrReportRtFile',
+        ] as const;
+        for (const slot of requiredSlots) {
+          const alreadyUploaded = await this.importWorkflow.hasCompletedSlot({
+            sellerId: ownership.sellerId,
+            gstId: ownership.gstId,
+            marketplaceId: ownership.marketplaceId,
+            reportMonth: ownership.reportMonth,
+            slot,
+          });
+          if (!alreadyUploaded) {
+            throw new BadRequestException(
+              'Upload all required Myntra sales and return reports before uploading the payment report',
+            );
+          }
+        }
+      } else if (
+        !hasSalesFile &&
+        !hasPaymentOnly
       ) {
         throw new BadRequestException(
-          'Myntra upload requires: GSTR Report Packed, Sales Revenue Packed B2C, GSTR Report RTO, and GSTR Report RT. MDirect Orders and MDirect Returns are optional.',
+          'Myntra upload requires sales/return reports or a payment report file',
+        );
+      } else if (hasSalesFile) {
+        if (
+          !files.gstrReportPackedFile ||
+          !files.salesRevenuePackedB2cFile ||
+          !files.gstrReportRtoFile ||
+          !files.gstrReportRtFile
+        ) {
+          const requiredSlots = [
+            'gstrReportPackedFile',
+            'salesRevenuePackedB2cFile',
+            'gstrReportRtoFile',
+            'gstrReportRtFile',
+          ] as const;
+          if (ownership) {
+            for (const slot of requiredSlots) {
+              if (files[slot]) continue;
+              const alreadyUploaded = await this.importWorkflow.hasCompletedSlot({
+                sellerId: ownership.sellerId,
+                gstId: ownership.gstId,
+                marketplaceId: ownership.marketplaceId,
+                reportMonth: ownership.reportMonth,
+                slot,
+              });
+              if (!alreadyUploaded) {
+                throw new BadRequestException(
+                  'Myntra upload requires: GSTR Report Packed, Sales Revenue Packed B2C, GSTR Report RTO, and GSTR Report RT. MDirect Orders and MDirect Returns are optional.',
+                );
+              }
+            }
+          } else {
+            throw new BadRequestException(
+              'Myntra upload requires: GSTR Report Packed, Sales Revenue Packed B2C, GSTR Report RTO, and GSTR Report RT. MDirect Orders and MDirect Returns are optional.',
+            );
+          }
+        }
+      }
+      if (hasPaymentOnly && hasSalesFile) {
+        throw new BadRequestException(
+          'Myntra PG payment reports must be uploaded separately from sales and return reports',
         );
       }
     } else {
@@ -788,6 +874,12 @@ export class UploadService {
     const mDirectReturnsReportFileHash = files.mDirectReturnsReportFile
       ? this.validation.computeFileHash(files.mDirectReturnsReportFile.buffer)
       : '';
+    const pgForwardSettledFileHash = files.pgForwardSettledFile
+      ? this.validation.computeFileHash(files.pgForwardSettledFile.buffer)
+      : '';
+    const pgReverseSettledFileHash = files.pgReverseSettledFile
+      ? this.validation.computeFileHash(files.pgReverseSettledFile.buffer)
+      : '';
 
     const fileHash = isAmazon
       ? paymentReportFileHash && !b2cFileHash && !b2bFileHash && !amazonReturnReportFileHash
@@ -796,7 +888,18 @@ export class UploadService {
       : isMeesho
         ? `meesho|tcsSales:${tcsSalesFileHash || 'none'}|tcsSalesReturn:${tcsSalesReturnFileHash || 'none'}|order:${orderReportFileHash || 'none'}|returnInTransit:${returnInTransitReportFileHash || 'none'}|returnOutForDelivery:${returnOutForDeliveryReportFileHash || 'none'}|returnDeliveryComplete:${returnDeliveryCompleteReportFileHash || 'none'}|payment:${paymentReportFileHash || 'none'}`
         : isMyntra
-          ? `myntra|gstr:${gstrReportPackedFileHash}|mdirect:${mDirectOrdersReportFileHash}|sales:${salesRevenuePackedB2cFileHash}|rto:${gstrReportRtoFileHash}|rt:${gstrReportRtFileHash}|returns:${mDirectReturnsReportFileHash}`
+          ? (pgForwardSettledFileHash || pgReverseSettledFileHash) &&
+            !gstrReportPackedFileHash &&
+            !salesRevenuePackedB2cFileHash &&
+            !gstrReportRtoFileHash &&
+            !gstrReportRtFileHash &&
+            !mDirectOrdersReportFileHash &&
+            !mDirectReturnsReportFileHash
+            ? buildMyntraPaymentFileHash({
+                forwardHash: pgForwardSettledFileHash,
+                reverseHash: pgReverseSettledFileHash,
+              })
+            : `myntra|gstr:${gstrReportPackedFileHash}|mdirect:${mDirectOrdersReportFileHash}|sales:${salesRevenuePackedB2cFileHash}|rto:${gstrReportRtoFileHash}|rt:${gstrReportRtFileHash}|returns:${mDirectReturnsReportFileHash}`
           : `flipkart|sales:${singleFileHash || 'none'}|return:${returnReportFileHash || 'none'}|payment:${paymentReportFileHash || 'none'}`;
 
     const fileHashes = isAmazon
@@ -824,6 +927,8 @@ export class UploadService {
               gstrReportRtoFileHash,
               gstrReportRtFileHash,
               mDirectReturnsReportFileHash,
+              pgForwardSettledFileHash,
+              pgReverseSettledFileHash,
             ].filter(Boolean)
           : [
               singleFileHash,
@@ -853,7 +958,17 @@ export class UploadService {
             .filter(Boolean)
             .join(' + ') || 'Meesho reports'
         : isMyntra
-          ? `${files.gstrReportPackedFile?.originalname ?? 'GSTR-Packed'} + ${files.mDirectOrdersReportFile?.originalname ?? 'MDirect-Orders'} + ${files.salesRevenuePackedB2cFile?.originalname ?? 'Sales-Revenue-B2C'} + ${files.gstrReportRtoFile?.originalname ?? 'GSTR-RTO'} + ${files.gstrReportRtFile?.originalname ?? 'GSTR-RT'} + ${files.mDirectReturnsReportFile?.originalname ?? 'MDirect-Returns'}`
+          ? hasMyntraPaymentFiles(files) &&
+            !files.gstrReportPackedFile &&
+            !files.salesRevenuePackedB2cFile &&
+            !files.gstrReportRtoFile &&
+            !files.gstrReportRtFile &&
+            !files.mDirectOrdersReportFile &&
+            !files.mDirectReturnsReportFile
+            ? [files.pgForwardSettledFile?.originalname, files.pgReverseSettledFile?.originalname]
+                .filter(Boolean)
+                .join(' + ') || 'Myntra PG payment reports'
+            : `${files.gstrReportPackedFile?.originalname ?? 'GSTR-Packed'} + ${files.mDirectOrdersReportFile?.originalname ?? 'MDirect-Orders'} + ${files.salesRevenuePackedB2cFile?.originalname ?? 'Sales-Revenue-B2C'} + ${files.gstrReportRtoFile?.originalname ?? 'GSTR-RTO'} + ${files.gstrReportRtFile?.originalname ?? 'GSTR-RT'} + ${files.mDirectReturnsReportFile?.originalname ?? 'MDirect-Returns'}`
           : [
               files.file?.originalname,
               files.returnReportFile?.originalname,
@@ -865,87 +980,205 @@ export class UploadService {
     return { fileHash, fileHashes, fileName };
   }
 
+  private collectAmazonPaymentFiles(
+    files: MarketplaceFilesInput,
+  ): UploadedFileInput[] {
+    if (files.paymentReportFiles?.length) {
+      return files.paymentReportFiles;
+    }
+    return files.paymentReportFile ? [files.paymentReportFile] : [];
+  }
+
   private async completeAmazonPaymentUpload(
     files: MarketplaceFilesInput,
     dto: UploadReportDto,
     ctx: UploadContext,
     existingUploadId?: string | null,
   ) {
+    const paymentFiles = this.collectAmazonPaymentFiles(files);
+    if (!paymentFiles.length) {
+      throw new BadRequestException('Amazon payment report file is required');
+    }
+    if (paymentFiles.length > AMAZON_MAX_PAYMENT_FILES) {
+      throw new BadRequestException(
+        `Amazon allows up to ${AMAZON_MAX_PAYMENT_FILES} payment report files per month`,
+      );
+    }
+
     const { gst, marketplace } = ctx;
     const sellerId = ctx.canonicalSellerId || dto.sellerId;
     const marketplaceId = marketplace._id?.toString?.() ?? dto.marketplaceId;
-    const paymentFile = files.paymentReportFile!;
-    const fileHash = this.validation.computeFileHash(paymentFile.buffer);
-    const fileName = paymentFile.originalname;
+    const reportMonth = String(dto.reportMonth ?? '').trim();
+    if (!reportMonth) {
+      throw new BadRequestException('reportMonth is required for Amazon payment upload');
+    }
 
-    const uploadIdStr = await this.resolveDedicatedUploadRecord(
-      existingUploadId,
-      {
+    const results: Array<{
+      uploadId: string;
+      fileName: string;
+      parsedRows: number;
+      invalidRows: number;
+    }> = [];
+
+    let placeholderUploadConsumed = false;
+    const existingPaymentUploadCount = await this.uploadModel.countDocuments({
+      sellerId,
+      gstId: dto.gstId,
+      marketplace: marketplaceId,
+      reportMonth,
+      fileHash: { $regex: /^amazon-payment\|/ },
+      lifecycleStatus: { $ne: 'deleted' },
+      status: 'completed',
+    });
+
+    for (const paymentFile of paymentFiles) {
+      const contentHash = this.validation.computeFileHash(paymentFile.buffer);
+      const fileHash = buildAmazonPaymentFileHash(contentHash, reportMonth);
+      const slotKey = buildAmazonPaymentSlotKey(contentHash);
+      const fileName = paymentFile.originalname;
+
+      const existingUpload = await this.uploadModel
+        .findOne({
+          sellerId,
+          gstId: dto.gstId,
+          marketplace: marketplaceId,
+          reportMonth,
+          fileHash,
+          lifecycleStatus: { $ne: 'deleted' },
+        })
+        .select('_id')
+        .lean()
+        .exec();
+
+      if (
+        !existingUpload &&
+        !placeholderUploadConsumed &&
+        existingPaymentUploadCount >= AMAZON_MAX_PAYMENT_FILES
+      ) {
+        throw new BadRequestException(
+          `Amazon allows up to ${AMAZON_MAX_PAYMENT_FILES} payment report files per month`,
+        );
+      }
+
+      const placeholderUploadId =
+        !placeholderUploadConsumed && existingUploadId
+          ? existingUploadId
+          : null;
+      const uploadIdStr = existingUpload?._id
+        ? String(existingUpload._id)
+        : await this.resolveDedicatedUploadRecord(placeholderUploadId, {
+            sellerId,
+            gstId: dto.gstId,
+            gstin: gst.gstNumber,
+            marketplace: marketplaceId,
+            reportMonth,
+            fileName,
+            fileHash,
+            uploadedSlots: [slotKey],
+            fileSize: paymentFile.buffer.length,
+            totalRecords: 0,
+            salesRecords: 0,
+            cashbackRecords: 0,
+            status: 'processing',
+            lifecycleStatus: 'processing',
+          });
+      if (!existingUpload && placeholderUploadId) {
+        placeholderUploadConsumed = true;
+      }
+
+      const paymentUploadSummary = await this.amazonPaymentService.processUpload({
+        buffer: paymentFile.buffer,
+        uploadedFileName: fileName,
         sellerId,
         gstId: dto.gstId,
         gstin: gst.gstNumber,
         marketplace: marketplaceId,
-        reportMonth: dto.reportMonth,
+        reportMonth,
+        uploadId: uploadIdStr,
+        duplicateStrategy: 'update',
+      });
+
+      await this.uploadModel.findByIdAndUpdate(uploadIdStr, {
+        $set: {
+          totalRecords: paymentUploadSummary.parsedRows,
+          salesRecords: paymentUploadSummary.parsedRows,
+          processedRecords: paymentUploadSummary.parsedRows,
+          status: 'completed',
+          lifecycleStatus: 'completed',
+          fileName,
+          fileHash,
+          uploadedSlots: [slotKey],
+          fileSize: paymentFile.buffer.length,
+        },
+      });
+
+      await this.importWorkflow.recordSlotUploads({
+        sellerId,
+        gstId: dto.gstId,
+        marketplaceId,
+        reportMonth,
+        uploadId: uploadIdStr,
+        uploadedSlots: [slotKey],
         fileName,
-        fileHash: `amazon-payment|${fileHash}|month:${dto.reportMonth ?? ''}`,
-        uploadedSlots: ['paymentReportFile'],
         fileSize: paymentFile.buffer.length,
-        totalRecords: 0,
-        salesRecords: 0,
-        cashbackRecords: 0,
-        status: 'processing',
-        lifecycleStatus: 'processing',
-      },
-    );
+        importBatchId: uploadIdStr,
+        slotDetails: {
+          [slotKey]: buildPaymentOnlySlotDetail(
+            paymentFile,
+            paymentUploadSummary.parsedRows,
+          ),
+        },
+      });
 
-    const paymentUploadSummary = await this.amazonPaymentService.processUpload({
-      buffer: paymentFile.buffer,
-      uploadedFileName: fileName,
-      sellerId,
-      gstId: dto.gstId,
-      gstin: gst.gstNumber,
-      marketplace: marketplaceId,
-      reportMonth: dto.reportMonth,
-      uploadId: uploadIdStr,
-      duplicateStrategy: 'update',
-    });
+      results.push({
+        uploadId: uploadIdStr,
+        fileName,
+        parsedRows: paymentUploadSummary.parsedRows,
+        invalidRows: paymentUploadSummary.invalidRows,
+      });
+    }
 
-    await this.uploadModel.findByIdAndUpdate(uploadIdStr, {
-      $set: {
-        totalRecords: paymentUploadSummary.parsedRows,
-        salesRecords: paymentUploadSummary.parsedRows,
-        processedRecords: paymentUploadSummary.parsedRows,
-        status: 'completed',
-        lifecycleStatus: 'completed',
-      },
-    });
+    const totalParsedRows = results.reduce((sum, item) => sum + item.parsedRows, 0);
+    const totalInvalidRows = results.reduce((sum, item) => sum + item.invalidRows, 0);
 
-    await this.importWorkflow.recordSlotUploads({
-      sellerId,
-      gstId: dto.gstId,
-      marketplaceId,
-      reportMonth: dto.reportMonth!,
-      uploadId: uploadIdStr,
-      uploadedSlots: ['paymentReportFile'],
-      fileName,
-      fileSize: paymentFile.buffer.length,
-      importBatchId: uploadIdStr,
-      slotDetails: {
-        paymentReportFile: buildPaymentOnlySlotDetail(
-          paymentFile,
-          paymentUploadSummary.parsedRows,
-        ),
-      },
-    });
+    if (
+      existingUploadId &&
+      !placeholderUploadConsumed &&
+      !results.some((item) => item.uploadId === existingUploadId)
+    ) {
+      await this.uploadModel.findByIdAndUpdate(existingUploadId, {
+        $set: {
+          status: 'completed',
+          lifecycleStatus: 'completed',
+          totalRecords: totalParsedRows,
+          salesRecords: totalParsedRows,
+          processedRecords: totalParsedRows,
+          fileName:
+            results.length === 1
+              ? results[0]!.fileName
+              : `${results.length} Amazon payment files`,
+        },
+      });
+    }
 
     return {
       success: true,
       status: 'completed' as const,
-      message: `Stored ${paymentUploadSummary.parsedRows} Amazon payment transaction row(s).`,
-      uploadId: uploadIdStr,
-      count: paymentUploadSummary.parsedRows,
-      rowErrorCount: paymentUploadSummary.invalidRows,
-      paymentUploadSummary,
+      message:
+        results.length === 1
+          ? `Stored ${totalParsedRows} Amazon payment transaction row(s).`
+          : `Stored ${totalParsedRows} Amazon payment transaction row(s) from ${results.length} file(s).`,
+      uploadId:
+        placeholderUploadConsumed && existingUploadId
+          ? existingUploadId
+          : results[results.length - 1]?.uploadId,
+      count: totalParsedRows,
+      rowErrorCount: totalInvalidRows,
+      paymentUploadSummary: {
+        parsedRows: totalParsedRows,
+        invalidRows: totalInvalidRows,
+        filesProcessed: results.length,
+      },
     };
   }
 
@@ -1222,6 +1455,155 @@ export class UploadService {
       count: paymentUploadSummary.parsedRows,
       rowErrorCount: paymentUploadSummary.invalidRows,
       paymentUploadSummary,
+    };
+  }
+
+  private async completeMyntraPaymentUpload(
+    files: MarketplaceFilesInput,
+    dto: UploadReportDto,
+    ctx: UploadContext,
+    existingUploadId?: string | null,
+  ) {
+    const { gst, marketplace } = ctx;
+    const sellerId = ctx.canonicalSellerId || dto.sellerId;
+    const marketplaceId = marketplace._id?.toString?.() ?? dto.marketplaceId;
+    const forwardFile = files.pgForwardSettledFile;
+    const reverseFile = files.pgReverseSettledFile;
+    if (!forwardFile && !reverseFile) {
+      throw new BadRequestException(
+        'At least one Myntra PG payment file is required (PG Forward Settled or PG Reverse Settled)',
+      );
+    }
+
+    const forwardHash = forwardFile
+      ? this.validation.computeFileHash(forwardFile.buffer)
+      : '';
+    const reverseHash = reverseFile
+      ? this.validation.computeFileHash(reverseFile.buffer)
+      : '';
+    const fileHash = buildMyntraPaymentFileHash({
+      forwardHash,
+      reverseHash,
+      reportMonth: dto.reportMonth ?? '',
+    });
+    const fileName =
+      [forwardFile?.originalname, reverseFile?.originalname]
+        .filter(Boolean)
+        .join(' + ') || 'Myntra PG payment reports';
+    const totalFileSize =
+      (forwardFile?.buffer.length ?? 0) + (reverseFile?.buffer.length ?? 0);
+
+    const uploadedSlots: string[] = [];
+    if (forwardFile) uploadedSlots.push('pgForwardSettledFile');
+    if (reverseFile) uploadedSlots.push('pgReverseSettledFile');
+
+    const uploadIdStr = await this.resolveDedicatedUploadRecord(
+      existingUploadId,
+      {
+        sellerId,
+        gstId: dto.gstId,
+        gstin: gst.gstNumber,
+        marketplace: marketplaceId,
+        reportMonth: dto.reportMonth,
+        fileName,
+        fileHash,
+        uploadedSlots,
+        fileSize: totalFileSize,
+        totalRecords: 0,
+        salesRecords: 0,
+        cashbackRecords: 0,
+        status: 'processing',
+        lifecycleStatus: 'processing',
+      },
+    );
+
+    const baseContext = {
+      sellerId,
+      gstId: dto.gstId,
+      gstin: gst.gstNumber,
+      marketplace: marketplaceId,
+      reportMonth: dto.reportMonth,
+      uploadId: uploadIdStr,
+      duplicateStrategy: 'update' as const,
+    };
+
+    let totalParsed = 0;
+    let totalInvalid = 0;
+    let totalGstSkipped = 0;
+    const slotDetails: Record<string, ReturnType<typeof buildPaymentOnlySlotDetail>> =
+      {};
+
+    if (forwardFile) {
+      const summary = await this.myntraPaymentService.processUpload({
+        ...baseContext,
+        buffer: forwardFile.buffer,
+        uploadedFileName: forwardFile.originalname,
+        reportKind: 'forward',
+      });
+      totalParsed += summary.parsedRows;
+      totalInvalid += summary.invalidRows;
+      totalGstSkipped += summary.gstSkippedRows ?? 0;
+      slotDetails.pgForwardSettledFile = buildPaymentOnlySlotDetail(
+        forwardFile,
+        summary.parsedRows,
+      );
+    }
+
+    if (reverseFile) {
+      const summary = await this.myntraPaymentService.processUpload({
+        ...baseContext,
+        buffer: reverseFile.buffer,
+        uploadedFileName: reverseFile.originalname,
+        reportKind: 'reverse',
+      });
+      totalParsed += summary.parsedRows;
+      totalInvalid += summary.invalidRows;
+      totalGstSkipped += summary.gstSkippedRows ?? 0;
+      slotDetails.pgReverseSettledFile = buildPaymentOnlySlotDetail(
+        reverseFile,
+        summary.parsedRows,
+      );
+    }
+
+    await this.uploadModel.findByIdAndUpdate(uploadIdStr, {
+      $set: {
+        totalRecords: totalParsed,
+        salesRecords: totalParsed,
+        processedRecords: totalParsed,
+        status: 'completed',
+        lifecycleStatus: 'completed',
+      },
+    });
+
+    await this.importWorkflow.recordSlotUploads({
+      sellerId,
+      gstId: dto.gstId,
+      marketplaceId,
+      reportMonth: dto.reportMonth!,
+      uploadId: uploadIdStr,
+      uploadedSlots,
+      fileName,
+      fileSize: totalFileSize,
+      importBatchId: uploadIdStr,
+      slotDetails,
+    });
+    await this.reconciliationService.enqueueForUpload(uploadIdStr);
+
+    const gstNote =
+      totalGstSkipped > 0
+        ? ` ${totalGstSkipped} row(s) skipped (other GSTINs in file).`
+        : '';
+    const labels: string[] = [];
+    if (forwardFile) labels.push('PG Forward Settled');
+    if (reverseFile) labels.push('PG Reverse Settled');
+
+    return {
+      success: true,
+      status: 'completed' as const,
+      message: `Myntra ${labels.join(' and ')} report(s) uploaded: ${totalParsed} row(s) stored.${gstNote}`,
+      uploadId: uploadIdStr,
+      count: totalParsed,
+      rowErrorCount: totalInvalid,
     };
   }
 
@@ -1734,7 +2116,7 @@ export class UploadService {
     const hasFlipkartSalesFile = Boolean(files.file);
     if (
       isAmazon &&
-      files.paymentReportFile &&
+      this.collectAmazonPaymentFiles(files).length &&
       !files.mtrB2cFile &&
       !files.mtrB2bFile &&
       !files.amazonReturnReportFile
@@ -1753,6 +2135,26 @@ export class UploadService {
       !files.returnReportFile
     ) {
       return this.completeFlipkartPaymentUpload(
+        files,
+        dto,
+        ctx,
+        existingUploadId,
+      );
+    }
+    const hasMyntraSalesFile = Boolean(
+      files.gstrReportPackedFile ||
+        files.salesRevenuePackedB2cFile ||
+        files.gstrReportRtoFile ||
+        files.gstrReportRtFile ||
+        files.mDirectOrdersReportFile ||
+        files.mDirectReturnsReportFile,
+    );
+    if (
+      isMyntra &&
+      hasMyntraPaymentFiles(files) &&
+      !hasMyntraSalesFile
+    ) {
+      return this.completeMyntraPaymentUpload(
         files,
         dto,
         ctx,
@@ -2111,6 +2513,17 @@ export class UploadService {
         }
       }
     } else if (isMyntra && parsedMyntra) {
+      const returnCorrection = correctMyntraReturnFileAssignment(parsedMyntra, {
+        rto: files.gstrReportRtoFile?.originalname,
+        rt: files.gstrReportRtFile?.originalname,
+      });
+      if (returnCorrection.error) {
+        throw new BadRequestException(returnCorrection.error);
+      }
+      if (returnCorrection.swapped && returnCorrection.message) {
+        this.logger.log(returnCorrection.message);
+      }
+
       const myntraValidationReports = [
         {
           reportLabel: 'GSTR Report Packed',
@@ -2536,16 +2949,25 @@ export class UploadService {
       );
     }
     const marketplaceId = marketplace._id?.toString?.() ?? dto.marketplaceId;
+    const { paymentReportFiles: _paymentFiles, ...slotFileMap } = files;
+    const uploadedSlots = collectUploadedSlotsFromFiles(
+      slotFileMap as Record<string, { buffer?: Buffer } | undefined>,
+    );
 
-    // Re-upload for the same month must replace prior imported rows to avoid duplicates.
-    if (dto.reportMonth) {
-      await this.deletePreviousMonthData({
+    // Re-upload for the same slot must replace only that slot's prior rows.
+    if (dto.reportMonth && uploadedSlots.length) {
+      const retiredUploadIds = await this.importWorkflow.deletePreviousSlotUploadData({
         sellerId,
-        gstin: gst.gstNumber,
+        gstId: dto.gstId,
         marketplaceId,
         reportMonth: dto.reportMonth,
+        uploadedSlots,
         keepUploadId: existingUploadId ?? undefined,
+        marketplace: expectedMarketplace,
       });
+      for (const retiredUploadId of retiredUploadIds) {
+        await this.settlementService.deleteNormalizedUpload(retiredUploadId);
+      }
     }
 
     await this.validation.ensureNoDuplicateFileHashes({
@@ -2567,7 +2989,6 @@ export class UploadService {
     });
 
     let uploadId = existingUploadId ?? '';
-    const uploadedSlots = collectUploadedSlotsFromFiles(files);
     if (!uploadId) {
       const upload = await this.uploadModel.create({
         sellerId,
@@ -2711,13 +3132,8 @@ export class UploadService {
         slotDetails,
       });
     }
-    await this.settlementService.replaceNormalizedScope(
-      {
-        sellerId,
-        marketplace: expectedMarketplace,
-        reportMonth: dto.reportMonth,
-        sourceType: 'order-report',
-      },
+    await this.settlementService.replaceNormalizedUpload(
+      uploadId,
       this.normalizeOrderTransactions(normalizedRows, expectedMarketplace, {
         sellerId,
         gstId: dto.gstId,
@@ -2872,49 +3288,15 @@ export class UploadService {
   }
 
   private sumFileSizes(files: MarketplaceFilesInput): number {
-    return Object.values(files).reduce(
-      (sum, file) => sum + (file?.buffer?.length ?? 0),
-      0,
-    );
-  }
-
-  private async deletePreviousMonthData(input: {
-    sellerId: string;
-    gstin: string;
-    marketplaceId: string;
-    reportMonth: string;
-    keepUploadId?: string;
-  }) {
-    const oldUploads = await this.uploadModel
-      .find({
-        sellerId: input.sellerId,
-        gstin: input.gstin,
-        marketplace: input.marketplaceId,
-        reportMonth: input.reportMonth,
-        ...(input.keepUploadId ? { _id: { $ne: input.keepUploadId } } : {}),
-        lifecycleStatus: { $ne: 'deleted' },
-      })
-      .select('_id')
-      .lean()
-      .exec();
-
-    const oldUploadIds = oldUploads.map((u) => String(u._id ?? '')).filter(Boolean);
-    if (!oldUploadIds.length) return;
-
-    await this.rowModel.deleteMany({ uploadId: { $in: oldUploadIds } }).exec();
-    await this.rowErrorModel.deleteMany({ uploadId: { $in: oldUploadIds } }).exec();
-    await this.uploadModel
-      .updateMany(
-        { _id: { $in: oldUploadIds } },
-        {
-          $set: {
-            status: 'failed',
-            lifecycleStatus: 'deleted',
-            errorMessage: 'Deleted due to month re-upload replacement',
-            totalRecords: 0,
-          },
-        },
-      )
-      .exec();
+    let total = 0;
+    for (const value of Object.values(files)) {
+      if (!value) continue;
+      if (Array.isArray(value)) {
+        total += value.reduce((sum, file) => sum + (file.buffer?.length ?? 0), 0);
+        continue;
+      }
+      total += value.buffer?.length ?? 0;
+    }
+    return total;
   }
 }

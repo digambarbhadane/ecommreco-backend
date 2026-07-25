@@ -1,4 +1,5 @@
 import type { MarketplaceUploadKey } from './marketplace-upload.routes';
+import { inferMyntraPaymentSlotsFromFileHash } from './utils/myntra-payment-upload.util';
 
 /** Backend multipart / session slot names present in upload payloads. */
 export const MARKETPLACE_TRACKED_SLOTS: Record<MarketplaceUploadKey, string[]> = {
@@ -25,6 +26,8 @@ export const MARKETPLACE_TRACKED_SLOTS: Record<MarketplaceUploadKey, string[]> =
     'gstrReportRtFile',
     'mDirectOrdersReportFile',
     'mDirectReturnsReportFile',
+    'pgForwardSettledFile',
+    'pgReverseSettledFile',
   ],
 };
 
@@ -76,6 +79,8 @@ const FILE_HASH_SLOT_PREFIXES: Array<{ prefix: string; slot: string }> = [
   { prefix: 'rto:', slot: 'gstrReportRtoFile' },
   { prefix: 'rt:', slot: 'gstrReportRtFile' },
   { prefix: 'returns:', slot: 'mDirectReturnsReportFile' },
+  { prefix: 'forward:', slot: 'pgForwardSettledFile' },
+  { prefix: 'reverse:', slot: 'pgReverseSettledFile' },
 ];
 
 function hashSegmentValue(fileHash: string, prefix: string): string | null {
@@ -102,6 +107,10 @@ export function inferUploadedSlotsFromFileHash(fileHash: string): string[] {
 
   if (hash.startsWith('amazon-payment|')) {
     return ['paymentReportFile'];
+  }
+
+  if (hash.startsWith('myntra-payment|')) {
+    return inferMyntraPaymentSlotsFromFileHash(hash);
   }
 
   if (hash.startsWith('flipkart-return|')) {

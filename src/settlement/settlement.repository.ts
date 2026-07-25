@@ -18,6 +18,7 @@ import {
   buildSettlementMatch,
   settlementCalculationStages,
 } from './utils/settlement-aggregation.util';
+import { chunkArray } from '../common/utils/mongo-batch.util';
 import { repairLegacyCorruptedDate } from '../common/utils/repair-legacy-date.util';
 
 function repairRowDates<T extends { orderDate?: Date | string | null; invoiceDate?: Date | string | null; settlementDate?: Date | string | null }>(
@@ -411,8 +412,32 @@ export class SettlementRepository {
   ) {
     await this.model.deleteMany({ uploadId }).exec();
     if (!transactions.length) return { inserted: 0 };
-    await this.model.insertMany(transactions, { ordered: false });
-    return { inserted: transactions.length };
+
+    const deduped = new Map<string, NormalizedTransaction>();
+    for (const txn of transactions) {
+      deduped.set(txn.sourceId, { ...txn, uploadId });
+    }
+    const rows = [...deduped.values()];
+    const first = rows[0]!;
+
+    const conflictFilter = {
+      sellerId: first.sellerId,
+      marketplace: first.marketplace,
+      ...(first.reportMonth ? { reportMonth: first.reportMonth } : {}),
+      sourceType: first.sourceType,
+    };
+    const sourceIds = rows.map((row) => row.sourceId);
+    for (const batch of chunkArray(sourceIds)) {
+      await this.model
+        .deleteMany({
+          ...conflictFilter,
+          sourceId: { $in: batch },
+        })
+        .exec();
+    }
+
+    await this.model.insertMany(rows, { ordered: false });
+    return { inserted: rows.length };
   }
 
   async replaceScope(

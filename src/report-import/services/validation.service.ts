@@ -28,7 +28,6 @@ import {
 } from '../config/importMappings';
 import {
   collectGstinRowFilterProblems,
-  collectGstinValidationProblems,
   enrichRowsWithForwardFilledGstin,
   filterRowsBySelectedGstin,
   headerMatchesExcelColumn,
@@ -314,12 +313,20 @@ export class ValidationService {
     const mapping =
       mappingOverride ??
       resolveMarketplaceImportMapping(marketplaceIdentifier);
-    const problems = collectGstinValidationProblems({
+    const filtered = filterRowsBySelectedGstin(
+      rows,
+      mapping,
+      fileHeaders,
+      expectedGstin,
+    );
+    const problems = collectGstinRowFilterProblems({
       rows,
       expectedGstin,
       mapping,
       fileHeaders,
       fallbackGstins,
+      matchedRowCount: filtered.matchedCount,
+      fileGstins: filtered.fileGstins,
     });
     if (!problems.length) return;
 
@@ -396,7 +403,7 @@ export class ValidationService {
       expectedGstin,
       mapping: flipkartImportMapping,
       fileHeaders,
-      fallbackGstins: [...parsed.gstinValues, expectedGstin],
+      fallbackGstins: parsed.gstinValues,
       matchedRowCount: sales.matchedCount + cashback.matchedCount,
       fileGstins,
     });

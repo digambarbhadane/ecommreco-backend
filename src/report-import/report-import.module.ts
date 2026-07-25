@@ -137,6 +137,13 @@ import {
 import { AmazonPaymentParser } from './payments/amazon/amazon-payment.parser';
 import { AmazonPaymentRepository } from './payments/amazon/amazon-payment.repository';
 import { AmazonPaymentService } from './payments/amazon/amazon-payment.service';
+import {
+  MyntraPgSettlementRow,
+  MyntraPgSettlementRowSchema,
+} from './payments/myntra/schemas/myntra-pg-settlement.schema';
+import { MyntraPgParser } from './payments/myntra/myntra-pg.parser';
+import { MyntraPgRepository } from './payments/myntra/myntra-pg.repository';
+import { MyntraPaymentService } from './payments/myntra/myntra-payment.service';
 import { SettlementModule } from '../settlement/settlement.module';
 import { SettlementBackfillService } from './services/settlement-backfill.service';
 import { TrialModule } from '../trial/trial.module';
@@ -204,6 +211,7 @@ import { TrialModule } from '../trial/trial.module';
         name: AmazonPaymentTransaction.name,
         schema: AmazonPaymentTransactionSchema,
       },
+      { name: MyntraPgSettlementRow.name, schema: MyntraPgSettlementRowSchema },
     ]),
   ],
   controllers: [ReportImportController],
@@ -241,6 +249,9 @@ import { TrialModule } from '../trial/trial.module';
     AmazonPaymentParser,
     AmazonPaymentRepository,
     AmazonPaymentService,
+    MyntraPgParser,
+    MyntraPgRepository,
+    MyntraPaymentService,
     SettlementBackfillService,
   ],
 })

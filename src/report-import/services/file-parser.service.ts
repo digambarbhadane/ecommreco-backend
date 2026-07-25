@@ -258,6 +258,9 @@ const MYNTRA_FILE_HEADER_ALIASES: Record<MyntraFileKind, string[]> = {
     'fr_refunded_date',
     'fr refunded date',
     'refunded date',
+    'refund date',
+    'return refund date',
+    'customer return date',
     'igst_rate',
     'cgst_rate',
     'sgst_rate',
@@ -351,13 +354,15 @@ export class FileParserService {
       salesRows,
       salesHeaders,
       gstColumns,
-      salesGstins,
+      sales,
+      salesHeaderRowIndex,
     );
     const cashbackRowsHydrated = this.attachDetectedGstinToRows(
       cashbackRows,
       cashbackHeaders,
       gstColumns,
-      cashbackGstins,
+      cashback,
+      cashbackHeaderRowIndex,
     );
     const gstinFromParsedRows = new Set([
       ...salesGstins,
@@ -808,10 +813,42 @@ export class FileParserService {
     const sheet = workbook.Sheets[firstSheetName];
     const headerRowIndex = this.detectAmazonHeaderRowIndex(sheet);
     const rows = this.parseSheetRowsFast(sheet, firstSheetName, headerRowIndex);
-    return {
+    const headers = this.extractHeaders(sheet, headerRowIndex);
+    const enrichedRows = this.attachDetectedGstinToRows(
       rows,
-      headers: this.extractHeaders(sheet, headerRowIndex),
+      headers,
+      amazonImportMapping.gstin.excelColumns,
+      sheet,
+      headerRowIndex,
+    );
+    return {
+      rows: enrichedRows,
+      headers,
     };
+  }
+
+  /** Attach per-row Seller GSTIN from the sheet column (supports multi-GST exports). */
+  enrichRowsWithWorkbookGstin(
+    buffer: Buffer,
+    rows: ParsedSheetRow[],
+    headers: string[],
+    excelColumns: string[],
+    detectHeaderRowIndex: (sheet: XLSX.WorkSheet) => number,
+  ): ParsedSheetRow[] {
+    if (!rows.length) return rows;
+    const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: true });
+    const sheetName = workbook.SheetNames[0];
+    if (!sheetName) return rows;
+    const sheet = workbook.Sheets[sheetName];
+    if (!sheet) return rows;
+    const headerRowIndex = detectHeaderRowIndex(sheet);
+    return this.attachDetectedGstinToRows(
+      rows,
+      headers,
+      excelColumns,
+      sheet,
+      headerRowIndex,
+    );
   }
 
   private getSheetRange(sheet: XLSX.WorkSheet): XLSX.Range {
@@ -972,23 +1009,78 @@ export class FileParserService {
     return parsed;
   }
 
+  private buildPerRowGstinMap(
+    sheet: XLSX.WorkSheet,
+    headerRowIndex: number,
+    excelColumns: string[],
+  ): Map<number, string> {
+    const range = this.getSheetRange(sheet);
+    if (range.e.r < range.s.r) return new Map();
+
+    const absoluteHeaderRow = this.toAbsoluteRow(sheet, headerRowIndex);
+    const colIndices = this.resolveGstColumnIndicesFromSheet(
+      sheet,
+      absoluteHeaderRow,
+      excelColumns,
+    );
+    const previewForStartRow = this.sheetPreviewMatrix(sheet, headerRowIndex + 4);
+    const dataStartMatrixRow = this.resolveDataStartRow(
+      previewForStartRow,
+      headerRowIndex,
+      excelColumns,
+    );
+    const dataStartAbsolute = this.toAbsoluteRow(sheet, dataStartMatrixRow);
+    const gstByExcelRow = new Map<number, string>();
+
+    for (const colIndex of colIndices) {
+      let lastGstin = '';
+      for (let row = dataStartAbsolute - 1; row >= absoluteHeaderRow; row -= 1) {
+        const seed = parseGstinFromCell(this.getCellValue(sheet, row, colIndex));
+        if (seed) {
+          lastGstin = seed;
+          break;
+        }
+      }
+      for (let row = dataStartAbsolute; row <= range.e.r; row += 1) {
+        const raw = this.getCellValue(sheet, row, colIndex);
+        let gstin = parseGstinFromCell(raw);
+        if (!gstin && lastGstin) {
+          gstin = lastGstin;
+        }
+        if (gstin) {
+          lastGstin = gstin;
+          gstByExcelRow.set(row + 1, gstin);
+        }
+      }
+    }
+
+    return gstByExcelRow;
+  }
+
   private attachDetectedGstinToRows(
     rows: ParsedSheetRow[],
     fileHeaders: string[],
     gstColumns: string[],
-    detectedGstins: string[],
+    sheet: XLSX.WorkSheet,
+    headerRowIndex: number,
   ): ParsedSheetRow[] {
-    if (!rows.length || !detectedGstins.length) return rows;
+    if (!rows.length) return rows;
     const gstKey = resolvePrimaryGstHeaderKey(fileHeaders, gstColumns);
     if (!gstKey) return rows;
-    const fallbackGstin =
-      detectedGstins.map((item) => parseGstinFromCell(item)).find(Boolean) ??
-      undefined;
-    if (!fallbackGstin) return rows;
+
+    const gstByExcelRow = this.buildPerRowGstinMap(
+      sheet,
+      headerRowIndex,
+      gstColumns,
+    );
+    if (!gstByExcelRow.size) return rows;
 
     return rows.map((row) => {
       if (extractGstinFromRow(row, gstColumns)) return row;
-      return { ...row, [gstKey]: fallbackGstin };
+      const rowNumber = Number(row.__rowNumber ?? 0);
+      const gstin = rowNumber > 0 ? gstByExcelRow.get(rowNumber) : undefined;
+      if (!gstin) return row;
+      return { ...row, [gstKey]: gstin };
     });
   }
 

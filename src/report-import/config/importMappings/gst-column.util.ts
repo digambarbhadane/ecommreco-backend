@@ -512,9 +512,12 @@ export const collectGstinValidationProblems = (
   }
 
   if (values.size > 1) {
-    problems.push(
-      `Multiple GSTINs found: ${[...values].join(', ')}. Only one seller GSTIN per file is allowed.`,
-    );
+    const selectedGSTIN = resolveExpectedGstin(input.expectedGstin);
+    if (!selectedGSTIN || !values.has(selectedGSTIN)) {
+      problems.push(
+        `Multiple GSTINs found: ${[...values].join(', ')}. Selected profile GSTIN "${selectedGSTIN || input.expectedGstin}" was not found in the file.`,
+      );
+    }
   }
 
   if (!selectedGSTIN) {
@@ -529,9 +532,15 @@ export const collectGstinValidationProblems = (
       matchedHeaders.size > 0
         ? ` Column used: ${[...matchedHeaders].map((h) => `"${h}"`).join(', ')}.`
         : '';
-    problems.push(
-      `GSTIN does not match selected profile. Profile: "${selectedGSTIN}". Found in file: ${[...values].join(', ')}.${columnHint}`,
-    );
+    if (values.size > 1) {
+      problems.push(
+        `No rows found for selected GSTIN "${selectedGSTIN}". File contains: ${[...values].join(', ')}. Only rows matching the selected GST profile are imported.${columnHint}`,
+      );
+    } else {
+      problems.push(
+        `GSTIN does not match selected profile. Profile: "${selectedGSTIN}". Found in file: ${[...values].join(', ')}.${columnHint}`,
+      );
+    }
   }
 
   return problems;

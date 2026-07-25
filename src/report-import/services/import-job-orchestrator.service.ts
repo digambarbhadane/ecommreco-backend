@@ -8,9 +8,12 @@ import { ImportQueueService } from './import-queue.service';
 import { UploadService } from './upload.service';
 import { ValidationService } from './validation.service';
 import { ImportPerformanceTimer } from '../utils/import-performance.util';
+import { buildAmazonPaymentSlotKey } from '../utils/amazon-payment-upload.util';
 
 type UploadedFileInput = { buffer: Buffer; originalname: string };
-type MarketplaceFilesInput = Record<string, UploadedFileInput | undefined>;
+type MarketplaceFilesInput = Parameters<
+  UploadService['assertRequiredFilesPublic']
+>[1];
 
 @Injectable()
 export class ImportJobOrchestratorService {
@@ -68,12 +71,29 @@ export class ImportJobOrchestratorService {
       isMeesho,
       isMyntra,
     );
-    const uploadedSlots = collectUploadedSlotsFromFiles(files);
+    const uploadedSlots = collectUploadedSlotsFromFiles(
+      Object.fromEntries(
+        Object.entries(files).filter(([key]) => key !== 'paymentReportFiles'),
+      ) as Record<string, { buffer?: Buffer } | undefined>,
+    );
 
     const storedFiles: Record<string, UploadedFileInput> = {};
     let fileSize = 0;
     for (const [slot, file] of Object.entries(files)) {
-      if (file?.buffer?.length) {
+      if (slot === 'paymentReportFiles' && Array.isArray(file)) {
+        for (const item of file) {
+          if (!item?.buffer?.length) continue;
+          const contentHash = this.validation.computeFileHash(item.buffer);
+          const paymentSlot = buildAmazonPaymentSlotKey(contentHash);
+          storedFiles[paymentSlot] = item;
+          fileSize += item.buffer.length;
+          if (!uploadedSlots.includes(paymentSlot)) {
+            uploadedSlots.push(paymentSlot);
+          }
+        }
+        continue;
+      }
+      if (file && !Array.isArray(file) && file.buffer?.length) {
         storedFiles[slot] = file;
         fileSize += file.buffer.length;
       }

@@ -60,6 +60,8 @@ const FILENAME_SLOT_ORDER: Record<
     { slot: 'gstrReportRtoFile', hashPrefix: 'rto:' },
     { slot: 'gstrReportRtFile', hashPrefix: 'rt:' },
     { slot: 'mDirectReturnsReportFile', hashPrefix: 'returns:' },
+    { slot: 'pgForwardSettledFile', hashPrefix: 'forward:' },
+    { slot: 'pgReverseSettledFile', hashPrefix: 'reverse:' },
   ],
 };
 
