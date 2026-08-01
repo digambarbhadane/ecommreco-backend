@@ -4,8 +4,16 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
-import { UploadReportDto } from '../dto/upload-report.dto';
+import {
+  AMAZON_MAX_PAYMENT_FILES,
+  buildAmazonPaymentSlotKey,
+} from '../utils/amazon-payment-upload.util';
+import {
+  isMyntraPaymentSlot,
+  MYNTRA_PAYMENT_SLOTS,
+} from '../utils/myntra-payment-upload.util';
 import type { MarketplaceUploadKey } from '../marketplace-upload.routes';
+import { UploadReportDto } from '../dto/upload-report.dto';
 import { UploadService } from './upload.service';
 import { ValidationService } from './validation.service';
 import { ImportWorkflowService } from './import-workflow.service';
@@ -28,17 +36,17 @@ const REQUIRED_SLOTS: Record<MarketplaceUploadKey, string[]> = {
   flipkart: [],
   amazon: [], // B2C is preferred but B2B-only is valid; checked in commit()
   meesho: [],
-  myntra: [
-    'gstrReportPackedFile',
-    'salesRevenuePackedB2cFile',
-    'gstrReportRtoFile',
-    'gstrReportRtFile',
-  ],
+  myntra: [],
 };
 
 const OPTIONAL_SLOTS: Partial<Record<MarketplaceUploadKey, string[]>> = {
   flipkart: ['file', 'returnReportFile', 'paymentReportFile'],
-  amazon: ['mtrB2cFile', 'mtrB2bFile', 'amazonReturnReportFile'],
+  amazon: [
+    'mtrB2cFile',
+    'mtrB2bFile',
+    'amazonReturnReportFile',
+    'paymentReportFile',
+  ],
   meesho: [
     'tcsSalesFile',
     'tcsSalesReturnFile',
@@ -48,7 +56,16 @@ const OPTIONAL_SLOTS: Partial<Record<MarketplaceUploadKey, string[]>> = {
     'returnDeliveryCompleteReportFile',
     'paymentReportFile',
   ],
-  myntra: ['mDirectOrdersReportFile', 'mDirectReturnsReportFile'],
+  myntra: [
+    'gstrReportPackedFile',
+    'salesRevenuePackedB2cFile',
+    'gstrReportRtoFile',
+    'gstrReportRtFile',
+    'mDirectOrdersReportFile',
+    'mDirectReturnsReportFile',
+    'pgForwardSettledFile',
+    'pgReverseSettledFile',
+  ],
 };
 
 const MEESHO_IMPORT_SLOTS = [
@@ -75,6 +92,10 @@ export class ImportSessionService {
     dto: UploadReportDto,
   ) {
     const ctx = await this.validation.validateOwnership(dto);
+    await this.validation.assertTrialImportAllowed(
+      dto.sellerId,
+      dto.reportMonth,
+    );
     if (!ctx.marketplaceIdentifier.includes(marketplaceType)) {
       throw new BadRequestException(
         `Selected marketplace does not match ${marketplaceType} import.`,
@@ -113,17 +134,34 @@ export class ImportSessionService {
       throw new BadRequestException('Invalid import session');
     }
 
+    let slotKey = slot;
+    if (session.marketplaceType === 'amazon' && slot === 'paymentReportFile') {
+      const contentHash = this.validation.computeFileHash(file.buffer);
+      slotKey = buildAmazonPaymentSlotKey(contentHash);
+      const paymentCount = [...session.files.keys()].filter(
+        (key) => key === 'paymentReportFile' || key.startsWith('amazonPaymentFile:'),
+      ).length;
+      if (!session.files.has(slotKey) && paymentCount >= AMAZON_MAX_PAYMENT_FILES) {
+        throw new BadRequestException(
+          `Amazon allows up to ${AMAZON_MAX_PAYMENT_FILES} payment report files per month`,
+        );
+      }
+    }
+
     const allowed = [
       ...REQUIRED_SLOTS[session.marketplaceType],
       ...(OPTIONAL_SLOTS[session.marketplaceType] ?? []),
     ];
-    if (!allowed.includes(slot)) {
+    if (
+      !allowed.includes(slot) &&
+      !slotKey.startsWith('amazonPaymentFile:')
+    ) {
       throw new BadRequestException(
         `Unknown file slot "${slot}". Expected one of: ${allowed.join(', ')}`,
       );
     }
 
-    session.files.set(slot, {
+    session.files.set(slotKey, {
       buffer: Buffer.from(file.buffer),
       originalname: file.originalname,
     });
@@ -167,13 +205,16 @@ export class ImportSessionService {
       }
       const hasMtr =
         session.files.has('mtrB2cFile') || session.files.has('mtrB2bFile');
-      const hasReturnOnly =
-        session.files.has('amazonReturnReportFile') && !hasMtr;
-      if (!hasMtr && !hasReturnOnly) {
+      const hasPayment = [...session.files.keys()].some(
+        (key) => key === 'paymentReportFile' || key.startsWith('amazonPaymentFile:'),
+      );
+      const hasReturn = session.files.has('amazonReturnReportFile');
+      if (!hasMtr && !hasReturn && !hasPayment) {
         throw new BadRequestException(
-          'Amazon upload requires at least an MTR B2C or MTR B2B file',
+          'Amazon upload requires an MTR, return, or payment report file',
         );
       }
+      const hasReturnOnly = hasReturn && !hasMtr;
       if (hasReturnOnly) {
         const b2cAlreadyUploaded = await this.importWorkflow.hasCompletedSlot({
           sellerId: dto.sellerId,
@@ -250,6 +291,77 @@ export class ImportSessionService {
       }
     }
 
+    if (session.marketplaceType === 'myntra') {
+      if (session.files.size === 0) {
+        throw new BadRequestException('Upload at least one Myntra report file');
+      }
+      const MYNTRA_SALES_SLOTS = [
+        'gstrReportPackedFile',
+        'salesRevenuePackedB2cFile',
+        'gstrReportRtoFile',
+        'gstrReportRtFile',
+        'mDirectOrdersReportFile',
+        'mDirectReturnsReportFile',
+      ] as const;
+      const MYNTRA_REQUIRED_SALES_SLOTS = [
+        'gstrReportPackedFile',
+        'salesRevenuePackedB2cFile',
+        'gstrReportRtoFile',
+        'gstrReportRtFile',
+      ] as const;
+      const hasSalesInBatch = MYNTRA_SALES_SLOTS.some((slot) =>
+        session.files.has(slot),
+      );
+      const hasPayment = MYNTRA_PAYMENT_SLOTS.some((slot) =>
+        session.files.has(slot),
+      );
+      if (hasPayment && hasSalesInBatch) {
+        throw new BadRequestException(
+          'Myntra Payment Report must be uploaded separately from sales and return reports',
+        );
+      }
+      if (hasPayment && !hasSalesInBatch) {
+        for (const slot of MYNTRA_REQUIRED_SALES_SLOTS) {
+          const alreadyUploaded = await this.importWorkflow.hasCompletedSlot({
+            sellerId: dto.sellerId,
+            gstId: dto.gstId,
+            marketplaceId: dto.marketplaceId,
+            reportMonth: dto.reportMonth,
+            slot,
+          });
+          if (!alreadyUploaded) {
+            throw new BadRequestException(
+              'Upload all required Myntra sales and return reports before uploading the payment report',
+            );
+          }
+        }
+      }
+      if (!hasPayment && !hasSalesInBatch) {
+        throw new BadRequestException('Upload at least one Myntra report file');
+      }
+      if (hasSalesInBatch) {
+        const missingRequired = MYNTRA_REQUIRED_SALES_SLOTS.filter(
+          (slot) => !session.files.has(slot),
+        );
+        if (missingRequired.length) {
+          for (const slot of missingRequired) {
+            const alreadyUploaded = await this.importWorkflow.hasCompletedSlot({
+              sellerId: dto.sellerId,
+              gstId: dto.gstId,
+              marketplaceId: dto.marketplaceId,
+              reportMonth: dto.reportMonth,
+              slot,
+            });
+            if (!alreadyUploaded) {
+              throw new BadRequestException(
+                'Myntra upload requires: GSTR Report Packed, Sales Revenue Packed B2C, GSTR Report RTO, and GSTR Report RT.',
+              );
+            }
+          }
+        }
+      }
+    }
+
     const files = this.toMarketplaceFiles(session);
     this.sessions.delete(sessionId);
 
@@ -261,9 +373,18 @@ export class ImportSessionService {
   }
 
   private toMarketplaceFiles(session: ImportSession) {
-    const out: Record<string, SessionFile> = {};
+    const out: Record<string, SessionFile | SessionFile[]> = {};
+    const paymentReportFiles: SessionFile[] = [];
     for (const [slot, file] of session.files.entries()) {
+      if (slot === 'paymentReportFile' || slot.startsWith('amazonPaymentFile:')) {
+        paymentReportFiles.push(file);
+        continue;
+      }
       out[slot] = file;
+    }
+    if (paymentReportFiles.length) {
+      out.paymentReportFiles = paymentReportFiles;
+      out.paymentReportFile = paymentReportFiles[0];
     }
     return out;
   }

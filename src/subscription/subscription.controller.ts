@@ -83,6 +83,16 @@ export class SubscriptionController {
     return this.subscriptionService.listPackages(false);
   }
 
+  @Post('package/seed-defaults')
+  @ApiOperation({
+    summary: 'Ensure default Single GST and Multi GST packages exist',
+  })
+  @Roles('super_admin')
+  async seedDefaultPackages() {
+    await this.subscriptionService.ensureDefaultPackages();
+    return this.subscriptionService.listPackages(false);
+  }
+
   @Post('assign')
   @ApiOperation({ summary: 'Assign subscription to lead', description: 'Assign a subscription package to a lead.' })
   @Roles('super_admin', 'sales_manager')

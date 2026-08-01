@@ -46,12 +46,25 @@ export type PaymentNeftSummaryRow = {
   bankSettlementTotal: number;
   salesCount: number;
   returnsCount: number;
+  paymentDate?: string;
+  orderTotal?: number;
+  sheetTotals?: Record<string, number>;
+  sheetCounts?: Record<string, number>;
+};
+
+export type PaymentSheetBreakdownItem = {
+  kind: string;
+  label: string;
+  total: number;
+  count: number;
 };
 
 export type PaymentNeftSummaryTotals = {
   bankSettlementTotal: number;
   salesCount: number;
   returnsCount: number;
+  orderTotal?: number;
+  sheetBreakdown?: PaymentSheetBreakdownItem[];
 };
 
 export function buildPaymentSummaryByNeftPipeline(

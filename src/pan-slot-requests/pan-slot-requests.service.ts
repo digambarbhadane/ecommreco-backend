@@ -198,7 +198,10 @@ export class PanSlotRequestsService {
     );
     const purchasedPanSlots = Math.max(0, Number(seller.purchasedPanSlots ?? 0));
     const totalPanSlots = Math.max(planPanSlots + purchasedPanSlots, legacyTotal);
-    const usedPanSlots = Math.max(0, Number(seller.gstSlotsUsed ?? seller.usedPanSlots ?? 0));
+    const usedPanSlots = Math.max(
+      0,
+      Number(seller.usedPanSlots ?? seller.gstSlotsUsed ?? 0),
+    );
     return { planPanSlots, purchasedPanSlots, totalPanSlots, usedPanSlots };
   }
 

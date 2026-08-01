@@ -51,6 +51,7 @@ const FILENAME_SLOT_ORDER: Record<
     { slot: 'mtrB2bFile', hashPrefix: 'b2b:' },
     { slot: 'mtrB2cFile', hashPrefix: 'b2c:' },
     { slot: 'amazonReturnReportFile', hashPrefix: 'return:' },
+    { slot: 'paymentReportFile', hashPrefix: 'payment:' },
   ],
   myntra: [
     { slot: 'gstrReportPackedFile', hashPrefix: 'gstr:' },
@@ -59,6 +60,8 @@ const FILENAME_SLOT_ORDER: Record<
     { slot: 'gstrReportRtoFile', hashPrefix: 'rto:' },
     { slot: 'gstrReportRtFile', hashPrefix: 'rt:' },
     { slot: 'mDirectReturnsReportFile', hashPrefix: 'returns:' },
+    { slot: 'pgForwardSettledFile', hashPrefix: 'forward:' },
+    { slot: 'pgReverseSettledFile', hashPrefix: 'reverse:' },
   ],
 };
 

@@ -601,6 +601,190 @@ export class StateSkuWiseReportService {
     };
   }
 
+  /**
+   * Seller analytics: roll up imported sales against master SKUs,
+   * including marketplace SKU mappings from SKU Master.
+   */
+  async getSkuWiseAnalytics(query: StateWiseExportDto) {
+    const reportQuery: StateWiseExportDto = {
+      ...query,
+      skuGrouping: 'master_sku',
+    };
+    const { ctx, marketplaces, totalRows } =
+      await this.buildReportData(reportQuery);
+
+    const metricByMaster = new Map<
+      string,
+      {
+        masterSku: string;
+        qty: number;
+        taxableValue: number;
+        igst: number;
+        cgst: number;
+        sgst: number;
+        invoiceAmount: number;
+        gstRates: Set<number>;
+      }
+    >();
+
+    for (const mp of marketplaces) {
+      for (const row of mp.masterTotals) {
+        const key = row.label || 'UNMAPPED';
+        const existing = metricByMaster.get(key) ?? {
+          masterSku: key,
+          qty: 0,
+          taxableValue: 0,
+          igst: 0,
+          cgst: 0,
+          sgst: 0,
+          invoiceAmount: 0,
+          gstRates: new Set<number>(),
+        };
+        existing.qty += row.qty;
+        existing.taxableValue += row.taxableValue;
+        existing.igst += row.igst;
+        existing.cgst += row.cgst;
+        existing.sgst += row.sgst;
+        existing.invoiceAmount += row.invoiceAmount;
+        existing.gstRates.add(row.gstRate);
+        metricByMaster.set(key, existing);
+      }
+    }
+
+    const mappings = await this.skuMasterMappingModel
+      .find({
+        sellerId: { $in: ctx.sellerAliases },
+        gstin: ctx.gstin,
+      })
+      .select({
+        marketplace: 1,
+        marketplaceSku: 1,
+        masterSku: 1,
+        rate: 1,
+        productName: 1,
+        category: 1,
+        brand: 1,
+        status: 1,
+      })
+      .lean()
+      .exec();
+
+    const byMaster = new Map<
+      string,
+      {
+        masterSku: string;
+        status: 'MAPPED' | 'UNMAPPED';
+        productName?: string;
+        category?: string;
+        brand?: string;
+        rates: Set<number>;
+        marketplaceSkus: Array<{
+          marketplace: string;
+          marketplaceSku: string;
+          rate: number | null;
+          productName?: string;
+        }>;
+      }
+    >();
+
+    for (const item of mappings) {
+      const masterSku = String(item.masterSku ?? '').trim() || 'UNMAPPED';
+      const group = byMaster.get(masterSku) ?? {
+        masterSku,
+        status: masterSku === 'UNMAPPED' ? 'UNMAPPED' : 'MAPPED',
+        productName: item.productName,
+        category: item.category,
+        brand: item.brand,
+        rates: new Set<number>(),
+        marketplaceSkus: [],
+      };
+      if (!group.productName && item.productName) {
+        group.productName = item.productName;
+      }
+      if (!group.category && item.category) group.category = item.category;
+      if (!group.brand && item.brand) group.brand = item.brand;
+      if (typeof item.rate === 'number') group.rates.add(item.rate);
+      group.marketplaceSkus.push({
+        marketplace: String(item.marketplace ?? ''),
+        marketplaceSku: String(item.marketplaceSku ?? ''),
+        rate: typeof item.rate === 'number' ? item.rate : null,
+        productName: item.productName,
+      });
+      byMaster.set(masterSku, group);
+    }
+
+    // Ensure metric-only masters (no mapping row) still appear.
+    for (const [masterSku] of metricByMaster) {
+      if (!byMaster.has(masterSku)) {
+        byMaster.set(masterSku, {
+          masterSku,
+          status: masterSku === 'UNMAPPED' ? 'UNMAPPED' : 'MAPPED',
+          rates: new Set<number>(),
+          marketplaceSkus: [],
+        });
+      }
+    }
+
+    const rows = Array.from(byMaster.values())
+      .map((group) => {
+        const metrics = metricByMaster.get(group.masterSku);
+        return {
+          masterSku: group.masterSku,
+          status: group.status,
+          productName: group.productName ?? null,
+          category: group.category ?? null,
+          brand: group.brand ?? null,
+          rates: Array.from(
+            new Set([
+              ...Array.from(group.rates),
+              ...(metrics ? Array.from(metrics.gstRates) : []),
+            ]),
+          ).sort((a, b) => a - b),
+          marketplaceSkuCount: group.marketplaceSkus.length,
+          marketplaceSkus: group.marketplaceSkus.sort((a, b) =>
+            a.marketplaceSku.localeCompare(b.marketplaceSku),
+          ),
+          qty: Number((metrics?.qty ?? 0).toFixed(2)),
+          taxableValue: Number((metrics?.taxableValue ?? 0).toFixed(2)),
+          igst: Number((metrics?.igst ?? 0).toFixed(2)),
+          cgst: Number((metrics?.cgst ?? 0).toFixed(2)),
+          sgst: Number((metrics?.sgst ?? 0).toFixed(2)),
+          invoiceAmount: Number((metrics?.invoiceAmount ?? 0).toFixed(2)),
+        };
+      })
+      .sort((a, b) => {
+        if (a.masterSku === 'UNMAPPED') return 1;
+        if (b.masterSku === 'UNMAPPED') return -1;
+        return b.invoiceAmount - a.invoiceAmount || a.masterSku.localeCompare(b.masterSku);
+      });
+
+    const summary = {
+      masterSkuCount: rows.filter((r) => r.masterSku !== 'UNMAPPED').length,
+      unmappedCount: rows.filter((r) => r.masterSku === 'UNMAPPED').length,
+      marketplaceSkuCount: rows.reduce(
+        (sum, r) => sum + r.marketplaceSkuCount,
+        0,
+      ),
+      qty: Number(rows.reduce((sum, r) => sum + r.qty, 0).toFixed(2)),
+      taxableValue: Number(
+        rows.reduce((sum, r) => sum + r.taxableValue, 0).toFixed(2),
+      ),
+      invoiceAmount: Number(
+        rows.reduce((sum, r) => sum + r.invoiceAmount, 0).toFixed(2),
+      ),
+      totalRows,
+    };
+
+    return {
+      success: true,
+      data: {
+        gstin: ctx.gstin,
+        summary,
+        rows,
+      },
+    };
+  }
+
   private styleSheetHeader(sheet: ExcelJS.Worksheet) {
     const headerRow = sheet.getRow(1);
     headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };

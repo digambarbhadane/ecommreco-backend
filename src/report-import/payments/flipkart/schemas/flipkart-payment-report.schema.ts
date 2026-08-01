@@ -6,7 +6,7 @@ export type FlipkartPaymentReportDocument =
 
 @Schema({
   timestamps: true,
-  collection: 'flipkart_payment_reports',
+  collection: 'flipkart_payment_order_reports',
 })
 export class FlipkartPaymentReport {
   @Prop({ required: true, index: true, trim: true })
@@ -245,12 +245,16 @@ export const FlipkartPaymentReportSchema =
   SchemaFactory.createForClass(FlipkartPaymentReport);
 
 FlipkartPaymentReportSchema.index(
-  { sellerId: 1, marketplace: 1, orderId: 1, reportMonth: 1 },
-  { unique: true, name: 'flipkart_payment_order_unique_idx' },
+  { sellerId: 1, marketplace: 1, orderId: 1, neftId: 1, reportMonth: 1 },
+  { unique: true, name: 'flipkart_payment_order_neft_unique_idx' },
 );
 FlipkartPaymentReportSchema.index(
   { sellerId: 1, paymentDate: -1 },
   { name: 'flipkart_payment_seller_payment_date_idx' },
+);
+FlipkartPaymentReportSchema.index(
+  { sellerId: 1, marketplace: 1, gstin: 1, paymentDate: -1, neftId: 1 },
+  { name: 'flipkart_payment_payout_filter_idx' },
 );
 FlipkartPaymentReportSchema.index(
   { sellerId: 1, invoiceId: 1 },

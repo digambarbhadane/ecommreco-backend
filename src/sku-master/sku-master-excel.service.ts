@@ -7,6 +7,7 @@ import ExcelJS from 'exceljs';
 import * as XLSX from 'xlsx';
 import { ExportSkuMasterQueryDto } from './dto/export-sku-master.query.dto';
 import { SkuMasterService } from './sku-master.service';
+import { resolveGstDisplayName } from '../gsts/utils/gst-display.util';
 
 type RequestActor = {
   id?: string;
@@ -75,10 +76,7 @@ export class SkuMasterExcelService {
     headerRow.height = 22;
 
     const gstin = String(gst.gstNumber ?? '').trim().toUpperCase();
-    const businessName =
-      String(gst.businessName ?? '').trim() ||
-      String(gst.tradeName ?? '').trim() ||
-      '';
+    const businessName = resolveGstDisplayName(gst);
 
     for (const item of filtered) {
       sheet.addRow({

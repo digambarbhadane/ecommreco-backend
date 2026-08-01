@@ -31,7 +31,17 @@ export const MYNTRA_GSTR_RTO_HEADERS: string[][] = [
 export const MYNTRA_GSTR_RT_HEADERS: string[][] = [
   ['tax_seller_gstin', 'seller_gstin', 'GST NO', 'GSTIN'],
   ['packet_id', 'Packet ID', 'Packet_Id', 'shipment_id', 'Shipment ID', 'order_id'],
-  ['fr_refunded_date', 'FR Refunded Date', 'Refunded Date'],
+  [
+    'fr_refunded_date',
+    'FR Refunded Date',
+    'Refunded Date',
+    'refund_date',
+    'Refund Date',
+    'return_refund_date',
+    'Return Refund Date',
+    'customer_return_date',
+    'Customer Return Date',
+  ],
 ];
 
 export const MYNTRA_MDIRECT_RETURNS_HEADERS: string[][] = [

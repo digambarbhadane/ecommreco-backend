@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import type { ListAnalyticsPaymentsDto } from '../dto/list-analytics-payments.dto';
 import { ImportRow, ImportRowDocument } from '../schemas/import-row.schema';
 import { ValidationService } from '../services/validation.service';
@@ -8,9 +8,18 @@ import { FlipkartPaymentRepository } from './flipkart/flipkart-payment.repositor
 import {
   mapFlipkartPaymentToAnalyticsRow,
   mapImportRowToPaymentAnalyticsRow,
+  mapMeeshoOrderPaymentToAnalyticsRow,
   type PaymentAnalyticsRow,
 } from './payment-analytics.types';
 import { applyPaymentFiltersToMongoFilter } from '../utils/payment-filter.util';
+import {
+  MeeshoOrderPayments,
+  MeeshoOrderPaymentsDocument,
+} from './meesho/schemas/order-payments.schema';
+import {
+  Marketplace,
+  MarketplaceDocument,
+} from '../../marketplaces/schemas/marketplace.schema';
 
 const FLIPKART_SORT_FIELDS = new Set([
   'paymentDate',
@@ -31,6 +40,10 @@ export class AnalyticsPaymentsService {
     private readonly validationService: ValidationService,
     @InjectModel(ImportRow.name)
     private readonly rowModel: Model<ImportRowDocument>,
+    @InjectModel(MeeshoOrderPayments.name)
+    private readonly meeshoOrderPaymentsModel: Model<MeeshoOrderPaymentsDocument>,
+    @InjectModel(Marketplace.name)
+    private readonly marketplaceModel: Model<MarketplaceDocument>,
   ) {}
 
   async listPayments(query: ListAnalyticsPaymentsDto) {
@@ -43,10 +56,23 @@ export class AnalyticsPaymentsService {
       await this.validationService.resolveSellerIdAliases(sellerId);
     const limit = Math.max(0, Number(query.limit ?? '50'));
     const skip = Math.max(0, Number(query.skip ?? '0'));
+    const marketplaceSlug = await this.resolveMarketplaceSlug(query.marketplace);
 
-    const useLegacy = await this.shouldUseLegacyImportRows(query, sellerAliases);
+    const hasMeesho = await this.hasMeeshoPaymentData(
+      sellerAliases,
+      query.gstin,
+    );
+    const hasFlipkart = !(await this.shouldUseLegacyImportRows(
+      { ...query, marketplace: marketplaceSlug || query.marketplace },
+      sellerAliases,
+    ));
 
-    if (useLegacy) {
+    const includeMeesho =
+      hasMeesho && (!marketplaceSlug || marketplaceSlug === 'meesho');
+    const includeFlipkart =
+      hasFlipkart && (!marketplaceSlug || marketplaceSlug === 'flipkart');
+
+    if (!includeMeesho && !includeFlipkart) {
       return this.listLegacyImportRowPayments(query, sellerAliases, limit, skip);
     }
 
@@ -55,30 +81,55 @@ export class AnalyticsPaymentsService {
       : 'paymentDate';
     const sortOrder = query.sortOrder === 'asc' ? 'asc' : 'desc';
 
-    const result = await this.flipkartPaymentRepository.findBySeller({
-      sellerIds: sellerAliases,
-      gstin: query.gstin,
-      marketplace: query.marketplace,
-      paymentDateFrom: query.paymentDateFrom,
-      paymentDateTo: query.paymentDateTo,
-      search: query.search,
-      skip,
-      limit,
-      sortBy,
-      sortOrder,
-    });
+    const [flipkartResult, meeshoRows] = await Promise.all([
+      includeFlipkart
+        ? this.flipkartPaymentRepository.findBySeller({
+            sellerIds: sellerAliases,
+            gstin: query.gstin,
+            marketplace:
+              marketplaceSlug === 'flipkart'
+                ? 'flipkart'
+                : query.marketplace && marketplaceSlug !== 'meesho'
+                  ? query.marketplace
+                  : undefined,
+            paymentDateFrom: query.paymentDateFrom,
+            paymentDateTo: query.paymentDateTo,
+            search: query.search,
+            skip: 0,
+            limit: 100_000,
+            sortBy,
+            sortOrder,
+          })
+        : Promise.resolve({ data: [], total: 0 }),
+      includeMeesho
+        ? this.listMeeshoPaymentDocs(query, sellerAliases)
+        : Promise.resolve([]),
+    ]);
 
-    return {
-      success: true,
-      data: result.data.map((doc) =>
+    const mapped: PaymentAnalyticsRow[] = [
+      ...flipkartResult.data.map((doc) =>
         mapFlipkartPaymentToAnalyticsRow(
           doc as Parameters<typeof mapFlipkartPaymentToAnalyticsRow>[0],
         ),
       ),
-      total: result.total,
+      ...meeshoRows.map((doc) => mapMeeshoOrderPaymentToAnalyticsRow(doc)),
+    ];
+
+    const sorted = this.sortPaymentRows(mapped, sortBy, sortOrder);
+    const total = sorted.length;
+    const page = sorted.slice(skip, skip + limit);
+
+    return {
+      success: true,
+      data: page,
+      total,
       limit,
       skip,
-      source: 'flipkart_payment_reports' as const,
+      source: includeMeesho && includeFlipkart
+        ? 'mixed'
+        : includeMeesho
+          ? 'meesho_order_payments'
+          : 'flipkart_payment_order_reports',
     };
   }
 
@@ -107,33 +158,44 @@ export class AnalyticsPaymentsService {
       };
     }
 
-    const sellerAliases =
-      await this.validationService.resolveSellerIdAliases(sellerId);
-    const useLegacy = await this.shouldUseLegacyImportRows(
-      { ...query, sellerId },
-      sellerAliases,
-    );
-
-    if (useLegacy) {
-      return this.getLegacyImportRowSummary(query, sellerAliases);
-    }
-
-    const summary = await this.flipkartPaymentRepository.aggregateAnalyticsSummary({
-      sellerIds: sellerAliases,
-      gstin: query.gstin,
-      marketplace: query.marketplace,
-      paymentDateFrom: query.paymentDateFrom,
-      paymentDateTo: query.paymentDateTo,
+    const list = await this.listPayments({
+      ...query,
+      sellerId,
+      limit: '100000',
+      skip: '0',
     });
+    const rows = (list.data ?? []) as PaymentAnalyticsRow[];
+    const neftSet = new Set<string>();
+    let totalSettlementAmount = 0;
+    let rowsWithPaymentMode = 0;
+    const byMode = new Map<string, { count: number; settlement: number }>();
+
+    for (const row of rows) {
+      totalSettlementAmount += Number(row.bankSettlementValue ?? 0);
+      const neft = String(row.neftId ?? row.transactionId ?? '').trim();
+      if (neft) neftSet.add(neft);
+      const mode = String(row.neftType ?? row.paymentMode ?? '').trim();
+      if (mode) {
+        rowsWithPaymentMode += 1;
+        const bucket = byMode.get(mode) ?? { count: 0, settlement: 0 };
+        bucket.count += 1;
+        bucket.settlement += Number(row.bankSettlementValue ?? 0);
+        byMode.set(mode, bucket);
+      }
+    }
 
     return {
       success: true,
       data: {
-        totalRows: summary.totalRows,
-        totalSettlementAmount: summary.totalSettlementAmount,
-        uniqueNeftCount: summary.uniqueNeftCount,
-        rowsWithPaymentMode: summary.rowsWithNeftType,
-        byPaymentMode: summary.byNeftType,
+        totalRows: rows.length,
+        totalSettlementAmount,
+        uniqueNeftCount: neftSet.size,
+        rowsWithPaymentMode,
+        byPaymentMode: Array.from(byMode.entries()).map(([paymentMode, v]) => ({
+          paymentMode,
+          count: v.count,
+          settlement: v.settlement,
+        })),
       },
     };
   }
@@ -141,12 +203,25 @@ export class AnalyticsPaymentsService {
   async exportCsv(
     query: ListAnalyticsPaymentsDto,
   ): Promise<{ buffer: Buffer; filename: string; rowCount: number }> {
-    const list = await this.listPayments({
-      ...query,
-      limit: '100000',
-      skip: '0',
-    });
-    const rows = (list.data ?? []) as PaymentAnalyticsRow[];
+    const pageSize = 5_000;
+    const maxRows = 100_000;
+    const rows: PaymentAnalyticsRow[] = [];
+    let skip = 0;
+    let total = Number.POSITIVE_INFINITY;
+
+    while (rows.length < maxRows && skip < total) {
+      const list = await this.listPayments({
+        ...query,
+        limit: String(pageSize),
+        skip: String(skip),
+      });
+      const batch = (list.data ?? []) as PaymentAnalyticsRow[];
+      total = Number(list.total ?? batch.length);
+      if (!batch.length) break;
+      rows.push(...batch);
+      skip += batch.length;
+      if (batch.length < pageSize) break;
+    }
 
     const headers = [
       'Order ID',
@@ -206,17 +281,145 @@ export class AnalyticsPaymentsService {
     };
   }
 
+  private sortPaymentRows(
+    rows: PaymentAnalyticsRow[],
+    sortBy: string,
+    sortOrder: 'asc' | 'desc',
+  ) {
+    const dir = sortOrder === 'asc' ? 1 : -1;
+    const key = sortBy as keyof PaymentAnalyticsRow;
+    return [...rows].sort((a, b) => {
+      const av = a[key];
+      const bv = b[key];
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      if (typeof av === 'number' && typeof bv === 'number') {
+        return (av - bv) * dir;
+      }
+      return String(av).localeCompare(String(bv)) * dir;
+    });
+  }
+
+  private toSellerObjectIds(sellerAliases: string[]): Types.ObjectId[] {
+    return sellerAliases
+      .filter((id) => Types.ObjectId.isValid(id))
+      .map((id) => new Types.ObjectId(id));
+  }
+
+  private meeshoSellerFilter(
+    sellerAliases: string[],
+    gstin?: string,
+  ): Record<string, unknown> {
+    const sellerObjectIds = this.toSellerObjectIds(sellerAliases);
+    const filter: Record<string, unknown> = {
+      sellerId: {
+        $in:
+          sellerObjectIds.length > 0
+            ? [...sellerObjectIds, ...sellerAliases]
+            : sellerAliases,
+      },
+      marketplace: 'meesho',
+    };
+    if (gstin) filter.gstin = gstin.trim().toUpperCase();
+    return filter;
+  }
+
+  private async hasMeeshoPaymentData(
+    sellerAliases: string[],
+    gstin?: string,
+  ): Promise<boolean> {
+    const count = await this.meeshoOrderPaymentsModel
+      .countDocuments(this.meeshoSellerFilter(sellerAliases, gstin))
+      .exec();
+    return count > 0;
+  }
+
+  private async listMeeshoPaymentDocs(
+    query: ListAnalyticsPaymentsDto,
+    sellerAliases: string[],
+  ) {
+    const filter = this.meeshoSellerFilter(sellerAliases, query.gstin);
+    if (query.paymentDateFrom || query.paymentDateTo) {
+      const range: Record<string, Date> = {};
+      if (query.paymentDateFrom) {
+        const start = new Date(query.paymentDateFrom);
+        if (!Number.isNaN(start.getTime())) range.$gte = start;
+      }
+      if (query.paymentDateTo) {
+        const end = new Date(query.paymentDateTo);
+        if (!Number.isNaN(end.getTime())) {
+          end.setHours(23, 59, 59, 999);
+          range.$lte = end;
+        }
+      }
+      if (Object.keys(range).length) filter.paymentDate = range;
+    }
+
+    const search = String(query.search ?? '').trim();
+    if (search) {
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      filter.$or = [
+        { subOrderNo: { $regex: escaped, $options: 'i' } },
+        { transactionId: { $regex: escaped, $options: 'i' } },
+        { supplierSku: { $regex: escaped, $options: 'i' } },
+      ];
+    }
+
+    return this.meeshoOrderPaymentsModel
+      .find(filter)
+      .sort({ paymentDate: -1, subOrderNo: 1 })
+      .lean()
+      .exec();
+  }
+
+  private async resolveMarketplaceSlug(
+    marketplace?: string,
+  ): Promise<string> {
+    const value = String(marketplace ?? '').trim();
+    if (!value) return '';
+    const lower = value.toLowerCase();
+    if (
+      lower === 'meesho' ||
+      lower === 'flipkart' ||
+      lower === 'amazon' ||
+      lower === 'myntra'
+    ) {
+      return lower;
+    }
+    if (!Types.ObjectId.isValid(value)) return lower;
+
+    const link = await this.marketplaceModel
+      .findById(value)
+      .populate('platformMarketplaceId')
+      .lean()
+      .exec();
+    const platform = link?.platformMarketplaceId as
+      | { slug?: string; name?: string }
+      | null
+      | undefined;
+    const slug = String(platform?.slug ?? '').trim().toLowerCase();
+    if (slug) return slug;
+    const name = String(platform?.name ?? '').trim().toLowerCase();
+    if (name.includes('meesho')) return 'meesho';
+    if (name.includes('flipkart')) return 'flipkart';
+    return name || lower;
+  }
+
   private async shouldUseLegacyImportRows(
     query: Pick<ListAnalyticsPaymentsDto, 'marketplace' | 'sellerId'>,
     sellerAliases: string[],
   ): Promise<boolean> {
     const marketplace = String(query.marketplace ?? '').trim();
-    if (!marketplace) {
+    if (!marketplace || marketplace === 'flipkart') {
       const flipkartCount = await this.flipkartPaymentRepository.countByFilter({
         sellerIds: sellerAliases,
+        ...(marketplace === 'flipkart' ? { marketplace: 'flipkart' } : {}),
       });
       return flipkartCount === 0;
     }
+
+    if (marketplace === 'meesho') return true;
 
     const collectionCount = await this.flipkartPaymentRepository.countByFilter({
       sellerIds: sellerAliases,
@@ -293,129 +496,6 @@ export class AnalyticsPaymentsService {
       limit,
       skip,
       source: 'import_rows' as const,
-    };
-  }
-
-  private async getLegacyImportRowSummary(
-    query: Pick<
-      ListAnalyticsPaymentsDto,
-      'gstin' | 'marketplace' | 'paymentDateFrom' | 'paymentDateTo' | 'paymentMode'
-    >,
-    sellerAliases: string[],
-  ) {
-    const filter = await this.buildLegacyFilter(
-      { ...query, sellerId: sellerAliases[0] },
-      sellerAliases,
-    );
-
-    const facetResult = await this.rowModel
-      .aggregate<{
-        totals: Array<{
-          totalRows: number;
-          totalSettlementAmount: number;
-          uniqueNeftCount: number;
-          rowsWithPaymentMode: number;
-        }>;
-        byPaymentMode: Array<{ _id: string; count: number; settlement: number }>;
-      }>([
-        { $match: filter },
-        {
-          $facet: {
-            totals: [
-              {
-                $group: {
-                  _id: null,
-                  totalRows: { $sum: 1 },
-                  totalSettlementAmount: {
-                    $sum: { $ifNull: ['$finalSettlementAmount', 0] },
-                  },
-                  uniqueNeftCount: {
-                    $addToSet: {
-                      $trim: { input: { $ifNull: ['$transactionId', ''] } },
-                    },
-                  },
-                  rowsWithPaymentMode: {
-                    $sum: {
-                      $cond: [
-                        {
-                          $gt: [
-                            {
-                              $strLenCP: {
-                                $trim: {
-                                  input: { $ifNull: ['$paymentMode', ''] },
-                                },
-                              },
-                            },
-                            0,
-                          ],
-                        },
-                        1,
-                        0,
-                      ],
-                    },
-                  },
-                },
-              },
-              {
-                $project: {
-                  _id: 0,
-                  totalRows: 1,
-                  totalSettlementAmount: 1,
-                  rowsWithPaymentMode: 1,
-                  uniqueNeftCount: {
-                    $size: {
-                      $filter: {
-                        input: '$uniqueNeftCount',
-                        as: 'neft',
-                        cond: { $gt: [{ $strLenCP: '$$neft' }, 0] },
-                      },
-                    },
-                  },
-                },
-              },
-            ],
-            byPaymentMode: [
-              {
-                $group: {
-                  _id: {
-                    $trim: {
-                      input: { $ifNull: ['$paymentMode', 'Unknown'] },
-                    },
-                  },
-                  count: { $sum: 1 },
-                  settlement: {
-                    $sum: { $ifNull: ['$finalSettlementAmount', 0] },
-                  },
-                },
-              },
-              { $sort: { count: -1, _id: 1 } },
-            ],
-          },
-        },
-      ])
-      .exec();
-
-    const facet = facetResult[0] ?? { totals: [], byPaymentMode: [] };
-    const totals = facet.totals[0] ?? {
-      totalRows: 0,
-      totalSettlementAmount: 0,
-      uniqueNeftCount: 0,
-      rowsWithPaymentMode: 0,
-    };
-
-    return {
-      success: true,
-      data: {
-        totalRows: Number(totals.totalRows ?? 0),
-        totalSettlementAmount: Number(totals.totalSettlementAmount ?? 0),
-        uniqueNeftCount: Number(totals.uniqueNeftCount ?? 0),
-        rowsWithPaymentMode: Number(totals.rowsWithPaymentMode ?? 0),
-        byPaymentMode: (facet.byPaymentMode ?? []).map((item) => ({
-          paymentMode: String(item._id || 'Unknown'),
-          count: Number(item.count ?? 0),
-          settlement: Number(item.settlement ?? 0),
-        })),
-      },
     };
   }
 }

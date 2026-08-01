@@ -847,6 +847,8 @@ export class ProfileService {
             userId: targetUserId,
             passwordHash: hashed,
             lastPasswordChange: new Date(),
+            activeSessions: [],
+            refreshTokens: [],
           },
           $inc: { tokenVersion: 1 },
           $setOnInsert: { twoFactorEnabled: false },
@@ -873,7 +875,10 @@ export class ProfileService {
     const security = await this.userSecurityModel
       .findOneAndUpdate(
         { userId: targetUserId },
-        { $inc: { tokenVersion: 1 }, $set: { activeSessions: [] } },
+        {
+          $inc: { tokenVersion: 1 },
+          $set: { activeSessions: [], refreshTokens: [] },
+        },
         { upsert: true, new: true },
       )
       .lean()

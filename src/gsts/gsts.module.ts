@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { HttpModule } from '@nestjs/axios';
 import { MongooseModule } from '@nestjs/mongoose';
 import { GstsController } from './gsts.controller';
@@ -25,6 +25,11 @@ import {
   ImportRow,
   ImportRowSchema,
 } from '../report-import/schemas/import-row.schema';
+import {
+  DeletionAuditLog,
+  DeletionAuditLogSchema,
+} from './schemas/deletion-audit-log.schema';
+import { TrialModule } from '../trial/trial.module';
 
 @Module({
   imports: [
@@ -33,6 +38,7 @@ import {
       maxRedirects: 0,
     }),
     NotificationsModule,
+    forwardRef(() => TrialModule),
     MongooseModule.forFeature([
       { name: Gst.name, schema: GstSchema },
       { name: GstinVerification.name, schema: GstinVerificationSchema },
@@ -41,6 +47,7 @@ import {
       { name: Marketplace.name, schema: MarketplaceSchema },
       { name: PlatformMarketplace.name, schema: PlatformMarketplaceSchema },
       { name: ImportRow.name, schema: ImportRowSchema },
+      { name: DeletionAuditLog.name, schema: DeletionAuditLogSchema },
     ]),
   ],
   controllers: [GstsController, GstAliasController],
