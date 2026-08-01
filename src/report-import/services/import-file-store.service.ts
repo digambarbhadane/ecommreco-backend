@@ -23,16 +23,18 @@ export class ImportFileStoreService {
 
     const manifest: Record<string, { originalname: string; storedAs: string }> =
       {};
-    for (const [slot, file] of Object.entries(files)) {
-      if (!file?.buffer?.length) continue;
-      const storedAs = `${slot}${path.extname(file.originalname) || '.xlsx'}`;
-      const filePath = path.join(jobDir, storedAs);
-      await fs.writeFile(filePath, file.buffer);
-      manifest[slot] = {
-        originalname: file.originalname,
-        storedAs,
-      };
-    }
+    await Promise.all(
+      Object.entries(files).map(async ([slot, file]) => {
+        if (!file?.buffer?.length) return;
+        const storedAs = `${slot}${path.extname(file.originalname) || '.xlsx'}`;
+        const filePath = path.join(jobDir, storedAs);
+        await fs.writeFile(filePath, file.buffer);
+        manifest[slot] = {
+          originalname: file.originalname,
+          storedAs,
+        };
+      }),
+    );
 
     await fs.writeFile(
       path.join(jobDir, SLOT_MANIFEST),

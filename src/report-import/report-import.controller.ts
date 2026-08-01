@@ -15,8 +15,10 @@ import {
   Header,
   Param,
   Post,
+  Put,
   Query,
   Req,
+  Res,
   StreamableFile,
   UploadedFile,
   UploadedFiles,
@@ -25,12 +27,16 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import type { Response } from 'express';
 import { AuthGuard } from '@nestjs/passport';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { ListImportedRowsDto } from './dto/list-imported-rows.dto';
 import { ListAnalyticsOrdersDto } from './dto/list-analytics-orders.dto';
 import { ListAnalyticsPaymentsDto } from './dto/list-analytics-payments.dto';
+import { ListAnalyticsPayoutsDto } from './dto/list-analytics-payouts.dto';
+import { UpsertPayoutReceiptDto } from './dto/upsert-payout-receipt.dto';
+import { ResetPayoutReceiptDto } from './dto/reset-payout-receipt.dto';
 import { UploadReportDto } from './dto/upload-report.dto';
 import { ReportImportService } from './report-import.service';
 import { UploadService } from './services/upload.service';
@@ -366,9 +372,9 @@ export class ReportImportController {
 
   @Post('amazon/upload')
   @ApiOperation({
-    summary: 'Upload Amazon MTR reports',
+    summary: 'Upload Amazon reports',
     description:
-      'Upload Amazon MTR B2C (required) and optional B2B via `mtrB2cFile` / `mtrB2bFile`.',
+      'Upload Amazon MTR reports via `mtrB2cFile` / `mtrB2bFile`, a return report via `amazonReturnReportFile`, or a standalone Payment Report via `paymentReportFile`.',
   })
   @ReportUploadMultipart()
   uploadAmazon(
@@ -398,7 +404,7 @@ export class ReportImportController {
   @ApiOperation({
     summary: 'Upload Myntra reports',
     description:
-      'Upload Myntra reports: gstrReportPackedFile, salesRevenuePackedB2cFile, gstrReportRtoFile, gstrReportRtFile (required). mDirectOrdersReportFile and mDirectReturnsReportFile are optional.',
+      'Upload Myntra reports: gstrReportPackedFile, salesRevenuePackedB2cFile, gstrReportRtoFile, gstrReportRtFile (required). mDirectOrdersReportFile and mDirectReturnsReportFile are optional. PG Forward/Reverse Settled payment reports via pgForwardSettledFile and pgReverseSettledFile.',
   })
   @ReportUploadMultipart()
   uploadMyntra(
@@ -433,6 +439,8 @@ export class ReportImportController {
     const gstrReportRtoFile = files?.gstrReportRtoFile?.[0];
     const gstrReportRtFile = files?.gstrReportRtFile?.[0];
     const mDirectReturnsReportFile = files?.mDirectReturnsReportFile?.[0];
+    const pgForwardSettledFile = files?.pgForwardSettledFile?.[0];
+    const pgReverseSettledFile = files?.pgReverseSettledFile?.[0];
     const amazonReturnReportFile = files?.amazonReturnReportFile?.[0];
     if (
       !singleFile &&
@@ -451,7 +459,9 @@ export class ReportImportController {
       !salesRevenuePackedB2cFile &&
       !gstrReportRtoFile &&
       !gstrReportRtFile &&
-      !mDirectReturnsReportFile
+      !mDirectReturnsReportFile &&
+      !pgForwardSettledFile &&
+      !pgReverseSettledFile
     ) {
       throw new BadRequestException('At least one file is required');
     }
@@ -474,6 +484,8 @@ export class ReportImportController {
         gstrReportRtoFile,
         gstrReportRtFile,
         mDirectReturnsReportFile,
+        pgForwardSettledFile,
+        pgReverseSettledFile,
         amazonReturnReportFile,
       },
       dto,
@@ -491,11 +503,16 @@ export class ReportImportController {
   })
   @ApiProduces('text/csv')
   @Roles('seller', 'super_admin', 'accounts_manager')
-  async exportAnalyticsOrders(@Query() query: ListAnalyticsOrdersDto) {
+  async exportAnalyticsOrders(
+    @Query() query: ListAnalyticsOrdersDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
     if (!query.sellerId?.trim()) {
       throw new BadRequestException('sellerId is required');
     }
     const result = await this.reportImportService.exportAnalyticsOrdersCsv(query);
+    res.setHeader('X-Export-Row-Count', String(result.rowCount));
+    res.setHeader('Access-Control-Expose-Headers', 'X-Export-Row-Count');
     return new StreamableFile(result.buffer, {
       type: 'text/csv; charset=utf-8',
       disposition: `attachment; filename="${result.filename}"`,
@@ -509,12 +526,17 @@ export class ReportImportController {
   })
   @ApiProduces('text/csv')
   @Roles('seller', 'super_admin', 'accounts_manager')
-  async exportAnalyticsPayments(@Query() query: ListAnalyticsPaymentsDto) {
+  async exportAnalyticsPayments(
+    @Query() query: ListAnalyticsPaymentsDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
     if (!query.sellerId?.trim()) {
       throw new BadRequestException('sellerId is required');
     }
     const result =
       await this.reportImportService.exportAnalyticsPaymentsCsv(query);
+    res.setHeader('X-Export-Row-Count', String(result.rowCount));
+    res.setHeader('Access-Control-Expose-Headers', 'X-Export-Row-Count');
     return new StreamableFile(result.buffer, {
       type: 'text/csv; charset=utf-8',
       disposition: `attachment; filename="${result.filename}"`,
@@ -567,6 +589,60 @@ export class ReportImportController {
     return this.reportImportService.listAnalyticsPayments(query);
   }
 
+  @Get('analytics/payouts')
+  @ApiOperation({
+    summary: 'List analytics payouts by NEFT',
+    description:
+      'Portal-wise and NEFT-wise settlement totals with optional seller bank receipt data.',
+  })
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  listAnalyticsPayouts(@Query() query: ListAnalyticsPayoutsDto) {
+    if (!query.sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
+    return this.reportImportService.listAnalyticsPayouts(query);
+  }
+
+  @Put('analytics/payouts/receipt')
+  @ApiOperation({
+    summary: 'Save bank receipt for a NEFT payout',
+    description:
+      'Upsert seller-entered bank receive date and amount for a marketplace NEFT settlement.',
+  })
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  upsertPayoutReceipt(
+    @Body() dto: UpsertPayoutReceiptDto,
+    @Req() req: RequestWithUser,
+  ) {
+    if (!dto.sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
+    return this.reportImportService.upsertPayoutReceipt(
+      dto,
+      req.user?.id ?? req.user?.email,
+    );
+  }
+
+  @Post('analytics/payouts/receipt/reset')
+  @ApiOperation({
+    summary: 'Reset bank receipt for a NEFT payout',
+    description:
+      'Clears seller-entered bank receive date and amount so variance resets.',
+  })
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  resetPayoutReceipt(
+    @Body() dto: ResetPayoutReceiptDto,
+    @Req() req: RequestWithUser,
+  ) {
+    if (!dto.sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
+    return this.reportImportService.resetPayoutReceipt(
+      dto,
+      req.user?.id ?? req.user?.email,
+    );
+  }
+
   @Get('rows/export')
   @ApiOperation({
     summary: 'Export imported rows CSV',
@@ -575,11 +651,16 @@ export class ReportImportController {
   })
   @ApiProduces('text/csv')
   @Roles('seller', 'super_admin', 'accounts_manager')
-  async exportRows(@Query() query: ListImportedRowsDto) {
+  async exportRows(
+    @Query() query: ListImportedRowsDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
     if (!query.sellerId?.trim()) {
       throw new BadRequestException('sellerId is required');
     }
     const result = await this.reportImportService.exportImportedRowsCsv(query);
+    res.setHeader('X-Export-Row-Count', String(result.rowCount));
+    res.setHeader('Access-Control-Expose-Headers', 'X-Export-Row-Count');
     return new StreamableFile(result.buffer, {
       type: 'text/csv; charset=utf-8',
       disposition: `attachment; filename="${result.filename}"`,
@@ -811,13 +892,16 @@ export class ReportImportController {
   @Roles('seller', 'super_admin', 'accounts_manager')
   workflowHistory(
     @Query('sellerId') sellerId: string,
-    @Query('gstId') gstId: string,
+    @Query('gstId') gstId?: string,
     @Query('reportMonth') reportMonth?: string,
     @Query('marketplaceId') marketplaceId?: string,
   ) {
+    if (!sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
     return this.importWorkflowService.getImportHistory({
       sellerId,
-      gstId,
+      gstId: gstId?.trim() || undefined,
       reportMonth,
       marketplaceId,
     });
@@ -1028,6 +1112,23 @@ export class ReportImportController {
       throw new BadRequestException('gstin is required');
     }
     return this.stateSkuWiseReportService.getPreview(query);
+  }
+
+  @Get('analytics/sku-wise')
+  @ApiOperation({
+    summary: 'SKU-wise analytics by master SKU',
+    description:
+      'Aggregates imported sales metrics against master SKUs and marketplace SKU mappings.',
+  })
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  getSkuWiseAnalytics(@Query() query: StateWiseExportDto) {
+    if (!query.sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
+    if (!query.gstin?.trim()) {
+      throw new BadRequestException('gstin is required');
+    }
+    return this.stateSkuWiseReportService.getSkuWiseAnalytics(query);
   }
 
   @Get('export/state-sku-wise')

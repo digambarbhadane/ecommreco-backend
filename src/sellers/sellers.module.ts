@@ -7,12 +7,17 @@ import { SellersController } from './sellers.controller';
 import { SellersService } from './sellers.service';
 import { Seller, SellerSchema } from './schemas/seller.schema';
 import { User, UserSchema } from '../users/schemas/user.schema';
+import {
+  UserSecurity,
+  UserSecuritySchema,
+} from '../profile/schemas/user-security.schema';
 
 @Module({
   imports: [
     MongooseModule.forFeature([
       { name: Seller.name, schema: SellerSchema },
       { name: User.name, schema: UserSchema },
+      { name: UserSecurity.name, schema: UserSecuritySchema },
     ]),
     LeadsModule,
     NotificationsModule,

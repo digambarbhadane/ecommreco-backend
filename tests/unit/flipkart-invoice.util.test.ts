@@ -38,6 +38,17 @@ describe('flipkart-invoice.util', () => {
     ).toBe(-236);
   });
 
+  it('computes invoice from summary row field names', () => {
+    expect(
+      computeFlipkartInvoiceAmount({
+        taxableValue: 1000,
+        igst: 180,
+        cgst: 0,
+        sgst: 0,
+      }),
+    ).toBe(1180);
+  });
+
   it('applyFlipkartInvoiceAmount sets invoiceAmount on the row', () => {
     const row = applyFlipkartInvoiceAmount({
       taxableAmount: 500,

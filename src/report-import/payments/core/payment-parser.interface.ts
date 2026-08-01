@@ -3,6 +3,8 @@ import type { PaymentValidationError } from './payment-upload-summary.types';
 export type ParsedPaymentWorkbookMeta = {
   sheetName: string;
   headers: string[];
+  /** Extra sheet lines folded into an existing Order ID by summing amounts. */
+  mergedDuplicateCount?: number;
 };
 
 export type PaymentParserResult<TRow> = {

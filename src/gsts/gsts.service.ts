@@ -1,10 +1,12 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
+import { InjectConnection } from '@nestjs/mongoose';
+import { Connection, Model, Types } from 'mongoose';
 import { CreateGstDto } from './dto/create-gst.dto';
 import { VerifyGstDto } from './dto/verify-gst.dto';
 import { PerioneGstVerificationService } from './perione-gst-verification.service';
@@ -22,14 +24,28 @@ import {
   PlatformMarketplaceDocument,
 } from '../platform-marketplaces/schemas/platform-marketplace.schema';
 import {
+  DeletionAuditLog,
+  DeletionAuditLogDocument,
+} from './schemas/deletion-audit-log.schema';
+import {
   ImportRow,
   ImportRowDocument,
 } from '../report-import/schemas/import-row.schema';
 import { rethrowMongoWriteError } from '../common/utils/mongo-errors';
 import { buildGstIdFilter, buildGstIdsFilter } from '../common/utils/seller-id.util';
+import {
+  cascadeDeleteAcrossCollections,
+  type MarketplaceScopeToken,
+} from '../common/utils/permanent-delete.util';
+import { TrialValidationService } from '../trial/trial-validation.service';
+import { TrialService } from '../trial/trial.service';
+import { resolveGstDisplayName } from './utils/gst-display.util';
+import { computeSlotUsageFromGstRecords } from '../common/utils/seller-slot-usage.util';
 
 @Injectable()
 export class GstsService {
+  private readonly logger = new Logger(GstsService.name);
+
   constructor(
     @InjectModel(Gst.name) private readonly gstModel: Model<GstDocument>,
     @InjectModel(Seller.name)
@@ -42,8 +58,14 @@ export class GstsService {
     private readonly platformMarketplaceModel: Model<PlatformMarketplaceDocument>,
     @InjectModel(ImportRow.name)
     private readonly importRowModel: Model<ImportRowDocument>,
+    @InjectModel(DeletionAuditLog.name)
+    private readonly deletionAuditModel: Model<DeletionAuditLogDocument>,
+    @InjectConnection()
+    private readonly connection: Connection,
     private readonly perioneVerification: PerioneGstVerificationService,
     private readonly notificationsService: NotificationsService,
+    private readonly trialValidation: TrialValidationService,
+    private readonly trialService: TrialService,
   ) {}
 
   async verifyGst(dto: VerifyGstDto, sellerId?: string) {
@@ -90,6 +112,24 @@ export class GstsService {
       .select('panNumber gstNumber')
       .lean()
       .exec();
+
+    if (options?.actorRole !== 'super_admin') {
+      this.trialValidation.assertSellerOperationalAccess(seller);
+    }
+
+    if (
+      seller.isTrial &&
+      seller.trialStatus !== 'converted' &&
+      options?.actorRole !== 'super_admin'
+    ) {
+      if (sellerGsts.length >= 1) {
+        throw new BadRequestException(
+          'Upgrade Subscription. Trial allows only one GST.',
+        );
+      }
+      this.trialValidation.assertTrialGstLimit(seller);
+    }
+
     const sellerPanSet = new Set<string>();
     sellerGsts.forEach((item) => {
       const pan =
@@ -114,23 +154,57 @@ export class GstsService {
 
     const isFirstGstForSeller = sellerGsts.length === 0;
     const isExistingPanForSeller = sellerPanSet.has(extractedPan);
-    let purchasedPanSlots = Math.max(
+
+    const lockedPan = String(
+      seller.lockedPanNumber ?? seller.panNumber ?? '',
+    )
+      .trim()
+      .toUpperCase();
+    const purchasedPanSlots = Math.max(
       0,
-      Number(seller.gstSlotsPurchased ?? seller.gstSlots ?? 0),
+      Number(
+        seller.totalPanSlots ??
+          seller.gstSlotsPurchased ??
+          seller.gstSlots ??
+          0,
+      ),
     );
+    if (
+      lockedPan &&
+      purchasedPanSlots <= 1 &&
+      extractedPan !== lockedPan &&
+      options?.actorRole !== 'super_admin'
+    ) {
+      throw new BadRequestException(
+        `Only GSTs under PAN ${lockedPan} are allowed on this subscription. GST from another PAN cannot be added.`,
+      );
+    }
+
+    if (
+      (seller.subscriptionPlanType === 'single_gst' ||
+        seller.subscriptionPlanType === 'single_gst_multi_marketplace') &&
+      sellerGsts.length >= 1 &&
+      options?.actorRole !== 'super_admin'
+    ) {
+      throw new BadRequestException(
+        'This plan allows only one GST. Upgrade to a Multi GST / PAN plan to add more.',
+      );
+    }
+
+    let remainingPanSlots = purchasedPanSlots;
     const usedPanSlots = sellerPanSet.size;
     const isSuperAdmin = options?.actorRole === 'super_admin';
-    if (!isExistingPanForSeller && usedPanSlots >= purchasedPanSlots) {
+    if (!isExistingPanForSeller && usedPanSlots >= remainingPanSlots) {
       if (!isSuperAdmin) {
         throw new BadRequestException(
           'You have reached your GST limit. Please upgrade your plan to add a new PAN.',
         );
       }
-      purchasedPanSlots += 1;
-      seller.gstSlotsPurchased = purchasedPanSlots;
+      remainingPanSlots += 1;
+      seller.gstSlotsPurchased = remainingPanSlots;
       seller.gstSlots = Math.max(
         Number(seller.gstSlots ?? 0),
-        purchasedPanSlots,
+        remainingPanSlots,
       );
     }
 
@@ -176,9 +250,6 @@ export class GstsService {
     });
 
     seller.panProfiles = panProfiles;
-    seller.gstSlotsUsed = isExistingPanForSeller
-      ? usedPanSlots
-      : usedPanSlots + 1;
 
     if (isFirstGstForSeller) {
       this.applyFirstGstBusinessProfile(seller, {
@@ -197,6 +268,7 @@ export class GstsService {
     }
 
     await seller.save();
+    await this.syncSellerSlotUsage(sellerId);
 
     await this.logGstVerificationActivity({
       gstNumber,
@@ -301,6 +373,12 @@ export class GstsService {
     if (sellerId) {
       resolvedSeller = await this.findSellerByIdentifier(sellerId);
       if (resolvedSeller) {
+        if (
+          resolvedSeller.isTrial &&
+          resolvedSeller.trialStatus === 'active'
+        ) {
+          await this.trialService.ensureTrialGstProvisioned(resolvedSeller);
+        }
         filter.sellerId = {
           $in: this.getSellerIdAliases(resolvedSeller, sellerId),
         };
@@ -406,20 +484,17 @@ export class GstsService {
       : null;
     if (!seller) return undefined;
 
-    if (Array.isArray(seller.panProfiles)) {
-      seller.panProfiles.forEach((item) => {
-        const pan =
-          typeof item.panNumber === 'string'
-            ? item.panNumber.trim().toUpperCase()
-            : '';
-        if (pan) {
-          sellerPanSet.add(pan);
-        }
-      });
-    }
+    // Slot usage is based on PANs that have at least one GST document.
+    // panProfiles alone must not consume remaining slots (trial register used
+    // to pre-seed panProfiles without creating a Gst, which locked Add GST).
     const purchased = Math.max(
       0,
-      Number(seller.gstSlotsPurchased ?? seller.gstSlots ?? 0),
+      Number(
+        seller.totalPanSlots ??
+          seller.gstSlotsPurchased ??
+          seller.gstSlots ??
+          0,
+      ),
     );
     const used = sellerPanSet.size;
     return {
@@ -580,7 +655,7 @@ export class GstsService {
       return {
         id: gstId,
         gstNumber: gst.gstNumber,
-        businessName: gst.businessName ?? '—',
+        businessName: resolveGstDisplayName(gst, '—'),
         state: gst.state ?? '—',
         panNumber: gst.panNumber,
         status,
@@ -694,7 +769,15 @@ export class GstsService {
 
   async remove(
     id: string,
-    options?: { unlinkMarketplaces?: boolean; requesterId?: string; requesterRole?: string },
+    options?: {
+      unlinkMarketplaces?: boolean;
+      requesterId?: string;
+      requesterRole?: string;
+      confirmedGstNumber?: string;
+      confirmationText?: string;
+      ipAddress?: string;
+      userAgent?: string;
+    },
   ) {
     if (!Types.ObjectId.isValid(id)) {
       throw new BadRequestException('Invalid GST id');
@@ -715,19 +798,47 @@ export class GstsService {
       }
     }
 
-    const gstIdFilter = buildGstIdFilter(id);
-    const linkedMarketplaces = await this.marketplaceModel.countDocuments(gstIdFilter);
-    if (linkedMarketplaces > 0) {
-      if (options?.unlinkMarketplaces) {
-        await this.marketplaceModel.deleteMany(gstIdFilter).exec();
-      } else {
-        throw new BadRequestException(
-          'Cannot delete GST with linked marketplaces',
-        );
-      }
+    const confirmedGst = String(options?.confirmedGstNumber ?? '')
+      .trim()
+      .toUpperCase();
+    const confirmationText = String(options?.confirmationText ?? '').trim();
+    if (confirmedGst !== String(gst.gstNumber ?? '').trim().toUpperCase()) {
+      throw new BadRequestException('Entered GST Number does not match.');
+    }
+    if (confirmationText !== 'DELETE') {
+      throw new BadRequestException('Confirmation text must be DELETE.');
     }
 
+    const sellerAliases = Array.from(
+      new Set(
+        [String(gst.sellerId ?? ''), String(options?.requesterId ?? '')].filter(
+          Boolean,
+        ),
+      ),
+    );
+
+    const gstIdFilter = buildGstIdFilter(id);
+    const linked = await this.marketplaceModel
+      .find(gstIdFilter)
+      .populate('platformMarketplaceId')
+      .lean()
+      .exec();
+    const marketplaceTokens: MarketplaceScopeToken[] = linked.map((item) => {
+      const platform = item.platformMarketplaceId as
+        | { _id?: unknown; slug?: string; name?: string }
+        | undefined;
+      return {
+        linkId: String(item._id ?? ''),
+        platformId: String(item.platformMarketplaceId ?? ''),
+        platformSlug: String(platform?.slug ?? '').trim().toLowerCase(),
+        platformName: String(platform?.name ?? '').trim().toLowerCase(),
+      };
+    });
+
+    // Immediate path: remove GST + marketplace links so the UI updates instantly.
+    // Heavy report/payment cascade continues in the background.
     try {
+      await this.marketplaceModel.deleteMany(gstIdFilter).exec();
       await this.gstModel.findByIdAndDelete(id).exec();
 
       const remainingGsts = await this.gstModel
@@ -740,7 +851,7 @@ export class GstsService {
         const pan =
           typeof item.panNumber === 'string' && item.panNumber.length > 0
             ? item.panNumber.trim().toUpperCase()
-            : this.extractPanFromGst(item.gstNumber);
+            : this.softExtractPanFromGst(item.gstNumber);
         if (pan) {
           panSet.add(pan);
         }
@@ -752,17 +863,91 @@ export class GstsService {
           ? seller.panProfiles.filter((item) => panSet.has(item.panNumber))
           : [];
         seller.panProfiles = nextProfiles;
-        seller.gstSlotsUsed = panSet.size;
         await seller.save();
+        await this.syncSellerSlotUsage(String(gst.sellerId ?? ''));
       }
+
+      const auditInsert = await this.deletionAuditModel.collection.insertOne({
+        sellerId: String(gst.sellerId ?? ''),
+        userId: String(options?.requesterId ?? ''),
+        action: 'delete_gst_permanently',
+        gstNumber: String(gst.gstNumber ?? ''),
+        marketplace: '',
+        deletedCollections: [],
+        totalRecordsDeleted: 0,
+        cleanupStatus: 'pending',
+        deletedAt: new Date(),
+        ipAddress: options?.ipAddress,
+        userAgent: options?.userAgent,
+      });
+
+      void this.runGstCascadeCleanup({
+        auditId: auditInsert.insertedId,
+        sellerAliases,
+        gstId: id,
+        gstNumber: String(gst.gstNumber ?? ''),
+        marketplaceTokens,
+      });
     } catch (error) {
       rethrowMongoWriteError(error);
     }
 
     return {
       success: true,
+      message:
+        'GST Number deleted successfully. Associated data cleanup is running in the background.',
       data: gst,
     };
+  }
+
+  private async runGstCascadeCleanup(input: {
+    auditId: Types.ObjectId;
+    sellerAliases: string[];
+    gstId: string;
+    gstNumber: string;
+    marketplaceTokens: MarketplaceScopeToken[];
+  }) {
+    try {
+      const summary = await cascadeDeleteAcrossCollections(this.connection, {
+        sellerAliases: input.sellerAliases,
+        gstId: input.gstId,
+        gstNumber: input.gstNumber,
+        marketplaceTokens: input.marketplaceTokens,
+        mode: 'gst',
+      });
+      await this.deletionAuditModel.collection.updateOne(
+        { _id: input.auditId },
+        {
+          $set: {
+            deletedCollections: summary.deletedCollections,
+            totalRecordsDeleted: summary.totalRecordsDeleted,
+            cleanupStatus: 'completed',
+          },
+        },
+      );
+      this.logger.log(
+        `GST cascade cleanup completed for ${input.gstNumber}: ${summary.totalRecordsDeleted} records`,
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Unknown cascade cleanup error';
+      this.logger.error(
+        `GST cascade cleanup failed for ${input.gstNumber}: ${message}`,
+      );
+      try {
+        await this.deletionAuditModel.collection.updateOne(
+          { _id: input.auditId },
+          {
+            $set: {
+              cleanupStatus: 'failed',
+              cleanupError: message,
+            },
+          },
+        );
+      } catch {
+        // ignore secondary audit update failures
+      }
+    }
   }
 
   private async createLegacyGst(
@@ -857,8 +1042,8 @@ export class GstsService {
     });
 
     seller.panProfiles = panProfiles;
-    seller.gstSlotsUsed = isExistingPanForSeller ? usedPanSlots : usedPanSlots + 1;
     await seller.save();
+    await this.syncSellerSlotUsage(sellerId);
 
     return { success: true, data: created };
   }
@@ -976,9 +1161,15 @@ export class GstsService {
     await this.userModel
       .updateMany(
         { role: 'seller', email },
-        { $set: { companyName: seller.firmName || seller.tradeName || '' } },
+        { $set: { companyName: seller.tradeName || seller.firmName || '' } },
       )
       .exec();
+  }
+
+  private softExtractPanFromGst(gstNumber?: string) {
+    const normalized = String(gstNumber ?? '').trim().toUpperCase();
+    if (normalized.length < 12) return '';
+    return normalized.slice(2, 12);
   }
 
   private extractPanFromGst(gstNumber: string) {
@@ -1047,5 +1238,28 @@ export class GstsService {
       aliases.add(requestedId.trim());
     }
     return Array.from(aliases);
+  }
+
+  private async syncSellerSlotUsage(sellerId: string) {
+    const normalizedSellerId = String(sellerId ?? '').trim();
+    if (!normalizedSellerId) {
+      return;
+    }
+
+    const records = await this.gstModel
+      .find({ sellerId: normalizedSellerId })
+      .select('panNumber gstNumber')
+      .lean()
+      .exec();
+    const { gstUsed, panUsed } = computeSlotUsageFromGstRecords(records);
+    const update =
+      gstUsed === 0
+        ? {
+            $set: { gstSlotsUsed: 0, usedPanSlots: 0, gstNumber: '' },
+          }
+        : {
+            $set: { gstSlotsUsed: gstUsed, usedPanSlots: panUsed },
+          };
+    await this.sellerModel.updateOne({ _id: normalizedSellerId }, update).exec();
   }
 }

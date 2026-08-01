@@ -20,6 +20,7 @@ import { AuthGuard } from '@nestjs/passport';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { CreateGstDto } from './dto/create-gst.dto';
+import { DeleteGstDto } from './dto/delete-gst.dto';
 import { VerifyGstDto } from './dto/verify-gst.dto';
 import { GstsService } from './gsts.service';
 
@@ -129,6 +130,7 @@ export class GstsController {
   @Roles('seller', 'super_admin')
   remove(
     @Param('id') id: string,
+    @Body() body: DeleteGstDto,
     @Query('unlinkMarketplaces') unlinkMarketplaces?: string,
     @Req() req?: RequestWithUser,
   ) {
@@ -140,6 +142,12 @@ export class GstsController {
       unlinkMarketplaces: shouldUnlink,
       requesterId: req?.user?.id,
       requesterRole: req?.user?.role,
+      confirmedGstNumber: body?.gstNumber,
+      confirmationText: body?.confirmation,
+      ipAddress: req?.ip,
+      userAgent: Array.isArray(req?.headers?.['user-agent'])
+        ? req?.headers?.['user-agent']?.[0]
+        : req?.headers?.['user-agent'],
     });
   }
 }

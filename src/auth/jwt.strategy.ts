@@ -14,13 +14,30 @@ import {
   UserSecurity,
   UserSecurityDocument,
 } from '../profile/schemas/user-security.schema';
+import { evaluateSellerLogin, type SellerLoginSnapshot } from '../trial/trial-login.policy';
 
 type JwtPayload = {
   sub: string;
   role?: string;
   tokenVersion?: number;
   sessionId?: string;
+  typ?: 'access' | 'refresh';
 };
+
+const disabledStatuses = new Set(['blocked', 'rejected']);
+
+function assertSellerSessionAccess(seller: SellerLoginSnapshot) {
+  const access = evaluateSellerLogin(seller, { requirePassword: false });
+  if (!access.allowed) {
+    throw new UnauthorizedException({
+      success: false,
+      message: access.message,
+      errorCode: access.errorCode,
+      sellerId: access.sellerId,
+      accountStatusReason: access.accountStatusReason,
+    });
+  }
+}
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
@@ -43,14 +60,42 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: JwtPayload) {
+    if (payload.typ === 'refresh') {
+      throw new UnauthorizedException('Refresh token cannot be used as access token');
+    }
+
     const { sub: id, role } = payload;
     const { tokenVersion, sessionId } = payload;
 
     try {
+      const security = await this.userSecurityModel
+        .findOne({ userId: id })
+        .select('tokenVersion')
+        .lean()
+        .exec();
+      const currentVersion =
+        typeof security?.tokenVersion === 'number' ? security.tokenVersion : 0;
+      if (
+        typeof tokenVersion === 'number' &&
+        tokenVersion !== currentVersion
+      ) {
+        throw new UnauthorizedException();
+      }
+
       if (role === 'seller') {
-        const seller = await this.sellerModel.findById(id).select('-password').lean().exec();
+        const seller = await this.sellerModel
+          .findById(id)
+          .select('-password')
+          .lean()
+          .exec();
         if (seller) {
-          return { ...seller, id: seller._id.toString(), role: 'seller', sessionId };
+          assertSellerSessionAccess(seller);
+          return {
+            ...seller,
+            id: seller._id.toString(),
+            role: 'seller',
+            sessionId,
+          };
         }
 
         const sellerUser = await this.userModel
@@ -59,6 +104,17 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
           .lean()
           .exec();
         if (sellerUser) {
+          if (disabledStatuses.has(String(sellerUser.status ?? ''))) {
+            throw new UnauthorizedException();
+          }
+          const linkedSeller = await this.sellerModel
+            .findOne({ email: sellerUser.email })
+            .select('-password')
+            .lean()
+            .exec();
+          if (linkedSeller) {
+            assertSellerSessionAccess(linkedSeller);
+          }
           return {
             ...sellerUser,
             id: sellerUser._id.toString(),
@@ -71,21 +127,50 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       }
 
       if (!role) {
-        const user = await this.userModel.findById(id).select('-password').lean().exec();
+        const user = await this.userModel
+          .findById(id)
+          .select('-password')
+          .lean()
+          .exec();
         if (user) {
-          return { ...user, id: user._id.toString(), role: user.role, sessionId };
+          if (disabledStatuses.has(String(user.status ?? ''))) {
+            throw new UnauthorizedException();
+          }
+          return {
+            ...user,
+            id: user._id.toString(),
+            role: user.role,
+            sessionId,
+          };
         }
 
-        const seller = await this.sellerModel.findById(id).select('-password').lean().exec();
+        const seller = await this.sellerModel
+          .findById(id)
+          .select('-password')
+          .lean()
+          .exec();
         if (seller) {
-          return { ...seller, id: seller._id.toString(), role: 'seller', sessionId };
+          assertSellerSessionAccess(seller);
+          return {
+            ...seller,
+            id: seller._id.toString(),
+            role: 'seller',
+            sessionId,
+          };
         }
 
         throw new UnauthorizedException();
       }
 
-      const user = await this.userModel.findById(id).select('-password').lean().exec();
+      const user = await this.userModel
+        .findById(id)
+        .select('-password')
+        .lean()
+        .exec();
       if (!user) {
+        throw new UnauthorizedException();
+      }
+      if (disabledStatuses.has(String(user.status ?? ''))) {
         throw new UnauthorizedException();
       }
       return { ...user, id: user._id.toString(), sessionId };

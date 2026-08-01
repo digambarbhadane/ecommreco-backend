@@ -1,6 +1,12 @@
 import type { PipelineStage } from 'mongoose';
 import { isSameIndianState } from './gst-state.util';
-import { computeFlipkartInvoiceAmount } from './flipkart-invoice.util';
+import {
+  computeFlipkartInvoiceAmount,
+  flipkartNoteComponentSign,
+  syncFlipkartSummaryInvoice,
+} from './flipkart-invoice.util';
+
+export { syncFlipkartSummaryInvoice } from './flipkart-invoice.util';
 import { classifyFlipkartReturnSubType } from './flipkart-analytics.util';
 import { splitGstForReportRow } from './state-wise-gst-split.util';
 
@@ -444,7 +450,7 @@ export type FlipkartSummaryRow = {
 export function addFlipkartSummaryRows(
   ...rows: FlipkartSummaryRow[]
 ): FlipkartSummaryRow {
-  return rows.reduce(
+  const summed = rows.reduce(
     (acc, row) => ({
       totalRows: acc.totalRows + row.totalRows,
       pcs: acc.pcs + row.pcs,
@@ -464,6 +470,7 @@ export function addFlipkartSummaryRows(
       invoiceAmount: 0,
     },
   );
+  return syncFlipkartSummaryInvoice(summed);
 }
 
 /** Gross Sale = Sale + Credit Note */
@@ -625,18 +632,20 @@ export function aggregateFlipkartNotesByOrderId(
       });
     const target = bucket[kind];
     target.pcs += Number(row.quantity ?? 0);
-    target.taxableValue += Number(row.taxableAmount ?? 0);
+    target.taxableValue += flipkartNoteComponentSign(
+      kind,
+      Number(row.taxableAmount ?? 0),
+    );
     if (sellerStateKeys && sellerStateKeys.size > 0) {
       const tax = splitGstForReportRow(row, sellerStateKeys);
-      target.igst += tax.igst;
-      target.cgst += tax.cgst;
-      target.sgst += tax.sgst;
+      target.igst += flipkartNoteComponentSign(kind, tax.igst);
+      target.cgst += flipkartNoteComponentSign(kind, tax.cgst);
+      target.sgst += flipkartNoteComponentSign(kind, tax.sgst);
     } else {
-      target.igst += Number(row.igstAmount ?? 0);
-      target.cgst += Number(row.cgstAmount ?? 0);
-      target.sgst += Number(row.sgstAmount ?? 0);
+      target.igst += flipkartNoteComponentSign(kind, Number(row.igstAmount ?? 0));
+      target.cgst += flipkartNoteComponentSign(kind, Number(row.cgstAmount ?? 0));
+      target.sgst += flipkartNoteComponentSign(kind, Number(row.sgstAmount ?? 0));
     }
-    target.invoiceAmount += Math.abs(computeFlipkartInvoiceAmount(row));
     perOrder.set(orderId, bucket);
   }
 
@@ -644,27 +653,40 @@ export function aggregateFlipkartNotesByOrderId(
   const debitNote = empty();
 
   for (const bucket of perOrder.values()) {
-    if (bucket.credit.invoiceAmount !== 0 || bucket.credit.pcs !== 0) {
+    if (
+      bucket.credit.taxableValue !== 0 ||
+      bucket.credit.igst !== 0 ||
+      bucket.credit.cgst !== 0 ||
+      bucket.credit.sgst !== 0 ||
+      bucket.credit.pcs !== 0
+    ) {
       creditNote.totalRows += 1;
       creditNote.pcs += bucket.credit.pcs;
       creditNote.taxableValue += bucket.credit.taxableValue;
       creditNote.igst += bucket.credit.igst;
       creditNote.cgst += bucket.credit.cgst;
       creditNote.sgst += bucket.credit.sgst;
-      creditNote.invoiceAmount += bucket.credit.invoiceAmount;
     }
-    if (bucket.debit.invoiceAmount !== 0 || bucket.debit.pcs !== 0) {
+    if (
+      bucket.debit.taxableValue !== 0 ||
+      bucket.debit.igst !== 0 ||
+      bucket.debit.cgst !== 0 ||
+      bucket.debit.sgst !== 0 ||
+      bucket.debit.pcs !== 0
+    ) {
       debitNote.totalRows += 1;
       debitNote.pcs += bucket.debit.pcs;
       debitNote.taxableValue += bucket.debit.taxableValue;
       debitNote.igst += bucket.debit.igst;
       debitNote.cgst += bucket.debit.cgst;
       debitNote.sgst += bucket.debit.sgst;
-      debitNote.invoiceAmount += bucket.debit.invoiceAmount;
     }
   }
 
-  return { creditNote, debitNote };
+  return {
+    creditNote: syncFlipkartSummaryInvoice(creditNote),
+    debitNote: syncFlipkartSummaryInvoice(debitNote),
+  };
 }
 
 export function mapFlipkartNoteFacetRows(
@@ -697,22 +719,43 @@ export function mapFlipkartNoteFacetRows(
     igst?: number;
     cgst?: number;
     sgst?: number;
-  }): FlipkartNoteSummaryRow => ({
-    totalRows: Number(item?.orderCount ?? 0),
-    pcs: Number(item?.pcs ?? 0),
-    taxableValue: Number(item?.taxableAmount ?? 0),
-    igst: Number(item?.igst ?? 0),
-    cgst: Number(item?.cgst ?? 0),
-    sgst: Number(item?.sgst ?? 0),
-    invoiceAmount: Math.abs(Number(item?.invoiceAmount ?? 0)),
-  });
+  }, kind?: FlipkartNoteKind): FlipkartNoteSummaryRow => {
+    const row = {
+      totalRows: Number(item?.orderCount ?? 0),
+      pcs: Number(item?.pcs ?? 0),
+      taxableValue: Number(item?.taxableAmount ?? 0),
+      igst: Number(item?.igst ?? 0),
+      cgst: Number(item?.cgst ?? 0),
+      sgst: Number(item?.sgst ?? 0),
+      invoiceAmount: Number(item?.invoiceAmount ?? 0),
+    };
+    if (kind === 'debit') {
+      return syncFlipkartSummaryInvoice({
+        ...row,
+        taxableValue: flipkartNoteComponentSign('debit', row.taxableValue),
+        igst: flipkartNoteComponentSign('debit', row.igst),
+        cgst: flipkartNoteComponentSign('debit', row.cgst),
+        sgst: flipkartNoteComponentSign('debit', row.sgst),
+      });
+    }
+    if (kind === 'credit') {
+      return syncFlipkartSummaryInvoice({
+        ...row,
+        taxableValue: flipkartNoteComponentSign('credit', row.taxableValue),
+        igst: flipkartNoteComponentSign('credit', row.igst),
+        cgst: flipkartNoteComponentSign('credit', row.cgst),
+        sgst: flipkartNoteComponentSign('credit', row.sgst),
+      });
+    }
+    return syncFlipkartSummaryInvoice(row);
+  };
 
   const credit = rows.find((row) => row._id === 'credit');
   const debit = rows.find((row) => row._id === 'debit');
 
   return {
-    creditNote: credit ? toRow(credit) : empty(),
-    debitNote: debit ? toRow(debit) : empty(),
+    creditNote: credit ? toRow(credit, 'credit') : empty(),
+    debitNote: debit ? toRow(debit, 'debit') : empty(),
   };
 }
 
@@ -1859,6 +1902,38 @@ export type MyntraMonthTotalsRow = WorkflowMonthTotalsRow & {
   myntraReturnNaInvoice?: number;
 };
 
+export function buildMyntraInReportMonthMatch(
+  reportMonth: string,
+): Record<string, unknown> {
+  return {
+    $or: [
+      // Workflow uploads are scoped by report month; include all rows for that month.
+      { $eq: ['$reportMonth', reportMonth] },
+      {
+        $and: [
+          {
+            $or: [
+              { $eq: [{ $ifNull: ['$reportMonth', null] }, null] },
+              { $eq: ['$reportMonth', ''] },
+            ],
+          },
+          { $eq: ['$myntraSummaryMonth', reportMonth] },
+        ],
+      },
+    ],
+  };
+}
+
+export function myntraRowBelongsToReportMonth(
+  row: { reportMonth?: string | null; myntraSummaryMonth?: string | null },
+  reportMonth: string,
+): boolean {
+  const stored = String(row.reportMonth ?? '').trim();
+  if (stored === reportMonth) return true;
+  if (stored) return false;
+  return String(row.myntraSummaryMonth ?? '').trim() === reportMonth;
+}
+
 export function buildMyntraWorkflowMonthSummaryPipeline(
   rowFilter: Record<string, unknown>,
   reportMonth?: string,
@@ -1914,6 +1989,9 @@ export function buildMyntraWorkflowMonthSummaryPipeline(
       },
     ],
   };
+  const isMyntraAnyReturn = {
+    $or: [isMyntraClassifiedReturn, isMyntraNaReturn],
+  };
   const isMyntraSale = { $eq: ['$documentType', 'SALE'] };
 
   const sumWhen = (
@@ -1924,22 +2002,7 @@ export function buildMyntraWorkflowMonthSummaryPipeline(
   });
 
   const myntraInReportMonth: Record<string, unknown> | true = reportMonth
-    ? {
-        $or: [
-          { $eq: ['$myntraSummaryMonth', reportMonth] },
-          {
-            $and: [
-              {
-                $or: [
-                  { $eq: [{ $ifNull: ['$myntraSummaryMonth', null] }, null] },
-                  { $eq: ['$myntraSummaryMonth', ''] },
-                ],
-              },
-              { $eq: ['$reportMonth', reportMonth] },
-            ],
-          },
-        ],
-      }
+    ? buildMyntraInReportMonthMatch(reportMonth)
     : true;
 
   const myntraWhen = (condition: Record<string, unknown>) =>
@@ -1951,46 +2014,64 @@ export function buildMyntraWorkflowMonthSummaryPipeline(
     condition: Record<string, unknown>,
     fieldExpr: Record<string, unknown> | number | string,
   ) => sumWhen(myntraWhen(condition), fieldExpr);
-  // RTO totals must reflect every uploaded RTO row, regardless of parsed date fields.
-  const sumWhenMyntraAll = (
-    condition: Record<string, unknown>,
-    fieldExpr: Record<string, unknown> | number | string,
-  ) => sumWhen(condition, fieldExpr);
 
   const myntraSummaryMonthExpr = {
-    $let: {
-      vars: {
-        raw: {
-          $trim: {
-            input: { $toString: { $ifNull: ['$myntraSummaryDate', ''] } },
+    $cond: [
+      { $eq: [{ $type: '$myntraSummaryDate' }, 'date'] },
+      { $dateToString: { format: '%Y-%m', date: '$myntraSummaryDate' } },
+      {
+        $let: {
+          vars: {
+            raw: {
+              $trim: {
+                input: { $toString: { $ifNull: ['$myntraSummaryDate', ''] } },
+              },
+            },
+          },
+          in: {
+            $cond: [
+              { $regexMatch: { input: '$$raw', regex: '^\\d{4}-\\d{2}-\\d{2}' } },
+              { $substr: ['$$raw', 0, 7] },
+              {
+                $cond: [
+                  {
+                    $regexMatch: {
+                      input: '$$raw',
+                      regex: '^\\d{2}-\\d{2}-\\d{4}$',
+                    },
+                  },
+                  {
+                    $concat: [
+                      { $substr: ['$$raw', 6, 4] },
+                      '-',
+                      { $substr: ['$$raw', 3, 2] },
+                    ],
+                  },
+                  {
+                    $cond: [
+                      {
+                        $regexMatch: {
+                          input: '$$raw',
+                          regex: '^\\d{2}/\\d{2}/\\d{4}$',
+                        },
+                      },
+                      {
+                        $concat: [
+                          { $substr: ['$$raw', 6, 4] },
+                          '-',
+                          { $substr: ['$$raw', 3, 2] },
+                        ],
+                      },
+                      null,
+                    ],
+                  },
+                ],
+              },
+            ],
           },
         },
       },
-      in: {
-        $cond: [
-          { $regexMatch: { input: '$$raw', regex: '^\\d{4}-\\d{2}-\\d{2}' } },
-          { $substr: ['$$raw', 0, 7] },
-          {
-            $cond: [
-              {
-                $regexMatch: {
-                  input: '$$raw',
-                  regex: '^\\d{2}-\\d{2}-\\d{4}$',
-                },
-              },
-              {
-                $concat: [
-                  { $substr: ['$$raw', 6, 4] },
-                  '-',
-                  { $substr: ['$$raw', 3, 2] },
-                ],
-              },
-              null,
-            ],
-          },
-        ],
-      },
-    },
+    ],
   };
 
   const monthScopedStages: PipelineStage[] = [];
@@ -2050,55 +2131,55 @@ export function buildMyntraWorkflowMonthSummaryPipeline(
                 $sum: { $cond: [{ $eq: ['$reportType', 'cashback'] }, 1, 0] },
               },
               myntraGrossSalesRows: sumWhenMyntra(isMyntraSale, 1),
-              myntraReturnTotalRows: sumWhenMyntra(isMyntraClassifiedReturn, 1),
-              myntraReturnRtoRows: sumWhenMyntraAll(isMyntraRto, 1),
+              myntraReturnTotalRows: sumWhenMyntra(isMyntraAnyReturn, 1),
+              myntraReturnRtoRows: sumWhenMyntra(isMyntraRto, 1),
               myntraReturnCustomerRows: sumWhenMyntra(isMyntraCustomerReturn, 1),
               myntraReturnNaRows: sumWhenMyntra(isMyntraNaReturn, 1),
               myntraGrossSalesPcs: sumWhenMyntra(isMyntraSale, qty),
-              myntraReturnTotalPcs: sumWhenMyntra(isMyntraClassifiedReturn, absQty),
-              myntraReturnRtoPcs: sumWhenMyntraAll(isMyntraRto, absQty),
+              myntraReturnTotalPcs: sumWhenMyntra(isMyntraAnyReturn, absQty),
+              myntraReturnRtoPcs: sumWhenMyntra(isMyntraRto, absQty),
               myntraReturnCustomerPcs: sumWhenMyntra(isMyntraCustomerReturn, absQty),
               myntraReturnNaPcs: sumWhenMyntra(isMyntraNaReturn, absQty),
               myntraGrossSalesTaxable: sumWhenMyntra(isMyntraSale, taxableAmt),
-              myntraReturnTotalTaxable: sumWhenMyntra(isMyntraClassifiedReturn, absTaxable),
-              myntraReturnRtoTaxable: sumWhenMyntraAll(isMyntraRto, absTaxable),
+              myntraReturnTotalTaxable: sumWhenMyntra(isMyntraAnyReturn, absTaxable),
+              myntraReturnRtoTaxable: sumWhenMyntra(isMyntraRto, absTaxable),
               myntraReturnCustomerTaxable: sumWhenMyntra(isMyntraCustomerReturn, absTaxable),
               myntraReturnNaTaxable: sumWhenMyntra(isMyntraNaReturn, absTaxable),
               myntraGrossSalesIgst: sumWhenMyntra(isMyntraSale, igstForSummary),
-              myntraReturnTotalIgst: sumWhenMyntra(isMyntraClassifiedReturn, absIgst),
-              myntraReturnRtoIgst: sumWhenMyntraAll(isMyntraRto, absIgst),
+              myntraReturnTotalIgst: sumWhenMyntra(isMyntraAnyReturn, absIgst),
+              myntraReturnRtoIgst: sumWhenMyntra(isMyntraRto, absIgst),
               myntraReturnCustomerIgst: sumWhenMyntra(isMyntraCustomerReturn, absIgst),
               myntraReturnNaIgst: sumWhenMyntra(isMyntraNaReturn, absIgst),
               myntraGrossSalesCgst: sumWhenMyntra(isMyntraSale, cgstForSummary),
-              myntraReturnTotalCgst: sumWhenMyntra(isMyntraClassifiedReturn, absCgst),
-              myntraReturnRtoCgst: sumWhenMyntraAll(isMyntraRto, absCgst),
+              myntraReturnTotalCgst: sumWhenMyntra(isMyntraAnyReturn, absCgst),
+              myntraReturnRtoCgst: sumWhenMyntra(isMyntraRto, absCgst),
               myntraReturnCustomerCgst: sumWhenMyntra(isMyntraCustomerReturn, absCgst),
               myntraReturnNaCgst: sumWhenMyntra(isMyntraNaReturn, absCgst),
               myntraGrossSalesSgst: sumWhenMyntra(isMyntraSale, sgstForSummary),
-              myntraReturnTotalSgst: sumWhenMyntra(isMyntraClassifiedReturn, absSgst),
-              myntraReturnRtoSgst: sumWhenMyntraAll(isMyntraRto, absSgst),
+              myntraReturnTotalSgst: sumWhenMyntra(isMyntraAnyReturn, absSgst),
+              myntraReturnRtoSgst: sumWhenMyntra(isMyntraRto, absSgst),
               myntraReturnCustomerSgst: sumWhenMyntra(isMyntraCustomerReturn, absSgst),
               myntraReturnNaSgst: sumWhenMyntra(isMyntraNaReturn, absSgst),
               myntraGrossSalesInvoice: sumWhenMyntra(isMyntraSale, invoiceAmt),
-              myntraReturnTotalInvoice: sumWhenMyntra(isMyntraClassifiedReturn, absInvoice),
-              myntraReturnRtoInvoice: sumWhenMyntraAll(isMyntraRto, absInvoice),
+              myntraReturnTotalInvoice: sumWhenMyntra(isMyntraAnyReturn, absInvoice),
+              myntraReturnRtoInvoice: sumWhenMyntra(isMyntraRto, absInvoice),
               myntraReturnCustomerInvoice: sumWhenMyntra(isMyntraCustomerReturn, absInvoice),
               myntraReturnNaInvoice: sumWhenMyntra(isMyntraNaReturn, absInvoice),
               salesDocRows: sumWhenMyntra(isMyntraSale, 1),
-              returnsDocRows: sumWhenMyntra(isMyntraClassifiedReturn, 1),
+              returnsDocRows: sumWhenMyntra(isMyntraAnyReturn, 1),
               totalInvoiceAmount: { $sum: invoiceAmt },
               salesInvoiceAmount: sumWhenMyntra(isMyntraSale, invoiceAmt),
-              returnsInvoiceAmount: sumWhenMyntra(isMyntraClassifiedReturn, absInvoice),
+              returnsInvoiceAmount: sumWhenMyntra(isMyntraAnyReturn, absInvoice),
               salesPcs: sumWhenMyntra(isMyntraSale, qty),
-              returnsPcs: sumWhenMyntra(isMyntraClassifiedReturn, absQty),
+              returnsPcs: sumWhenMyntra(isMyntraAnyReturn, absQty),
               salesTaxableAmount: sumWhenMyntra(isMyntraSale, taxableAmt),
-              returnsTaxableAmount: sumWhenMyntra(isMyntraClassifiedReturn, absTaxable),
+              returnsTaxableAmount: sumWhenMyntra(isMyntraAnyReturn, absTaxable),
               salesIgst: sumWhenMyntra(isMyntraSale, igstForSummary),
-              returnsIgst: sumWhenMyntra(isMyntraClassifiedReturn, absIgst),
+              returnsIgst: sumWhenMyntra(isMyntraAnyReturn, absIgst),
               salesCgst: sumWhenMyntra(isMyntraSale, cgstForSummary),
-              returnsCgst: sumWhenMyntra(isMyntraClassifiedReturn, absCgst),
+              returnsCgst: sumWhenMyntra(isMyntraAnyReturn, absCgst),
               salesSgst: sumWhenMyntra(isMyntraSale, sgstForSummary),
-              returnsSgst: sumWhenMyntra(isMyntraClassifiedReturn, absSgst),
+              returnsSgst: sumWhenMyntra(isMyntraAnyReturn, absSgst),
               totalTaxableAmount: { $sum: taxableAmt },
               totalIgst: { $sum: igstForSummary },
               totalCgst: { $sum: cgstForSummary },
@@ -2230,6 +2311,17 @@ const addFlipkartBucketRow = (
   acc.sgst += tax.sgst;
   acc.invoice += computeFlipkartInvoiceAmount(row);
 };
+
+const toFlipkartSummaryRow = (acc: FlipkartBucketAcc): FlipkartSummaryRow =>
+  syncFlipkartSummaryInvoice({
+    totalRows: acc.count,
+    pcs: acc.pcs,
+    taxableValue: acc.taxable,
+    igst: acc.igst,
+    cgst: acc.cgst,
+    sgst: acc.sgst,
+    invoiceAmount: acc.invoice,
+  });
 
 export type FlipkartMonthSummaryInputRow = FlipkartOrderNoteInput & {
   voucherType?: string | null;

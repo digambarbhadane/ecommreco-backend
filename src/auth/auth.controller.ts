@@ -15,11 +15,12 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { ThrottlerGuard } from '@nestjs/throttler';
+import { SkipThrottle, ThrottlerGuard } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { BootstrapSuperAdminDto } from './dto/bootstrap-super-admin.dto';
 import { DevResetPasswordDto } from './dto/dev-reset-password.dto';
 import { LoginDto } from './dto/login.dto';
+import { RefreshTokenDto } from './dto/refresh-token.dto';
 import type { Request } from 'express';
 
 @ApiTags('Auth')
@@ -56,11 +57,57 @@ export class AuthController {
   @ApiOperation({
     summary: 'Login',
     description:
-      'Authenticate user with email and password. Returns JWT token on success. Rate limited.',
+      'Authenticate user with email and password. Returns JWT access + refresh tokens on success. Rate limited.',
     security: [],
   })
   login(@Body() dto: LoginDto, @Req() req: Request) {
     return this.authService.login(dto, req);
+  }
+
+  @Post('refresh-token')
+  @SkipThrottle()
+  @ApiOperation({
+    summary: 'Refresh access token',
+    description:
+      'Exchange a valid refresh token for a new access token. Does not rotate the refresh token.',
+    security: [],
+  })
+  refreshToken(
+    @Body() dto: RefreshTokenDto,
+    @Req() req: Request,
+  ) {
+    return this.authService.refreshAccessToken(dto.refreshToken, req);
+  }
+
+  @Post('logout')
+  @ApiOperation({
+    summary: 'Logout current session',
+    description:
+      'Revokes the current session. Prefer sending Authorization Bearer access token and/or refreshToken in body.',
+    security: [],
+  })
+  async logout(
+    @Req() req: Request & { user?: { id?: string; sessionId?: string } },
+    @Body() body: { refreshToken?: string },
+    @Headers('authorization') authorization?: string,
+  ) {
+    let userId = req.user?.id;
+    let sessionId = req.user?.sessionId;
+    const bearer = String(authorization ?? '').replace(/^Bearer\s+/i, '').trim();
+    if ((!userId || !sessionId) && bearer) {
+      try {
+        const decoded = await this.authService.decodeAccessToken(bearer);
+        userId = userId || decoded.sub;
+        sessionId = sessionId || decoded.sessionId;
+      } catch {
+        // ignore — may already be expired
+      }
+    }
+    return this.authService.logout({
+      userId,
+      sessionId,
+      refreshToken: body?.refreshToken,
+    });
   }
 
   @Post('bootstrap-super-admin')

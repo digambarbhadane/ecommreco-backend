@@ -12,6 +12,8 @@ export type PaymentUploadSummary = {
   skippedRows: number;
   duplicateRows: number;
   invalidRows: number;
+  /** Lines merged into another Order ID by summing amounts (not dropped). */
+  mergedDuplicateRows?: number;
   validationErrors: PaymentValidationError[];
   processingTimeMs: number;
   sheetName?: string;

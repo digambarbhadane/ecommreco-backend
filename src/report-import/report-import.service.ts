@@ -33,6 +33,12 @@ import {
   MARKETPLACE_TRACKED_SLOTS,
 } from './import-slot.constants';
 import { AnalyticsPaymentsService } from './payments/analytics-payments.service';
+import { AnalyticsPayoutsService } from './payments/analytics-payouts.service';
+import type { ListAnalyticsPayoutsDto } from './dto/list-analytics-payouts.dto';
+import type { UpsertPayoutReceiptDto } from './dto/upsert-payout-receipt.dto';
+import {
+  repairImportRowDates,
+} from '../common/utils/repair-legacy-date.util';
 
 @Injectable()
 export class ReportImportService {
@@ -56,6 +62,7 @@ export class ReportImportService {
     private readonly platformMarketplaceModel: Model<PlatformMarketplaceDocument>,
     private readonly validationService: ValidationService,
     private readonly analyticsPaymentsService: AnalyticsPaymentsService,
+    private readonly analyticsPayoutsService: AnalyticsPayoutsService,
   ) {}
 
   private async applySellerIdToFilter(
@@ -173,7 +180,9 @@ export class ReportImportService {
       .exec();
 
     const bucket = facetResult[0] ?? { data: [], total: [] };
-    const data = bucket.data ?? [];
+    const data = (bucket.data ?? []).map((row) =>
+      repairImportRowDates(row as unknown as Record<string, unknown>),
+    );
     const total = bucket.total[0]?.count ?? 0;
 
     return {
@@ -249,6 +258,21 @@ export class ReportImportService {
     return this.analyticsPaymentsService.listPayments(query);
   }
 
+  async listAnalyticsPayouts(query: ListAnalyticsPayoutsDto) {
+    return this.analyticsPayoutsService.listPayouts(query);
+  }
+
+  async upsertPayoutReceipt(dto: UpsertPayoutReceiptDto, updatedBy?: string) {
+    return this.analyticsPayoutsService.upsertReceipt(dto, updatedBy);
+  }
+
+  async resetPayoutReceipt(
+    dto: { sellerId: string; marketplace: string; neftId: string; gstin?: string },
+    updatedBy?: string,
+  ) {
+    return this.analyticsPayoutsService.resetReceipt(dto, updatedBy);
+  }
+
   async exportAnalyticsOrdersCsv(
     query: ListAnalyticsOrdersDto,
   ): Promise<{ buffer: Buffer; filename: string; rowCount: number }> {
@@ -292,26 +316,29 @@ export class ReportImportService {
       return `"${text.replace(/"/g, '""')}"`;
     };
 
-    const lines = rows.map((row) =>
-      [
-        row.gstin,
-        row.documentType,
-        row.orderID,
-        row.invoiceDate,
-        row.invoiceNo,
-        row.invoiceAmount,
-        row.taxableAmount,
-        row.igstAmount,
-        row.cgstAmount,
-        row.sgstAmount,
-        row.quantity,
-        row.skuID,
-        row.marketplace,
-        row.stateName,
+    const lines = rows.map((row) => {
+      const repaired = repairImportRowDates(
+        row as unknown as Record<string, unknown>,
+      );
+      return [
+        repaired.gstin,
+        repaired.documentType,
+        repaired.orderID,
+        repaired.invoiceDate,
+        repaired.invoiceNo,
+        repaired.invoiceAmount,
+        repaired.taxableAmount,
+        repaired.igstAmount,
+        repaired.cgstAmount,
+        repaired.sgstAmount,
+        repaired.quantity,
+        repaired.skuID,
+        repaired.marketplace,
+        repaired.stateName,
       ]
         .map(escapeCsv)
-        .join(','),
-    );
+        .join(',');
+    });
 
     const csv = [headers.join(','), ...lines].join('\n');
     const stamp = new Date().toISOString().slice(0, 10);
@@ -372,33 +399,36 @@ export class ReportImportService {
       return `"${text.replace(/"/g, '""')}"`;
     };
 
-    const lines = rows.map((row) =>
-      [
-        row.gstin,
-        row.documentType,
-        row.orderID,
-        row.invoiceDate,
-        row.invoiceNo,
-        row.invoiceAmount,
-        row.taxableAmount,
-        row.igstAmount,
-        row.cgstAmount,
-        row.sgstAmount,
-        row.quantity,
-        row.skuID,
-        row.order_packed_date,
-        row.orderCancelDate,
-        row.frRefundedDate,
-        row.marketplace,
-        row.paymentMode,
-        row.paymentDate,
-        row.finalSettlementAmount,
-        row.transactionId,
-        row.stateName,
+    const lines = rows.map((row) => {
+      const repaired = repairImportRowDates(
+        row as unknown as Record<string, unknown>,
+      );
+      return [
+        repaired.gstin,
+        repaired.documentType,
+        repaired.orderID,
+        repaired.invoiceDate,
+        repaired.invoiceNo,
+        repaired.invoiceAmount,
+        repaired.taxableAmount,
+        repaired.igstAmount,
+        repaired.cgstAmount,
+        repaired.sgstAmount,
+        repaired.quantity,
+        repaired.skuID,
+        repaired.order_packed_date,
+        repaired.orderCancelDate,
+        repaired.frRefundedDate,
+        repaired.marketplace,
+        repaired.paymentMode,
+        repaired.paymentDate,
+        repaired.finalSettlementAmount,
+        repaired.transactionId,
+        repaired.stateName,
       ]
         .map(escapeCsv)
-        .join(','),
-    );
+        .join(',');
+    });
 
     const csv = [headers.join(','), ...lines].join('\n');
     const stamp = new Date().toISOString().slice(0, 10);

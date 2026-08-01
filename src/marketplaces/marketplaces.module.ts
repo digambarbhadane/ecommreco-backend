@@ -10,6 +10,11 @@ import {
 } from '../platform-marketplaces/schemas/platform-marketplace.schema';
 import { Seller, SellerSchema } from '../sellers/schemas/seller.schema';
 import { User, UserSchema } from '../users/schemas/user.schema';
+import { Gst, GstSchema } from '../gsts/schemas/gst.schema';
+import {
+  DeletionAuditLog,
+  DeletionAuditLogSchema,
+} from '../gsts/schemas/deletion-audit-log.schema';
 
 @Module({
   imports: [
@@ -18,6 +23,8 @@ import { User, UserSchema } from '../users/schemas/user.schema';
       { name: PlatformMarketplace.name, schema: PlatformMarketplaceSchema },
       { name: Seller.name, schema: SellerSchema },
       { name: User.name, schema: UserSchema },
+      { name: Gst.name, schema: GstSchema },
+      { name: DeletionAuditLog.name, schema: DeletionAuditLogSchema },
     ]),
     PlatformMarketplacesModule,
   ],

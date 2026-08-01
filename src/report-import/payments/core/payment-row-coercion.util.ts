@@ -14,6 +14,7 @@ export function coercePaymentNumber(value: unknown): number | undefined {
     .replace(/\s+/g, '')
     .trim();
   if (!cleaned) return undefined;
+  if (/^#(n\/?a|ref!|value!|div\/0!)/i.test(cleaned)) return undefined;
   const parsed = Number(cleaned);
   return Number.isFinite(parsed) ? parsed : undefined;
 }

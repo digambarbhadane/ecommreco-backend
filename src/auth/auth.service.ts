@@ -10,9 +10,9 @@ import { JwtService } from '@nestjs/jwt';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { Connection, Model } from 'mongoose';
 import * as bcrypt from 'bcrypt';
+import { createHash, randomUUID } from 'crypto';
 import { LoginDto } from './dto/login.dto';
 import type { Request } from 'express';
-import { randomUUID } from 'crypto';
 import { Seller, SellerDocument } from '../sellers/schemas/seller.schema';
 import { User, UserDocument } from '../users/schemas/user.schema';
 import { generatePublicId } from '../common/public-id';
@@ -26,6 +26,7 @@ import {
   UserActivityLogDocument,
 } from '../profile/schemas/user-activity-log.schema';
 import { getMongoStorageMode, isInMemoryMongo } from '../config/mongo-connection';
+import { evaluateSellerLogin } from '../trial/trial-login.policy';
 
 type AuthUser = {
   id: string;
@@ -39,19 +40,20 @@ type AuthUser = {
   password: string;
 };
 
-/** Sellers in these stages cannot log in yet (no credentials / payment not done). */
-const blockedSellerLoginStatuses = new Set([
-  'lead_generated',
-  'sales_contacted',
-  'payment_pending',
-]);
+type TokenPairPayload = {
+  sub: string;
+  role: string;
+  email: string;
+  tokenVersion: number;
+  sessionId: string;
+  typ: 'access' | 'refresh';
+  jti?: string;
+};
 
-/** Login allowed only after super admin approves credentials. */
-const allowedSellerLoginStatuses = new Set([
-  'training_pending',
-  'training_completed',
-  'active',
-]);
+const ACCESS_TOKEN_TTL = '30m';
+const ACCESS_TOKEN_TTL_MS = 30 * 60 * 1000;
+const REFRESH_TOKEN_TTL = '7d';
+const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const disabledAdminStatuses = new Set(['blocked', 'rejected']);
 
@@ -117,28 +119,42 @@ export class AuthService implements OnModuleInit {
           });
         }
         if (adminStatus === 'pending') {
-          throw new UnauthorizedException({
-            success: false,
-            message: 'Account is pending approval',
-            errorCode: 'ACCOUNT_PENDING',
-          });
-        }
-        if (adminUser.role === 'seller') {
-          const sellerForLogin =
-            seller ??
-            (await this.sellerModel
-              .findOne({ email: adminUser.email })
-              .lean()
-              .exec());
-          const loginCheck = this.evaluateSellerLogin(
-            sellerForLogin ?? { onboardingStatus: 'payment_pending' },
-          );
-          if (!loginCheck.allowed) {
+          const onboardingStatus = (
+            adminUser as { onboardingUserStatus?: string }
+          ).onboardingUserStatus;
+          if (onboardingStatus !== 'PENDING_PAYMENT') {
             throw new UnauthorizedException({
               success: false,
-              message: loginCheck.message,
-              errorCode: loginCheck.errorCode,
+              message: 'Account is pending approval',
+              errorCode: 'ACCOUNT_PENDING',
             });
+          }
+        }
+        if (adminUser.role === 'seller') {
+          const onboardingStatus = (
+            adminUser as { onboardingUserStatus?: string }
+          ).onboardingUserStatus;
+          if (onboardingStatus === 'PENDING_PAYMENT') {
+            // Allow login — dashboard blocked by frontend guard; payment pending page
+          } else if (onboardingStatus === 'BLOCKED') {
+            throw new UnauthorizedException({
+              success: false,
+              message: 'Your account is blocked. Contact support.',
+              errorCode: 'ACCOUNT_BLOCKED',
+            });
+          } else {
+            const sellerForLogin =
+              seller ??
+              (await this.sellerModel
+                .findOne({ email: adminUser.email })
+                .lean()
+                .exec());
+            const loginCheck = this.evaluateSellerLogin(
+              sellerForLogin ?? { onboardingStatus: 'payment_pending' },
+            );
+            if (!loginCheck.allowed) {
+              this.throwLoginDenied(loginCheck);
+            }
           }
         }
         const user: AuthUser = {
@@ -169,11 +185,7 @@ export class AuthService implements OnModuleInit {
       if (passwordOk) {
         const loginCheck = this.evaluateSellerLogin(seller);
         if (!loginCheck.allowed) {
-          throw new UnauthorizedException({
-            success: false,
-            message: loginCheck.message,
-            errorCode: loginCheck.errorCode,
-          });
+          this.throwLoginDenied(loginCheck);
         }
 
         const user: AuthUser = {
@@ -205,10 +217,50 @@ export class AuthService implements OnModuleInit {
   private async issueToken(user: AuthUser, req: Request) {
     const now = new Date();
     const sessionId = randomUUID();
+    const refreshJti = randomUUID();
     const ipAddress = this.getIp(req);
     const device = this.getDevice(req);
+    const refreshExpiresAt = new Date(now.getTime() + REFRESH_TOKEN_TTL_MS);
 
-    const security = await this.userSecurityModel
+    const existingSecurity = await this.userSecurityModel
+      .findOne({ userId: user.id })
+      .select('tokenVersion')
+      .lean()
+      .exec();
+
+    const tokenVersion =
+      typeof existingSecurity?.tokenVersion === 'number'
+        ? existingSecurity.tokenVersion
+        : 0;
+
+    const accessToken = await this.jwtService.signAsync(
+      {
+        sub: user.id,
+        role: user.role,
+        email: user.email,
+        tokenVersion,
+        sessionId,
+        typ: 'access',
+      } satisfies TokenPairPayload,
+      { expiresIn: ACCESS_TOKEN_TTL },
+    );
+
+    const refreshToken = await this.jwtService.signAsync(
+      {
+        sub: user.id,
+        role: user.role,
+        email: user.email,
+        tokenVersion,
+        sessionId,
+        typ: 'refresh',
+        jti: refreshJti,
+      } satisfies TokenPairPayload,
+      { expiresIn: REFRESH_TOKEN_TTL },
+    );
+
+    const tokenHash = this.hashToken(refreshToken);
+
+    await this.userSecurityModel
       .findOneAndUpdate(
         { userId: user.id },
         {
@@ -230,11 +282,22 @@ export class AuthService implements OnModuleInit {
               ],
               $slice: -10,
             },
+            refreshTokens: {
+              $each: [
+                {
+                  jti: refreshJti,
+                  sessionId,
+                  tokenHash,
+                  expiresAt: refreshExpiresAt,
+                  createdAt: now,
+                },
+              ],
+              $slice: -20,
+            },
           },
         },
-        { upsert: true, new: true },
+        { upsert: true },
       )
-      .lean()
       .exec();
 
     await this.userActivityLogModel.create({
@@ -245,17 +308,6 @@ export class AuthService implements OnModuleInit {
       timestamp: now,
     });
 
-    const tokenVersion =
-      typeof security?.tokenVersion === 'number' ? security.tokenVersion : 0;
-
-    const accessToken = await this.jwtService.signAsync({
-      sub: user.id,
-      role: user.role,
-      email: user.email,
-      tokenVersion,
-      sessionId,
-    });
-
     const { password, ...safeUser } = user;
     void password;
 
@@ -264,8 +316,353 @@ export class AuthService implements OnModuleInit {
       message: 'Login successful',
       data: {
         accessToken,
+        refreshToken,
+        expiresAt: new Date(now.getTime() + ACCESS_TOKEN_TTL_MS).toISOString(),
+        expiresIn: Math.floor(ACCESS_TOKEN_TTL_MS / 1000),
         user: safeUser,
       },
+    };
+  }
+
+  async refreshAccessToken(refreshToken: string, req?: Request) {
+    const token = String(refreshToken ?? '').trim();
+    if (!token) {
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Refresh token is required',
+        errorCode: 'REFRESH_TOKEN_REQUIRED',
+      });
+    }
+
+    let payload: TokenPairPayload;
+    try {
+      payload = await this.jwtService.verifyAsync<TokenPairPayload>(token);
+    } catch {
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Your session has expired. Please login again.',
+        errorCode: 'REFRESH_TOKEN_INVALID',
+      });
+    }
+
+    if (payload.typ !== 'refresh' || !payload.jti || !payload.sessionId) {
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Your session has expired. Please login again.',
+        errorCode: 'REFRESH_TOKEN_INVALID',
+      });
+    }
+
+    const security = await this.userSecurityModel
+      .findOne({ userId: payload.sub })
+      .lean()
+      .exec();
+    if (!security) {
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Your session has expired. Please login again.',
+        errorCode: 'REFRESH_TOKEN_REVOKED',
+      });
+    }
+
+    const currentVersion =
+      typeof security.tokenVersion === 'number' ? security.tokenVersion : 0;
+    if (payload.tokenVersion !== currentVersion) {
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Your session has expired. Please login again.',
+        errorCode: 'REFRESH_TOKEN_REVOKED',
+      });
+    }
+
+    const tokenHash = this.hashToken(token);
+    const stored = (security.refreshTokens ?? []).find(
+      (entry) => entry.jti === payload.jti,
+    );
+    const jwtExpiryMs = this.getJwtExpiryMs(payload);
+
+    if (stored) {
+      if (stored.tokenHash !== tokenHash) {
+        throw new UnauthorizedException({
+          success: false,
+          message: 'Your session has expired. Please login again.',
+          errorCode: 'REFRESH_TOKEN_REVOKED',
+        });
+      }
+      if (new Date(stored.expiresAt).getTime() <= Date.now()) {
+        throw new UnauthorizedException({
+          success: false,
+          message: 'Your session has expired. Please login again.',
+          errorCode: 'REFRESH_TOKEN_EXPIRED',
+        });
+      }
+    } else if (jwtExpiryMs !== null && jwtExpiryMs <= Date.now()) {
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Your session has expired. Please login again.',
+        errorCode: 'REFRESH_TOKEN_EXPIRED',
+      });
+    }
+
+    const sessionActive = (security.activeSessions ?? []).some(
+      (session) => session.sessionId === payload.sessionId,
+    );
+    const now = new Date();
+    const reconcileUpdate: Record<string, unknown> = {};
+
+    if (!sessionActive) {
+      reconcileUpdate.$push = {
+        activeSessions: {
+          $each: [
+            {
+              sessionId: payload.sessionId,
+              ipAddress: req ? this.getIp(req) : 'unknown',
+              device: req ? this.getDevice(req) : 'unknown',
+              createdAt: now,
+              lastSeenAt: now,
+            },
+          ],
+          $slice: -10,
+        },
+      };
+    }
+
+    if (!stored) {
+      const expiresAt =
+        jwtExpiryMs !== null
+          ? new Date(jwtExpiryMs)
+          : new Date(now.getTime() + REFRESH_TOKEN_TTL_MS);
+      const refreshPush = {
+        $each: [
+          {
+            jti: payload.jti,
+            sessionId: payload.sessionId,
+            tokenHash,
+            expiresAt,
+            createdAt: now,
+          },
+        ],
+        $slice: -20,
+      };
+      if (reconcileUpdate.$push) {
+        (reconcileUpdate.$push as Record<string, unknown>).refreshTokens =
+          refreshPush;
+      } else {
+        reconcileUpdate.$push = { refreshTokens: refreshPush };
+      }
+    }
+
+    if (Object.keys(reconcileUpdate).length > 0) {
+      await this.userSecurityModel
+        .updateOne({ userId: payload.sub }, reconcileUpdate)
+        .exec();
+    }
+
+    const account = await this.loadActiveAuthAccount(payload.sub, payload.role);
+
+    if (sessionActive && req) {
+      await this.userSecurityModel.updateOne(
+        {
+          userId: payload.sub,
+          'activeSessions.sessionId': payload.sessionId,
+        },
+        {
+          $set: {
+            'activeSessions.$.lastSeenAt': now,
+          },
+        },
+      );
+    }
+
+    const accessToken = await this.jwtService.signAsync(
+      {
+        sub: account.id,
+        role: account.role,
+        email: account.email,
+        tokenVersion: currentVersion,
+        sessionId: payload.sessionId,
+        typ: 'access',
+      } satisfies TokenPairPayload,
+      { expiresIn: ACCESS_TOKEN_TTL },
+    );
+
+    return {
+      success: true,
+      message: 'Token refreshed',
+      data: {
+        accessToken,
+        expiresAt: new Date(now.getTime() + ACCESS_TOKEN_TTL_MS).toISOString(),
+        expiresIn: Math.floor(ACCESS_TOKEN_TTL_MS / 1000),
+        user: account,
+      },
+    };
+  }
+
+  async logout(params: {
+    userId?: string;
+    sessionId?: string;
+    refreshToken?: string;
+  }) {
+    const userId = String(params.userId ?? '').trim();
+    const sessionId = String(params.sessionId ?? '').trim();
+    const refreshToken = String(params.refreshToken ?? '').trim();
+
+    if (!userId) {
+      return { success: true, message: 'Logged out' };
+    }
+
+    const pull: Record<string, unknown> = {};
+    if (sessionId) {
+      pull.activeSessions = { sessionId };
+    }
+    if (refreshToken) {
+      try {
+        const payload = await this.jwtService.verifyAsync<TokenPairPayload>(
+          refreshToken,
+          { ignoreExpiration: true },
+        );
+        if (payload.jti) {
+          pull.refreshTokens = { jti: payload.jti };
+        }
+      } catch {
+        // ignore invalid refresh on logout
+      }
+    } else if (sessionId) {
+      pull.refreshTokens = { sessionId };
+    }
+
+    if (Object.keys(pull).length) {
+      await this.userSecurityModel.updateOne({ userId }, { $pull: pull }).exec();
+    }
+
+    return { success: true, message: 'Logged out' };
+  }
+
+  private hashToken(token: string) {
+    return createHash('sha256').update(token).digest('hex');
+  }
+
+  /** Best-effort decode for logout when access token may already be expired. */
+  async decodeAccessToken(token: string) {
+    const payload = await this.jwtService.verifyAsync<TokenPairPayload>(token, {
+      ignoreExpiration: true,
+    });
+    return {
+      sub: String(payload.sub ?? ''),
+      sessionId: String(payload.sessionId ?? ''),
+      typ: payload.typ,
+    };
+  }
+
+  private getJwtExpiryMs(payload: TokenPairPayload & { exp?: number }) {
+    if (typeof payload.exp === 'number' && payload.exp > 0) {
+      return payload.exp * 1000;
+    }
+    return null;
+  }
+
+  private async loadActiveAuthAccount(userId: string, role?: string) {
+    if (role === 'seller') {
+      const seller = await this.sellerModel
+        .findById(userId)
+        .select('-password')
+        .lean()
+        .exec();
+      if (seller) {
+        const loginCheck = this.evaluateSellerLogin(seller);
+        if (!loginCheck.allowed) {
+          this.throwLoginDenied(loginCheck);
+        }
+        return {
+          id: String(seller._id),
+          name: String(
+            (seller as { fullName?: string }).fullName ??
+              (seller as { email?: string }).email ??
+              '',
+          ),
+          email: String((seller as { email?: string }).email ?? ''),
+          role: 'seller',
+          status: 'approved' as const,
+          profileCompleted: true,
+          companyName: String(
+            (seller as { firmName?: string }).firmName ??
+              (seller as { tradeName?: string }).tradeName ??
+              '',
+          ),
+          mobile: String((seller as { mobile?: string }).mobile ?? ''),
+        };
+      }
+
+      const sellerUser = await this.userModel
+        .findOne({ _id: userId, role: 'seller' })
+        .select('-password')
+        .lean()
+        .exec();
+      if (!sellerUser) {
+        throw new UnauthorizedException({
+          success: false,
+          message: 'Your session has expired. Please login again.',
+          errorCode: 'ACCOUNT_NOT_FOUND',
+        });
+      }
+      if (disabledAdminStatuses.has(String(sellerUser.status ?? ''))) {
+        throw new UnauthorizedException({
+          success: false,
+          message: 'Account is disabled',
+          errorCode: 'ACCOUNT_DISABLED',
+        });
+      }
+      const linkedSeller = await this.sellerModel
+        .findOne({ email: sellerUser.email })
+        .select('-password')
+        .lean()
+        .exec();
+      if (linkedSeller) {
+        const loginCheck = this.evaluateSellerLogin(linkedSeller);
+        if (!loginCheck.allowed) {
+          this.throwLoginDenied(loginCheck);
+        }
+      }
+      return {
+        id: String(sellerUser._id),
+        name: String(sellerUser.fullName ?? sellerUser.email ?? ''),
+        email: String(sellerUser.email ?? ''),
+        role: 'seller',
+        status: (sellerUser.status ?? 'approved') as AuthUser['status'],
+        profileCompleted: Boolean(sellerUser.profileCompleted),
+        companyName: String(sellerUser.companyName ?? ''),
+        mobile: String(sellerUser.mobile ?? ''),
+      };
+    }
+
+    const user = await this.userModel
+      .findById(userId)
+      .select('-password')
+      .lean()
+      .exec();
+    if (!user) {
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Your session has expired. Please login again.',
+        errorCode: 'ACCOUNT_NOT_FOUND',
+      });
+    }
+    if (disabledAdminStatuses.has(String(user.status ?? ''))) {
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Account is disabled',
+        errorCode: 'ACCOUNT_DISABLED',
+      });
+    }
+    return {
+      id: String(user._id),
+      name: String(user.fullName ?? user.email ?? ''),
+      email: String(user.email ?? ''),
+      role: String(user.role ?? ''),
+      status: (user.status ?? 'approved') as AuthUser['status'],
+      profileCompleted: Boolean(user.profileCompleted),
+      companyName: String(user.companyName ?? ''),
+      mobile: String(user.mobile ?? ''),
     };
   }
 
@@ -653,41 +1050,35 @@ export class AuthService implements OnModuleInit {
   }
 
   private evaluateSellerLogin(seller: {
+    _id?: unknown;
+    id?: string;
+    accountStatus?: string;
+    accountStatusReason?: string;
     onboardingStatus?: string;
     password?: string;
-  }): { allowed: boolean; message?: string; errorCode?: string } {
-    const status = seller.onboardingStatus ?? 'payment_pending';
-    const hasPassword =
-      typeof seller.password === 'string' && seller.password.trim().length > 0;
+    isTrial?: boolean;
+    trialStatus?: string;
+    paymentStatus?: string;
+  }) {
+    return evaluateSellerLogin({
+      ...seller,
+      id: seller.id ?? (seller._id ? String(seller._id) : undefined),
+    });
+  }
 
-    if (!hasPassword) {
-      return {
-        allowed: false,
-        message:
-          'Login credentials are not set yet. Contact support to complete onboarding.',
-        errorCode: 'SELLER_NO_CREDENTIALS',
-      };
-    }
-
-    if (blockedSellerLoginStatuses.has(status)) {
-      return {
-        allowed: false,
-        message:
-          'Account is not ready for login yet. Complete payment and credential setup first.',
-        errorCode: 'SELLER_NOT_APPROVED',
-      };
-    }
-
-    if (!allowedSellerLoginStatuses.has(status)) {
-      return {
-        allowed: false,
-        message:
-          'Your account is pending super admin approval. You can log in after credentials are approved.',
-        errorCode: 'SELLER_PENDING_APPROVAL',
-      };
-    }
-
-    return { allowed: true };
+  private throwLoginDenied(loginCheck: {
+    message?: string;
+    errorCode?: string;
+    sellerId?: string;
+    accountStatusReason?: string;
+  }) {
+    throw new UnauthorizedException({
+      success: false,
+      message: loginCheck.message,
+      errorCode: loginCheck.errorCode,
+      sellerId: loginCheck.sellerId,
+      accountStatusReason: loginCheck.accountStatusReason,
+    });
   }
 
   private escapeRegex(value: string) {
