@@ -1,5 +1,5 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { HydratedDocument } from 'mongoose';
+import { HydratedDocument, SchemaTypes, Types } from 'mongoose';
 
 export type LeadDocument = HydratedDocument<Lead>;
 
@@ -284,6 +284,48 @@ export class Lead {
 
   @Prop()
   creatorRole?: string;
+
+  /** Onboarding v2 — canonical trial/self-service lifecycle */
+  @Prop({ index: true })
+  leadNumber?: string;
+
+  @Prop({
+    type: String,
+    enum: [
+      'NEW',
+      'REGISTERED',
+      'PAYMENT_PENDING',
+      'PAYMENT_FAILED',
+      'PAYMENT_LINK_SENT',
+      'TRIAL_ACTIVE',
+      'TRIAL_EXPIRED',
+      'SUBSCRIBED',
+      'LOST',
+    ],
+    index: true,
+  })
+  onboardingStatus?: string;
+
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'User' })
+  userId?: Types.ObjectId;
+
+  @Prop()
+  country?: string;
+
+  @Prop()
+  remarks?: string;
+
+  @Prop()
+  panNumber?: string;
+
+  @Prop()
+  lastPaymentAttemptAt?: Date;
+
+  @Prop()
+  abandonedCheckoutAt?: Date;
+
+  @Prop({ default: 1 })
+  onboardingMigrationVersion?: number;
 }
 
 export const LeadSchema = SchemaFactory.createForClass(Lead);
@@ -299,3 +341,6 @@ LeadSchema.index({ leadStatus: 1, updatedAt: -1 });
 LeadSchema.index({ lastContactedAt: -1 });
 LeadSchema.index({ lastConnectedAt: -1 });
 LeadSchema.index({ convertedAt: -1 });
+LeadSchema.index({ onboardingStatus: 1, createdAt: -1 });
+LeadSchema.index({ userId: 1 });
+LeadSchema.index({ email: 1, onboardingStatus: 1 });

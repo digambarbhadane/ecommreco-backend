@@ -5,6 +5,11 @@ import {
   PanSlotTransaction,
   PanSlotTransactionSchema,
 } from '../pan-slot-requests/schemas/pan-slot-transaction.schema';
+import { Gst, GstSchema } from '../gsts/schemas/gst.schema';
+import {
+  Marketplace,
+  MarketplaceSchema,
+} from '../marketplaces/schemas/marketplace.schema';
 import { Seller, SellerSchema } from '../sellers/schemas/seller.schema';
 import { User, UserSchema } from '../users/schemas/user.schema';
 import {
@@ -23,6 +28,8 @@ import { BillingService } from './billing.service';
     MongooseModule.forFeature([
       { name: User.name, schema: UserSchema },
       { name: Seller.name, schema: SellerSchema },
+      { name: Gst.name, schema: GstSchema },
+      { name: Marketplace.name, schema: MarketplaceSchema },
       { name: Subscription.name, schema: SubscriptionSchema },
       { name: SubscriptionPackage.name, schema: SubscriptionPackageSchema },
       { name: PanSlotTransaction.name, schema: PanSlotTransactionSchema },

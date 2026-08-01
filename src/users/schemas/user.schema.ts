@@ -1,5 +1,5 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { Document } from 'mongoose';
+import { Document, SchemaTypes, Types } from 'mongoose';
 
 export type UserDocument = User & Document;
 
@@ -49,6 +49,28 @@ export class User {
 
   @Prop()
   credentialsGeneratedBy?: string;
+
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'Lead', index: true })
+  leadId?: Types.ObjectId;
+
+  @Prop({ type: SchemaTypes.ObjectId, ref: 'Seller', index: true })
+  sellerId?: Types.ObjectId;
+
+  @Prop({
+    type: String,
+    enum: ['PENDING_PAYMENT', 'ACTIVE', 'BLOCKED', 'INACTIVE'],
+    index: true,
+  })
+  onboardingUserStatus?: 'PENDING_PAYMENT' | 'ACTIVE' | 'BLOCKED' | 'INACTIVE';
+
+  @Prop({ default: false })
+  isEmailVerified?: boolean;
+
+  @Prop()
+  registrationSource?: string;
+
+  @Prop()
+  lastLoginAt?: Date;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);

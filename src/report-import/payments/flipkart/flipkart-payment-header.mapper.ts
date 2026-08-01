@@ -46,7 +46,6 @@ export const FLIPKART_PAYMENT_HEADER_ENTRIES: FlipkartPaymentHeaderEntry[] = [
     field: 'customerAddonsAmount',
     type: 'number',
   },
-  { excelLabel: 'Marketplace Fee (Rs.)', field: 'marketplaceFee', type: 'number' },
   { excelLabel: 'Taxes (Rs.)', field: 'taxes', type: 'number' },
   { excelLabel: 'Offer Adjustments (Rs.)', field: 'offerAdjustments', type: 'number' },
   { excelLabel: 'Protection Fund (Rs.)', field: 'protectionFund', type: 'number' },
@@ -145,6 +144,17 @@ const FIELD_TYPES = new Map(
   FLIPKART_PAYMENT_HEADER_ENTRIES.map((entry) => [entry.field, entry.type]),
 );
 
+function resolveFlipkartPaymentField(
+  header: string,
+): keyof FlipkartPaymentMappedRow | undefined {
+  const normalized = normalizePaymentHeader(header);
+  const exact = HEADER_LOOKUP.get(normalized) as
+    | keyof FlipkartPaymentMappedRow
+    | undefined;
+  if (exact) return exact;
+  return undefined;
+}
+
 function coerceFieldValue(
   field: keyof FlipkartPaymentMappedRow,
   value: unknown,
@@ -169,9 +179,7 @@ export function mapFlipkartPaymentRawRow(
 
   for (const [header, value] of Object.entries(rawRow)) {
     if (header.startsWith('__')) continue;
-    const field = HEADER_LOOKUP.get(normalizePaymentHeader(header)) as
-      | keyof FlipkartPaymentMappedRow
-      | undefined;
+    const field = resolveFlipkartPaymentField(header);
     if (!field || value === undefined || value === null || value === '') continue;
     const coerced = coerceFieldValue(field, value);
     if (coerced !== undefined) {

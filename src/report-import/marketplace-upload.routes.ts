@@ -14,7 +14,7 @@ export const REPORT_UPLOAD_FILE_FIELDS = [
   { name: 'returnInTransitReportFile', maxCount: 1 },
   { name: 'returnOutForDeliveryReportFile', maxCount: 1 },
   { name: 'returnDeliveryCompleteReportFile', maxCount: 1 },
-  { name: 'paymentReportFile', maxCount: 1 },
+  { name: 'paymentReportFile', maxCount: 25 },
   { name: 'returnReportFile', maxCount: 1 },
   { name: 'amazonReturnReportFile', maxCount: 1 },
   { name: 'gstrReportPackedFile', maxCount: 1 },
@@ -23,6 +23,8 @@ export const REPORT_UPLOAD_FILE_FIELDS = [
   { name: 'gstrReportRtoFile', maxCount: 1 },
   { name: 'gstrReportRtFile', maxCount: 1 },
   { name: 'mDirectReturnsReportFile', maxCount: 1 },
+  { name: 'pgForwardSettledFile', maxCount: 1 },
+  { name: 'pgReverseSettledFile', maxCount: 1 },
 ] as const;
 
 export type MarketplaceUploadKey = 'flipkart' | 'amazon' | 'meesho' | 'myntra';
@@ -58,6 +60,8 @@ export type UploadedReportFiles = {
     buffer: Buffer;
     originalname: string;
   }>;
+  pgForwardSettledFile?: Array<{ buffer: Buffer; originalname: string }>;
+  pgReverseSettledFile?: Array<{ buffer: Buffer; originalname: string }>;
 };
 
 export function ReportUploadMultipart() {

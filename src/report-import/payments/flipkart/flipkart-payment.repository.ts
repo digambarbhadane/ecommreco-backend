@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import type { PaymentDuplicateStrategy } from '../core/payment-upload-summary.types';
@@ -33,12 +33,59 @@ export type FlipkartPaymentListQuery = {
   sortOrder?: 'asc' | 'desc';
 };
 
+/** High enough for full CSV export of filtered analytics payment sets. */
+const FLIPKART_PAYMENT_LIST_MAX_LIMIT = 100_000;
+
 @Injectable()
-export class FlipkartPaymentRepository {
+export class FlipkartPaymentRepository implements OnModuleInit {
+  private readonly logger = new Logger(FlipkartPaymentRepository.name);
+
   constructor(
     @InjectModel(FlipkartPaymentReport.name)
     private readonly model: Model<FlipkartPaymentReportDocument>,
   ) {}
+
+  async onModuleInit() {
+    await this.renameLegacyOrderCollectionIfNeeded();
+
+    try {
+      await this.model.collection.dropIndex('flipkart_payment_order_unique_idx');
+      this.logger.log('Dropped legacy flipkart_payment_order_unique_idx');
+    } catch (error) {
+      const code = (error as { code?: number; codeName?: string })?.code;
+      const codeName = (error as { codeName?: string })?.codeName;
+      // 27 = IndexNotFound
+      if (code !== 27 && codeName !== 'IndexNotFound') {
+        this.logger.warn(
+          `Could not drop legacy flipkart payment unique index: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+  }
+
+  /** One-time move from flipkart_payment_reports → flipkart_payment_order_reports. */
+  private async renameLegacyOrderCollectionIfNeeded() {
+    try {
+      const nativeDb = this.model.db.db;
+      if (!nativeDb) return;
+      const collections = await nativeDb.listCollections().toArray();
+      const names = new Set(collections.map((c) => c.name));
+      const legacy = 'flipkart_payment_reports';
+      const current = 'flipkart_payment_order_reports';
+      if (names.has(legacy) && !names.has(current)) {
+        await nativeDb.renameCollection(legacy, current);
+        this.logger.log(`Renamed MongoDB collection ${legacy} → ${current}`);
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Could not rename legacy Flipkart payment order collection: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
 
   async bulkUpsert(
     rows: FlipkartPaymentUpsertPayload[],
@@ -50,7 +97,7 @@ export class FlipkartPaymentRepository {
 
     const orderKeys = rows.map(
       (row) =>
-        `${row.sellerId}::${row.marketplace}::${row.orderId}::${row.reportMonth ?? ''}`,
+        `${row.sellerId}::${row.marketplace}::${row.orderId}::${row.neftId ?? ''}::${row.reportMonth ?? ''}`,
     );
     const duplicateRows = orderKeys.length - new Set(orderKeys).size;
 
@@ -61,24 +108,31 @@ export class FlipkartPaymentRepository {
             sellerId: row.sellerId,
             marketplace: row.marketplace,
             orderId: row.orderId,
+            neftId: row.neftId ?? '',
             reportMonth: row.reportMonth ?? null,
           })),
         })
-        .select({ orderId: 1, sellerId: 1, marketplace: 1, reportMonth: 1 })
+        .select({
+          orderId: 1,
+          neftId: 1,
+          sellerId: 1,
+          marketplace: 1,
+          reportMonth: 1,
+        })
         .lean()
         .exec();
 
       const existingKeys = new Set(
         existing.map(
           (doc) =>
-            `${doc.sellerId}::${doc.marketplace}::${doc.orderId}::${doc.reportMonth ?? ''}`,
+            `${doc.sellerId}::${doc.marketplace}::${doc.orderId}::${doc.neftId ?? ''}::${doc.reportMonth ?? ''}`,
         ),
       );
 
       const toInsert = rows.filter(
         (row) =>
           !existingKeys.has(
-            `${row.sellerId}::${row.marketplace}::${row.orderId}::${row.reportMonth ?? ''}`,
+            `${row.sellerId}::${row.marketplace}::${row.orderId}::${row.neftId ?? ''}::${row.reportMonth ?? ''}`,
           ),
       );
 
@@ -100,9 +154,10 @@ export class FlipkartPaymentRepository {
           sellerId: row.sellerId,
           marketplace: row.marketplace,
           orderId: row.orderId,
+          neftId: row.neftId ?? '',
           reportMonth: row.reportMonth ?? null,
         },
-        update: { $set: row },
+        update: { $set: { ...row, neftId: row.neftId ?? '' } },
         upsert: true,
       },
     }));
@@ -132,7 +187,10 @@ export class FlipkartPaymentRepository {
   async findBySeller(query: FlipkartPaymentListQuery) {
     const filter = this.buildFilter(query);
     const skip = Math.max(0, query.skip ?? 0);
-    const limit = Math.min(Math.max(1, query.limit ?? 50), 500);
+    const limit = Math.min(
+      Math.max(1, query.limit ?? 50),
+      FLIPKART_PAYMENT_LIST_MAX_LIMIT,
+    );
     const sortField = query.sortBy?.trim() || 'paymentDate';
     const sortDir = query.sortOrder === 'asc' ? 1 : -1;
     const sort: Record<string, 1 | -1> = { [sortField]: sortDir };
@@ -329,15 +387,52 @@ export class FlipkartPaymentRepository {
       returnsCount: number;
     }>
   > {
+    const rows = await this.aggregatePayoutsByNeft(query);
+    return rows.map(({ neftId, bankSettlementTotal, salesCount, returnsCount }) => ({
+      neftId,
+      bankSettlementTotal,
+      salesCount,
+      returnsCount,
+    }));
+  }
+
+  async aggregatePayoutsByNeft(
+    query: Pick<
+      FlipkartPaymentListQuery,
+      | 'sellerId'
+      | 'sellerIds'
+      | 'gstin'
+      | 'marketplace'
+      | 'reportMonth'
+      | 'paymentDateFrom'
+      | 'paymentDateTo'
+      | 'search'
+    >,
+  ): Promise<
+    Array<{
+      neftId: string;
+      marketplace: string;
+      paymentDate: string;
+      bankSettlementTotal: number;
+      orderCount: number;
+      salesCount: number;
+      returnsCount: number;
+    }>
+  > {
     const match = this.buildFilter(query);
 
     return this.model
       .aggregate([
         { $match: match },
         {
+          // Same formula as Import Month Summary payment tab:
+          // one row per NEFT = sum(bankSettlementValue)
           $group: {
             _id: { $trim: { input: { $ifNull: ['$neftId', ''] } } },
+            marketplace: { $first: { $ifNull: ['$marketplace', 'flipkart'] } },
             bankSettlementTotal: { $sum: { $ifNull: ['$bankSettlementValue', 0] } },
+            orderCount: { $sum: 1 },
+            paymentDate: { $max: { $ifNull: ['$paymentDate', ''] } },
             salesCount: {
               $sum: {
                 $cond: [
@@ -374,12 +469,15 @@ export class FlipkartPaymentRepository {
           },
         },
         { $match: { _id: { $ne: '' } } },
-        { $sort: { bankSettlementTotal: -1 } },
+        { $sort: { bankSettlementTotal: -1, _id: 1 } },
         {
           $project: {
             _id: 0,
             neftId: '$_id',
+            marketplace: 1,
+            paymentDate: 1,
             bankSettlementTotal: 1,
+            orderCount: 1,
             salesCount: 1,
             returnsCount: 1,
           },

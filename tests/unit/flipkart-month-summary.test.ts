@@ -174,15 +174,15 @@ describe('computeFlipkartReturnsNetTotal', () => {
       {
         totalRows: 2,
         pcs: 2,
-        taxableValue: 20,
-        igst: 2,
+        taxableValue: -20,
+        igst: -2,
         cgst: 0,
         sgst: 0,
-        invoiceAmount: 22,
+        invoiceAmount: -22,
       },
     );
 
-    expect(net.invoiceAmount).toBe(-88);
+    expect(net.invoiceAmount).toBe(-132);
   });
 });
 
@@ -345,7 +345,54 @@ describe('Flipkart credit and debit notes', () => {
     expect(totals.creditNote.totalRows).toBe(1);
     expect(totals.creditNote.invoiceAmount).toBe(150);
     expect(totals.debitNote.totalRows).toBe(1);
-    expect(totals.debitNote.invoiceAmount).toBe(30);
+    expect(totals.debitNote.invoiceAmount).toBe(-30);
+  });
+
+  it('returns total invoice matches taxable plus taxes for screenshot-like rows', () => {
+    const net = computeFlipkartReturnsNetTotal(
+      {
+        totalRows: 2141,
+        pcs: 2190,
+        taxableValue: -469029.92,
+        igst: -23015.48,
+        cgst: -218.76,
+        sgst: -218.76,
+        invoiceAmount: -492482.92,
+      },
+      {
+        totalRows: 465,
+        pcs: 465,
+        taxableValue: -96730.23,
+        igst: -4753.7,
+        cgst: -41.57,
+        sgst: -41.57,
+        invoiceAmount: -101567.07,
+      },
+      {
+        totalRows: 88,
+        pcs: 88,
+        taxableValue: 18399.97,
+        igst: 920.03,
+        cgst: 0,
+        sgst: 0,
+        invoiceAmount: 19320,
+      },
+      {
+        totalRows: 1279,
+        pcs: 0,
+        taxableValue: -21447.71,
+        igst: -1040.99,
+        cgst: -15.91,
+        sgst: -15.91,
+        invoiceAmount: -22520.52,
+      },
+    );
+
+    expect(net.invoiceAmount).toBeCloseTo(-597250.51, 2);
+    expect(net.taxableValue + net.igst + net.cgst + net.sgst).toBeCloseTo(
+      net.invoiceAmount,
+      2,
+    );
   });
 });
 

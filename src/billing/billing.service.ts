@@ -24,9 +24,25 @@ import {
   SubscriptionPackageDocument,
 } from '../subscription/schemas/subscription-package.schema';
 import {
+  Marketplace,
+  MarketplaceDocument,
+} from '../marketplaces/schemas/marketplace.schema';
+import { Gst, GstDocument } from '../gsts/schemas/gst.schema';
+import { computeSlotUsageFromGstRecords } from '../common/utils/seller-slot-usage.util';
+import {
   buildInvoiceHtml,
   InvoiceDocument,
 } from './utils/invoice-html.util';
+import { getTrialAllowedReportMonthsForSeller } from '../trial/trial.constants';
+import {
+  formatPlanDurationLabel,
+  getAccountTypeLabel,
+  getPlanValidityPeriod,
+  isTrialSellerAccount,
+  resolveAccountCreatedAt,
+  resolveSellerAccountKind,
+  resolveSubscriptionDisplayId,
+} from '../trial/seller-account-type';
 
 type RequestUser = {
   id?: string;
@@ -68,7 +84,62 @@ export class BillingService {
     private readonly transactionModel: Model<PanSlotTransactionDocument>,
     @InjectModel(PanSlotRequest.name)
     private readonly requestModel: Model<PanSlotRequestDocument>,
+    @InjectModel(Gst.name)
+    private readonly gstModel: Model<GstDocument>,
+    @InjectModel(Marketplace.name)
+    private readonly marketplaceModel: Model<MarketplaceDocument>,
   ) {}
+
+  private async resolveLiveSlotUsage(sellerId: string) {
+    const gstRecords = await this.gstModel
+      .find({ sellerId })
+      .select('panNumber gstNumber')
+      .lean()
+      .exec();
+    const marketplaceUsed = await this.marketplaceModel.countDocuments({
+      sellerId,
+    });
+    const { gstUsed, panUsed } = computeSlotUsageFromGstRecords(gstRecords);
+    const activeGstNumbers = gstRecords
+      .map((row) => String(row.gstNumber ?? '').trim().toUpperCase())
+      .filter(Boolean);
+
+    return {
+      gstUsed,
+      panUsed,
+      marketplaceUsed,
+      activeGstNumbers,
+    };
+  }
+
+  private async syncSellerSlotCountersIfNeeded(
+    seller: Seller & { _id?: Types.ObjectId },
+    live: { gstUsed: number; panUsed: number },
+  ) {
+    const storedGstUsed = Number(seller.gstSlotsUsed ?? 0);
+    const storedPanUsed = Number(seller.usedPanSlots ?? 0);
+    const staleGstNumber =
+      live.gstUsed === 0 && String(seller.gstNumber ?? '').trim().length > 0;
+    if (
+      storedGstUsed === live.gstUsed &&
+      storedPanUsed === live.panUsed &&
+      !staleGstNumber
+    ) {
+      return;
+    }
+    const update =
+      live.gstUsed === 0
+        ? {
+            $set: { gstSlotsUsed: 0, usedPanSlots: 0, gstNumber: '' },
+          }
+        : {
+            $set: {
+              gstSlotsUsed: live.gstUsed,
+              usedPanSlots: live.panUsed,
+            },
+          };
+    await this.sellerModel.updateOne({ _id: seller._id }, update).exec();
+  }
 
   private getUserId(user?: RequestUser): string {
     const id = typeof user?.id === 'string' ? user.id.trim() : '';
@@ -133,10 +204,31 @@ export class BillingService {
   }
 
   private subscriptionStatus(seller: Seller): 'active' | 'expired' | 'pending' {
+    const now = Date.now();
     const endsAt = seller.subscriptionEndsAt
       ? new Date(seller.subscriptionEndsAt)
       : null;
-    if (endsAt && !Number.isNaN(endsAt.getTime()) && endsAt.getTime() < Date.now()) {
+    const trialEnd = seller.trialEnd ? new Date(seller.trialEnd) : null;
+
+    const isTrialAccount = isTrialSellerAccount(seller);
+
+    if (isTrialAccount) {
+      if (seller.trialStatus === 'active' && trialEnd && trialEnd.getTime() >= now) {
+        return 'active';
+      }
+      if (
+        seller.trialStatus === 'expired' ||
+        seller.trialStatus === 'data_deleted' ||
+        (trialEnd && trialEnd.getTime() < now)
+      ) {
+        return 'expired';
+      }
+      if (seller.trialStatus === 'pending_payment') {
+        return 'pending';
+      }
+    }
+
+    if (endsAt && !Number.isNaN(endsAt.getTime()) && endsAt.getTime() < now) {
       return 'expired';
     }
     if (
@@ -395,14 +487,28 @@ export class BillingService {
       .reduce((sum, inv) => sum + inv.amount, 0);
     const lastPaidInvoice = invoices.find((inv) => inv.status === 'paid');
 
-    const gstTotal = Number(seller.gstSlots ?? 0);
-    const gstUsed = Number(seller.gstSlotsUsed ?? 0);
+    const liveUsage = await this.resolveLiveSlotUsage(userId);
+    await this.syncSellerSlotCountersIfNeeded(seller, liveUsage);
+
+    const gstTotal = Math.max(
+      0,
+      Number(seller.gstSlots ?? seller.gstSlotsPurchased ?? 0),
+    );
+    const gstUsed = liveUsage.gstUsed;
     const panTotal = totalPanSlots;
-    const panUsed = Number(seller.usedPanSlots ?? 0);
+    const panUsed = liveUsage.panUsed;
 
     const addressParts = [seller.address, seller.city, seller.state].filter(
       Boolean,
     );
+
+    const accountKind = resolveSellerAccountKind(seller);
+    const isTrialAccount = accountKind === 'trial';
+    const validity = getPlanValidityPeriod(seller, isTrialAccount);
+    const allowedImportMonths = isTrialAccount
+      ? getTrialAllowedReportMonthsForSeller(seller)
+      : [];
+    const durationLabel = formatPlanDurationLabel(seller, isTrialAccount);
 
     return {
       success: true,
@@ -411,22 +517,37 @@ export class BillingService {
           fullName: seller.fullName,
           email: seller.email,
           firmName: seller.firmName,
-          gstNumber: seller.gstNumber,
+          gstNumber: liveUsage.activeGstNumbers.length
+            ? liveUsage.activeGstNumbers.join(', ')
+            : undefined,
+          activeGstNumbers: liveUsage.activeGstNumbers,
           contactNumber: seller.contactNumber,
           address: addressParts.length ? addressParts.join(', ') : undefined,
         },
         plan: {
-          subscriptionId: seller.subscriptionId,
+          subscriptionId: resolveSubscriptionDisplayId(seller),
           status: this.subscriptionStatus(seller),
           accountStatus: seller.accountStatus ?? 'active',
           onboardingStatus: seller.onboardingStatus ?? 'payment_pending',
           paymentStatus: seller.paymentStatus ?? 'pending',
-          startsAt: seller.subscriptionStartsAt
-            ? new Date(seller.subscriptionStartsAt).toISOString()
-            : undefined,
-          endsAt: seller.subscriptionEndsAt
-            ? new Date(seller.subscriptionEndsAt).toISOString()
-            : undefined,
+          accountType: accountKind,
+          accountTypeLabel: getAccountTypeLabel(accountKind),
+          durationLabel,
+          isTrial: isTrialAccount,
+          trialStatus: seller.trialStatus,
+          trialStart: seller.trialStart
+            ? new Date(seller.trialStart).toISOString()
+            : validity.startsAt?.toISOString(),
+          trialEnd: seller.trialEnd
+            ? new Date(seller.trialEnd).toISOString()
+            : validity.endsAt?.toISOString(),
+          subscriptionPlanType: seller.subscriptionPlanType,
+          reconciliationMonths: Array.isArray(seller.reconciliationMonths)
+            ? [...seller.reconciliationMonths].sort()
+            : [],
+          allowedImportMonths,
+          startsAt: validity.startsAt?.toISOString(),
+          endsAt: validity.endsAt?.toISOString(),
           durationYears:
             seller.durationYears ?? seller.subscriptionDuration ?? undefined,
           gstSlots: gstTotal,
@@ -438,6 +559,7 @@ export class BillingService {
             used: panUsed,
             total: panTotal,
           },
+          marketplaceLinksUsed: liveUsage.marketplaceUsed,
           amount: Number(seller.paymentAmount ?? seller.amount ?? 0),
           paymentDate: seller.paymentDate
             ? new Date(seller.paymentDate).toISOString()
@@ -451,9 +573,7 @@ export class BillingService {
             : undefined,
           paymentReference: seller.transactionId || seller.paymentId,
           paymentLink: seller.paymentLink,
-          accountCreatedAt: seller.accountCreatedAt
-            ? new Date(seller.accountCreatedAt).toISOString()
-            : undefined,
+          accountCreatedAt: resolveAccountCreatedAt(seller)?.toISOString(),
         },
         usage: {
           gst: {
@@ -498,6 +618,10 @@ export class BillingService {
     const addressParts = [seller.address, seller.city, seller.state].filter(
       Boolean,
     );
+    const liveUsage = await this.resolveLiveSlotUsage(sellerId);
+    const sellerGstNumber = liveUsage.activeGstNumbers.length
+      ? liveUsage.activeGstNumbers.join(', ')
+      : undefined;
     const lineItems =
       invoice.type === 'pan_slot_addon'
         ? [
@@ -524,7 +648,7 @@ export class BillingService {
       status: invoice.status.toUpperCase(),
       sellerName: seller.fullName,
       sellerEmail: seller.email,
-      sellerGstNumber: seller.gstNumber,
+      sellerGstNumber,
       sellerAddress: addressParts.join(', ') || undefined,
       sellerFirmName: seller.firmName,
       lineItems,

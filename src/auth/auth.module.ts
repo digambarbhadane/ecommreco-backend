@@ -29,7 +29,7 @@ import {
           if (!s) throw new Error('JWT_SECRET environment variable is required');
           return s;
         })(),
-        signOptions: { expiresIn: '7d' },
+        signOptions: { expiresIn: '30m' },
       }),
     }),
     MongooseModule.forFeature([

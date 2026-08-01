@@ -1,7 +1,9 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -36,8 +38,38 @@ type RequestUser = {
 
 const GST_PERCENTAGE = 18;
 
+const DEFAULT_PACKAGE_DEFS = [
+  {
+    planType: 'single_gst' as const,
+    name: 'Single GST + Marketplace',
+    basePrice: 999,
+    durationInDays: 30,
+    gstSlots: 1,
+    description: '1 GST and 1 marketplace portal — billed per selected month',
+  },
+  {
+    planType: 'single_gst_multi_marketplace' as const,
+    name: 'Single GST + Multi Marketplace',
+    basePrice: 2499,
+    durationInDays: 30,
+    gstSlots: 1,
+    description:
+      '1 GST with multiple marketplace portals — billed per selected month',
+  },
+  {
+    planType: 'multi_gst_pan' as const,
+    name: 'Multi GST / PAN Monthly',
+    basePrice: 1999,
+    durationInDays: 30,
+    gstSlots: 1,
+    description:
+      'Multiple GSTs / PAN slots — billed per PAN slot and selected month',
+  },
+];
+
 @Injectable()
-export class SubscriptionService {
+export class SubscriptionService implements OnModuleInit {
+  private readonly logger = new Logger(SubscriptionService.name);
   constructor(
     @InjectModel(SubscriptionPackage.name)
     private readonly packageModel: Model<SubscriptionPackageDocument>,
@@ -50,6 +82,87 @@ export class SubscriptionService {
     private readonly leadsService: LeadsService,
     private readonly emailService: EmailService,
   ) {}
+
+  async onModuleInit() {
+    await this.ensureDefaultPackages();
+  }
+
+  /** Seed built-in plans when super admin has not created active packages yet. */
+  async ensureDefaultPackages() {
+    for (const def of DEFAULT_PACKAGE_DEFS) {
+      const existing = await this.packageModel
+        .countDocuments({ planType: def.planType, isActive: true })
+        .exec();
+      if (existing > 0) continue;
+
+      const pricing = this.calculatePricing({
+        basePrice: def.basePrice,
+        discountType: 'none',
+      });
+      await this.packageModel.create({
+        name: def.name,
+        basePrice: def.basePrice,
+        discountType: 'none',
+        discountValue: pricing.discountValue,
+        finalPriceAfterDiscount: pricing.finalPriceAfterDiscount,
+        gstPercentage: pricing.gstPercentage,
+        gstAmount: pricing.gstAmount,
+        finalPayableAmount: pricing.finalPayableAmount,
+        durationInDays: def.durationInDays,
+        planType: def.planType,
+        gstSlots: def.gstSlots,
+        panSlots: 1,
+        isActive: true,
+        createdBy: 'system',
+        description: def.description,
+      });
+      this.logger.log(`Seeded default subscription package: ${def.name}`);
+    }
+  }
+
+  /**
+   * Resolve an active MongoDB package for checkout.
+   * Auto-selects by plan type when packageId is missing or invalid.
+   */
+  async resolveActivePackage(input: {
+    planType:
+      | 'single_gst'
+      | 'multi_gst_pan'
+      | 'single_gst_multi_marketplace';
+    packageId?: string;
+  }): Promise<SubscriptionPackageDocument> {
+    await this.ensureDefaultPackages();
+    const { planType, packageId } = input;
+
+    if (packageId?.trim() && Types.ObjectId.isValid(packageId)) {
+      const selected = await this.packageModel
+        .findOne({ _id: packageId, isActive: true })
+        .exec();
+      if (
+        selected &&
+        (selected.planType ?? 'multi_gst_pan') === planType
+      ) {
+        return selected;
+      }
+    }
+
+    const pkg = await this.packageModel
+      .findOne({ planType, isActive: true })
+      .sort({ finalPriceAfterDiscount: 1, durationInDays: 1 })
+      .exec();
+    if (!pkg) {
+      const label =
+        planType === 'single_gst'
+          ? 'Single GST + Marketplace'
+          : planType === 'single_gst_multi_marketplace'
+            ? 'Single GST + Multi Marketplace'
+            : 'Multi GST / PAN';
+      throw new BadRequestException(
+        `No active subscription plan configured for ${label}. Create one in Super Admin → Subscriptions.`,
+      );
+    }
+    return pkg;
+  }
 
   private toTwoDecimals(value: number) {
     return Math.round((value + Number.EPSILON) * 100) / 100;
@@ -137,6 +250,7 @@ export class SubscriptionService {
       gstAmount: pricing.gstAmount,
       finalPayableAmount: pricing.finalPayableAmount,
       durationInDays: dto.durationInDays,
+      planType: dto.planType ?? 'multi_gst_pan',
       isActive: dto.isActive ?? true,
       createdBy: this.getActor(user),
     });
@@ -193,6 +307,9 @@ export class SubscriptionService {
     current.gstAmount = pricing.gstAmount;
     current.finalPayableAmount = pricing.finalPayableAmount;
     current.durationInDays = dto.durationInDays ?? current.durationInDays;
+    if (dto.planType) {
+      current.planType = dto.planType;
+    }
     current.isActive =
       typeof dto.isActive === 'boolean' ? dto.isActive : current.isActive;
     current.createdBy = this.getActor(user);

@@ -25,6 +25,10 @@ import { PanSlotRequestsModule } from './pan-slot-requests/pan-slot-requests.mod
 import { BillingModule } from './billing/billing.module';
 import { GstModule } from './common/gst/gst.module';
 import { SkuMasterModule } from './sku-master/sku-master.module';
+import { SettlementModule } from './settlement/settlement.module';
+import { PaymentsModule } from './payments/payments.module';
+import { TrialModule } from './trial/trial.module';
+import { OnboardingModule } from './onboarding/onboarding.module';
 import { setMongoStorageMode } from './config/mongo-connection';
 import {
   getMongoUriCandidates,
@@ -250,6 +254,10 @@ const DEFAULT_LOCAL_MONGODB_URI = 'mongodb://127.0.0.1:27017/sellerspl';
     PanSlotRequestsModule,
     BillingModule,
     SkuMasterModule,
+    SettlementModule,
+    PaymentsModule,
+    OnboardingModule,
+    TrialModule,
   ],
 })
 export class AppModule {}
