@@ -14,6 +14,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
+import { ConfigService } from '@nestjs/config';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import {
@@ -25,11 +26,21 @@ import {
   RegisterTrialDto,
 } from './dto/trial.dto';
 import { TrialService } from './trial.service';
+import { OnboardingRegistrationService } from '../onboarding/services/onboarding-registration.service';
+import { isOnboardingV2Enabled } from '../onboarding/constants/onboarding-status';
 
 @ApiTags('Trial')
 @Controller('trial')
 export class TrialController {
-  constructor(private readonly trialService: TrialService) {}
+  constructor(
+    private readonly trialService: TrialService,
+    private readonly onboardingRegistration: OnboardingRegistrationService,
+    private readonly config: ConfigService,
+  ) {}
+
+  private useOnboardingV2() {
+    return isOnboardingV2Enabled(this.config.get<string>('ONBOARDING_V2_ENABLED'));
+  }
 
   @Get('pricing')
   @ApiOperation({ summary: 'Public trial and plan pricing info' })
@@ -46,6 +57,13 @@ export class TrialController {
   @Post('register')
   @ApiOperation({ summary: 'Self-service trial registration' })
   register(@Body() dto: RegisterTrialDto) {
+    if (this.useOnboardingV2()) {
+      return this.onboardingRegistration.register({
+        ...dto,
+        ownerName: dto.ownerName,
+        source: 'self_service_trial',
+      });
+    }
     return this.trialService.register(dto);
   }
 
@@ -55,8 +73,14 @@ export class TrialController {
     return this.trialService.getPaymentSummary(sellerId);
   }
 
+  @Post('payment/:sellerId/init')
+  @ApiOperation({ summary: 'Create Cashfree order for trial registration payment' })
+  initTrialPayment(@Param('sellerId') sellerId: string) {
+    return this.trialService.initTrialPayment(sellerId);
+  }
+
   @Post('payment/:sellerId/confirm')
-  @ApiOperation({ summary: 'Confirm trial payment and start 7-day trial' })
+  @ApiOperation({ summary: 'Verify Cashfree payment and activate 7-day trial' })
   confirmPayment(
     @Param('sellerId') sellerId: string,
     @Body() dto: ConfirmTrialPaymentDto,

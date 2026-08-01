@@ -892,13 +892,16 @@ export class ReportImportController {
   @Roles('seller', 'super_admin', 'accounts_manager')
   workflowHistory(
     @Query('sellerId') sellerId: string,
-    @Query('gstId') gstId: string,
+    @Query('gstId') gstId?: string,
     @Query('reportMonth') reportMonth?: string,
     @Query('marketplaceId') marketplaceId?: string,
   ) {
+    if (!sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
     return this.importWorkflowService.getImportHistory({
       sellerId,
-      gstId,
+      gstId: gstId?.trim() || undefined,
       reportMonth,
       marketplaceId,
     });

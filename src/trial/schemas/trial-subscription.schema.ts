@@ -9,13 +9,13 @@ export class TrialSubscription {
   @Prop({ type: SchemaTypes.ObjectId, ref: 'Seller', required: true, index: true })
   sellerId!: Types.ObjectId;
 
-  @Prop({ required: true, trim: true, uppercase: true, index: true })
+  @Prop({ required: true, trim: true, uppercase: true })
   panNumber!: string;
 
-  @Prop({ required: true, trim: true, uppercase: true, index: true })
+  @Prop({ required: true, trim: true, uppercase: true })
   gstNumber!: string;
 
-  @Prop({ required: true, trim: true, lowercase: true, index: true })
+  @Prop({ required: true, trim: true, lowercase: true })
   email!: string;
 
   @Prop({ required: true, trim: true, index: true })

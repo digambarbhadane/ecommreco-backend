@@ -26,6 +26,7 @@ import {
   UserActivityLogDocument,
 } from '../profile/schemas/user-activity-log.schema';
 import { getMongoStorageMode, isInMemoryMongo } from '../config/mongo-connection';
+import { evaluateSellerLogin } from '../trial/trial-login.policy';
 
 type AuthUser = {
   id: string;
@@ -53,20 +54,6 @@ const ACCESS_TOKEN_TTL = '30m';
 const ACCESS_TOKEN_TTL_MS = 30 * 60 * 1000;
 const REFRESH_TOKEN_TTL = '7d';
 const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-
-/** Sellers in these stages cannot log in yet (no credentials / payment not done). */
-const blockedSellerLoginStatuses = new Set([
-  'lead_generated',
-  'sales_contacted',
-  'payment_pending',
-]);
-
-/** Login allowed only after super admin approves credentials. */
-const allowedSellerLoginStatuses = new Set([
-  'training_pending',
-  'training_completed',
-  'active',
-]);
 
 const disabledAdminStatuses = new Set(['blocked', 'rejected']);
 
@@ -132,28 +119,42 @@ export class AuthService implements OnModuleInit {
           });
         }
         if (adminStatus === 'pending') {
-          throw new UnauthorizedException({
-            success: false,
-            message: 'Account is pending approval',
-            errorCode: 'ACCOUNT_PENDING',
-          });
-        }
-        if (adminUser.role === 'seller') {
-          const sellerForLogin =
-            seller ??
-            (await this.sellerModel
-              .findOne({ email: adminUser.email })
-              .lean()
-              .exec());
-          const loginCheck = this.evaluateSellerLogin(
-            sellerForLogin ?? { onboardingStatus: 'payment_pending' },
-          );
-          if (!loginCheck.allowed) {
+          const onboardingStatus = (
+            adminUser as { onboardingUserStatus?: string }
+          ).onboardingUserStatus;
+          if (onboardingStatus !== 'PENDING_PAYMENT') {
             throw new UnauthorizedException({
               success: false,
-              message: loginCheck.message,
-              errorCode: loginCheck.errorCode,
+              message: 'Account is pending approval',
+              errorCode: 'ACCOUNT_PENDING',
             });
+          }
+        }
+        if (adminUser.role === 'seller') {
+          const onboardingStatus = (
+            adminUser as { onboardingUserStatus?: string }
+          ).onboardingUserStatus;
+          if (onboardingStatus === 'PENDING_PAYMENT') {
+            // Allow login — dashboard blocked by frontend guard; payment pending page
+          } else if (onboardingStatus === 'BLOCKED') {
+            throw new UnauthorizedException({
+              success: false,
+              message: 'Your account is blocked. Contact support.',
+              errorCode: 'ACCOUNT_BLOCKED',
+            });
+          } else {
+            const sellerForLogin =
+              seller ??
+              (await this.sellerModel
+                .findOne({ email: adminUser.email })
+                .lean()
+                .exec());
+            const loginCheck = this.evaluateSellerLogin(
+              sellerForLogin ?? { onboardingStatus: 'payment_pending' },
+            );
+            if (!loginCheck.allowed) {
+              this.throwLoginDenied(loginCheck);
+            }
           }
         }
         const user: AuthUser = {
@@ -184,11 +185,7 @@ export class AuthService implements OnModuleInit {
       if (passwordOk) {
         const loginCheck = this.evaluateSellerLogin(seller);
         if (!loginCheck.allowed) {
-          throw new UnauthorizedException({
-            success: false,
-            message: loginCheck.message,
-            errorCode: loginCheck.errorCode,
-          });
+          this.throwLoginDenied(loginCheck);
         }
 
         const user: AuthUser = {
@@ -225,45 +222,16 @@ export class AuthService implements OnModuleInit {
     const device = this.getDevice(req);
     const refreshExpiresAt = new Date(now.getTime() + REFRESH_TOKEN_TTL_MS);
 
-    const security = await this.userSecurityModel
-      .findOneAndUpdate(
-        { userId: user.id },
-        {
-          $setOnInsert: {
-            userId: user.id,
-            twoFactorEnabled: false,
-            tokenVersion: 0,
-          },
-          $push: {
-            activeSessions: {
-              $each: [
-                {
-                  sessionId,
-                  ipAddress,
-                  device,
-                  createdAt: now,
-                  lastSeenAt: now,
-                },
-              ],
-              $slice: -10,
-            },
-          },
-        },
-        { upsert: true, new: true },
-      )
+    const existingSecurity = await this.userSecurityModel
+      .findOne({ userId: user.id })
+      .select('tokenVersion')
       .lean()
       .exec();
 
-    await this.userActivityLogModel.create({
-      userId: user.id,
-      action: 'login_successful',
-      ipAddress,
-      device,
-      timestamp: now,
-    });
-
     const tokenVersion =
-      typeof security?.tokenVersion === 'number' ? security.tokenVersion : 0;
+      typeof existingSecurity?.tokenVersion === 'number'
+        ? existingSecurity.tokenVersion
+        : 0;
 
     const accessToken = await this.jwtService.signAsync(
       {
@@ -290,25 +258,55 @@ export class AuthService implements OnModuleInit {
       { expiresIn: REFRESH_TOKEN_TTL },
     );
 
-    await this.userSecurityModel.updateOne(
-      { userId: user.id },
-      {
-        $push: {
-          refreshTokens: {
-            $each: [
-              {
-                jti: refreshJti,
-                sessionId,
-                tokenHash: this.hashToken(refreshToken),
-                expiresAt: refreshExpiresAt,
-                createdAt: now,
-              },
-            ],
-            $slice: -20,
+    const tokenHash = this.hashToken(refreshToken);
+
+    await this.userSecurityModel
+      .findOneAndUpdate(
+        { userId: user.id },
+        {
+          $setOnInsert: {
+            userId: user.id,
+            twoFactorEnabled: false,
+            tokenVersion: 0,
+          },
+          $push: {
+            activeSessions: {
+              $each: [
+                {
+                  sessionId,
+                  ipAddress,
+                  device,
+                  createdAt: now,
+                  lastSeenAt: now,
+                },
+              ],
+              $slice: -10,
+            },
+            refreshTokens: {
+              $each: [
+                {
+                  jti: refreshJti,
+                  sessionId,
+                  tokenHash,
+                  expiresAt: refreshExpiresAt,
+                  createdAt: now,
+                },
+              ],
+              $slice: -20,
+            },
           },
         },
-      },
-    );
+        { upsert: true },
+      )
+      .exec();
+
+    await this.userActivityLogModel.create({
+      userId: user.id,
+      action: 'login_successful',
+      ipAddress,
+      device,
+      timestamp: now,
+    });
 
     const { password, ...safeUser } = user;
     void password;
@@ -377,28 +375,28 @@ export class AuthService implements OnModuleInit {
       });
     }
 
-    const sessionActive = (security.activeSessions ?? []).some(
-      (session) => session.sessionId === payload.sessionId,
-    );
-    if (!sessionActive) {
-      throw new UnauthorizedException({
-        success: false,
-        message: 'Your session has expired. Please login again.',
-        errorCode: 'SESSION_REVOKED',
-      });
-    }
-
+    const tokenHash = this.hashToken(token);
     const stored = (security.refreshTokens ?? []).find(
       (entry) => entry.jti === payload.jti,
     );
-    if (!stored || stored.tokenHash !== this.hashToken(token)) {
-      throw new UnauthorizedException({
-        success: false,
-        message: 'Your session has expired. Please login again.',
-        errorCode: 'REFRESH_TOKEN_REVOKED',
-      });
-    }
-    if (new Date(stored.expiresAt).getTime() <= Date.now()) {
+    const jwtExpiryMs = this.getJwtExpiryMs(payload);
+
+    if (stored) {
+      if (stored.tokenHash !== tokenHash) {
+        throw new UnauthorizedException({
+          success: false,
+          message: 'Your session has expired. Please login again.',
+          errorCode: 'REFRESH_TOKEN_REVOKED',
+        });
+      }
+      if (new Date(stored.expiresAt).getTime() <= Date.now()) {
+        throw new UnauthorizedException({
+          success: false,
+          message: 'Your session has expired. Please login again.',
+          errorCode: 'REFRESH_TOKEN_EXPIRED',
+        });
+      }
+    } else if (jwtExpiryMs !== null && jwtExpiryMs <= Date.now()) {
       throw new UnauthorizedException({
         success: false,
         message: 'Your session has expired. Please login again.',
@@ -406,10 +404,63 @@ export class AuthService implements OnModuleInit {
       });
     }
 
-    const account = await this.loadActiveAuthAccount(payload.sub, payload.role);
+    const sessionActive = (security.activeSessions ?? []).some(
+      (session) => session.sessionId === payload.sessionId,
+    );
     const now = new Date();
+    const reconcileUpdate: Record<string, unknown> = {};
 
-    if (req) {
+    if (!sessionActive) {
+      reconcileUpdate.$push = {
+        activeSessions: {
+          $each: [
+            {
+              sessionId: payload.sessionId,
+              ipAddress: req ? this.getIp(req) : 'unknown',
+              device: req ? this.getDevice(req) : 'unknown',
+              createdAt: now,
+              lastSeenAt: now,
+            },
+          ],
+          $slice: -10,
+        },
+      };
+    }
+
+    if (!stored) {
+      const expiresAt =
+        jwtExpiryMs !== null
+          ? new Date(jwtExpiryMs)
+          : new Date(now.getTime() + REFRESH_TOKEN_TTL_MS);
+      const refreshPush = {
+        $each: [
+          {
+            jti: payload.jti,
+            sessionId: payload.sessionId,
+            tokenHash,
+            expiresAt,
+            createdAt: now,
+          },
+        ],
+        $slice: -20,
+      };
+      if (reconcileUpdate.$push) {
+        (reconcileUpdate.$push as Record<string, unknown>).refreshTokens =
+          refreshPush;
+      } else {
+        reconcileUpdate.$push = { refreshTokens: refreshPush };
+      }
+    }
+
+    if (Object.keys(reconcileUpdate).length > 0) {
+      await this.userSecurityModel
+        .updateOne({ userId: payload.sub }, reconcileUpdate)
+        .exec();
+    }
+
+    const account = await this.loadActiveAuthAccount(payload.sub, payload.role);
+
+    if (sessionActive && req) {
       await this.userSecurityModel.updateOne(
         {
           userId: payload.sub,
@@ -503,6 +554,13 @@ export class AuthService implements OnModuleInit {
     };
   }
 
+  private getJwtExpiryMs(payload: TokenPairPayload & { exp?: number }) {
+    if (typeof payload.exp === 'number' && payload.exp > 0) {
+      return payload.exp * 1000;
+    }
+    return null;
+  }
+
   private async loadActiveAuthAccount(userId: string, role?: string) {
     if (role === 'seller') {
       const seller = await this.sellerModel
@@ -511,19 +569,9 @@ export class AuthService implements OnModuleInit {
         .lean()
         .exec();
       if (seller) {
-        const onboarding = String(
-          (seller as { onboardingStatus?: string }).onboardingStatus ?? '',
-        );
-        if (
-          onboarding &&
-          blockedSellerLoginStatuses.has(onboarding) &&
-          !allowedSellerLoginStatuses.has(onboarding)
-        ) {
-          throw new UnauthorizedException({
-            success: false,
-            message: 'Account is disabled',
-            errorCode: 'ACCOUNT_DISABLED',
-          });
+        const loginCheck = this.evaluateSellerLogin(seller);
+        if (!loginCheck.allowed) {
+          this.throwLoginDenied(loginCheck);
         }
         return {
           id: String(seller._id),
@@ -563,6 +611,17 @@ export class AuthService implements OnModuleInit {
           message: 'Account is disabled',
           errorCode: 'ACCOUNT_DISABLED',
         });
+      }
+      const linkedSeller = await this.sellerModel
+        .findOne({ email: sellerUser.email })
+        .select('-password')
+        .lean()
+        .exec();
+      if (linkedSeller) {
+        const loginCheck = this.evaluateSellerLogin(linkedSeller);
+        if (!loginCheck.allowed) {
+          this.throwLoginDenied(loginCheck);
+        }
       }
       return {
         id: String(sellerUser._id),
@@ -991,71 +1050,35 @@ export class AuthService implements OnModuleInit {
   }
 
   private evaluateSellerLogin(seller: {
+    _id?: unknown;
+    id?: string;
+    accountStatus?: string;
+    accountStatusReason?: string;
     onboardingStatus?: string;
     password?: string;
     isTrial?: boolean;
     trialStatus?: string;
-  }): { allowed: boolean; message?: string; errorCode?: string } {
-    const status = seller.onboardingStatus ?? 'payment_pending';
-    const hasPassword =
-      typeof seller.password === 'string' && seller.password.trim().length > 0;
+    paymentStatus?: string;
+  }) {
+    return evaluateSellerLogin({
+      ...seller,
+      id: seller.id ?? (seller._id ? String(seller._id) : undefined),
+    });
+  }
 
-    if (!hasPassword) {
-      return {
-        allowed: false,
-        message:
-          'Login credentials are not set yet. Contact support to complete onboarding.',
-        errorCode: 'SELLER_NO_CREDENTIALS',
-      };
-    }
-
-    // Self-service trial: allow login after payment so sellers can use the app
-    // or reach the subscription page after expiry. Pending trial payment stays blocked.
-    if (seller.isTrial) {
-      if (seller.trialStatus === 'pending_payment') {
-        return {
-          allowed: false,
-          message:
-            'Complete your trial payment of ₹499 + GST to activate your account.',
-          errorCode: 'TRIAL_PAYMENT_PENDING',
-        };
-      }
-      if (seller.trialStatus === 'suspended') {
-        return {
-          allowed: false,
-          message: 'Your trial account is suspended. Contact support.',
-          errorCode: 'TRIAL_SUSPENDED',
-        };
-      }
-      if (
-        seller.trialStatus === 'active' ||
-        seller.trialStatus === 'expired' ||
-        seller.trialStatus === 'converted' ||
-        seller.trialStatus === 'data_deleted'
-      ) {
-        return { allowed: true };
-      }
-    }
-
-    if (blockedSellerLoginStatuses.has(status)) {
-      return {
-        allowed: false,
-        message:
-          'Account is not ready for login yet. Complete payment and credential setup first.',
-        errorCode: 'SELLER_NOT_APPROVED',
-      };
-    }
-
-    if (!allowedSellerLoginStatuses.has(status)) {
-      return {
-        allowed: false,
-        message:
-          'Your account is pending super admin approval. You can log in after credentials are approved.',
-        errorCode: 'SELLER_PENDING_APPROVAL',
-      };
-    }
-
-    return { allowed: true };
+  private throwLoginDenied(loginCheck: {
+    message?: string;
+    errorCode?: string;
+    sellerId?: string;
+    accountStatusReason?: string;
+  }) {
+    throw new UnauthorizedException({
+      success: false,
+      message: loginCheck.message,
+      errorCode: loginCheck.errorCode,
+      sellerId: loginCheck.sellerId,
+      accountStatusReason: loginCheck.accountStatusReason,
+    });
   }
 
   private escapeRegex(value: string) {

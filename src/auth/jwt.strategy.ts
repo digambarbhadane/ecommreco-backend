@@ -14,6 +14,7 @@ import {
   UserSecurity,
   UserSecurityDocument,
 } from '../profile/schemas/user-security.schema';
+import { evaluateSellerLogin, type SellerLoginSnapshot } from '../trial/trial-login.policy';
 
 type JwtPayload = {
   sub: string;
@@ -24,6 +25,19 @@ type JwtPayload = {
 };
 
 const disabledStatuses = new Set(['blocked', 'rejected']);
+
+function assertSellerSessionAccess(seller: SellerLoginSnapshot) {
+  const access = evaluateSellerLogin(seller, { requirePassword: false });
+  if (!access.allowed) {
+    throw new UnauthorizedException({
+      success: false,
+      message: access.message,
+      errorCode: access.errorCode,
+      sellerId: access.sellerId,
+      accountStatusReason: access.accountStatusReason,
+    });
+  }
+}
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
@@ -75,6 +89,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
           .lean()
           .exec();
         if (seller) {
+          assertSellerSessionAccess(seller);
           return {
             ...seller,
             id: seller._id.toString(),
@@ -91,6 +106,14 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         if (sellerUser) {
           if (disabledStatuses.has(String(sellerUser.status ?? ''))) {
             throw new UnauthorizedException();
+          }
+          const linkedSeller = await this.sellerModel
+            .findOne({ email: sellerUser.email })
+            .select('-password')
+            .lean()
+            .exec();
+          if (linkedSeller) {
+            assertSellerSessionAccess(linkedSeller);
           }
           return {
             ...sellerUser,
@@ -127,6 +150,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
           .lean()
           .exec();
         if (seller) {
+          assertSellerSessionAccess(seller);
           return {
             ...seller,
             id: seller._id.toString(),

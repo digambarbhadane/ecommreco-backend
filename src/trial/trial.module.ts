@@ -1,4 +1,5 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { MongooseModule } from '@nestjs/mongoose';
 import { ScheduleModule } from '@nestjs/schedule';
 import { EmailModule } from '../email/email.module';
@@ -21,11 +22,21 @@ import {
   TrialSubscriptionSchema,
 } from './schemas/trial-subscription.schema';
 import { Gst, GstSchema } from '../gsts/schemas/gst.schema';
+import {
+  SellerSubscription,
+  SellerSubscriptionSchema,
+} from '../payments/schemas/seller-subscription.schema';
 import { TrialController } from './trial.controller';
 import { TrialHistoryService } from './trial-history.service';
 import { TrialSchedulerService } from './trial-scheduler.service';
 import { TrialService } from './trial.service';
 import { TrialValidationService } from './trial-validation.service';
+import { SellerOperationalGuard } from './seller-operational.guard';
+import { PaymentsModule } from '../payments/payments.module';
+import { OnboardingModule } from '../onboarding/onboarding.module';
+import { SubscriptionModule } from '../subscription/subscription.module';
+import { GstsModule } from '../gsts/gsts.module';
+import { MarketplacesModule } from '../marketplaces/marketplaces.module';
 
 @Module({
   imports: [
@@ -37,9 +48,15 @@ import { TrialValidationService } from './trial-validation.service';
       { name: Seller.name, schema: SellerSchema },
       { name: SubscriptionPackage.name, schema: SubscriptionPackageSchema },
       { name: Gst.name, schema: GstSchema },
+      { name: SellerSubscription.name, schema: SellerSubscriptionSchema },
     ]),
     EmailModule,
     NotificationsModule,
+    forwardRef(() => PaymentsModule),
+    forwardRef(() => OnboardingModule),
+    SubscriptionModule,
+    forwardRef(() => GstsModule),
+    forwardRef(() => MarketplacesModule),
   ],
   controllers: [TrialController],
   providers: [
@@ -47,6 +64,10 @@ import { TrialValidationService } from './trial-validation.service';
     TrialValidationService,
     TrialHistoryService,
     TrialSchedulerService,
+    {
+      provide: APP_GUARD,
+      useClass: SellerOperationalGuard,
+    },
   ],
   exports: [TrialService, TrialValidationService],
 })

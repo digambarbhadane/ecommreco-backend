@@ -13,7 +13,11 @@ import {
 export const discountTypes = ['percentage', 'flat', 'none'] as const;
 export type DiscountType = (typeof discountTypes)[number];
 
-export const packagePlanTypes = ['single_gst', 'multi_gst_pan'] as const;
+export const packagePlanTypes = [
+  'single_gst',
+  'single_gst_multi_marketplace',
+  'multi_gst_pan',
+] as const;
 export type PackagePlanType = (typeof packagePlanTypes)[number];
 
 export class CreateSubscriptionPackageDto {

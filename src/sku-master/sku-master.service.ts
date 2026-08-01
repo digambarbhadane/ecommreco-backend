@@ -20,6 +20,7 @@ import {
   PlatformMarketplaceDocument,
 } from '../platform-marketplaces/schemas/platform-marketplace.schema';
 import { parseObjectId } from '../common/mongo-id.util';
+import { resolveGstDisplayName } from '../gsts/utils/gst-display.util';
 import { ListSkuMasterQueryDto } from './dto/list-sku-master.query.dto';
 import { UpsertSkuMasterDto } from './dto/upsert-sku-master.dto';
 import {
@@ -135,32 +136,39 @@ export class SkuMasterService {
         page,
         limit,
       },
-      gst: {
-        id: String(gst._id),
-        gstNumber: String(gst.gstNumber ?? '').trim().toUpperCase(),
-      },
+      gst: gst
+        ? {
+            id: String(gst._id),
+            gstNumber: String(gst.gstNumber ?? '').trim().toUpperCase(),
+          }
+        : undefined,
     };
   }
 
   async getFilteredItems(
     query: {
-      gstId: string;
+      gstId?: string;
       marketplace?: string;
       status?: string;
       search?: string;
     },
     actor: RequestActor,
   ) {
+    const gstId = String(query.gstId ?? '').trim();
+    if (!gstId) {
+      return this.getFilteredItemsForAllGsts(query, actor);
+    }
+
     const { gst, sellerScope } = await this.validateGstForSeller(
-      query.gstId,
+      gstId,
       actor,
     );
-    const gstId = String(gst._id);
+    const resolvedGstId = String(gst._id);
     const gstin = String(gst.gstNumber ?? '').trim().toUpperCase();
 
     const allItems = await this.buildSkuListFromImports(
       sellerScope,
-      gstId,
+      resolvedGstId,
       gstin,
       this.resolveBusinessName(gst),
     );
@@ -187,6 +195,59 @@ export class SkuMasterService {
     }
 
     return { allItems, filtered, gst };
+  }
+
+  private async getFilteredItemsForAllGsts(
+    query: {
+      marketplace?: string;
+      status?: string;
+      search?: string;
+    },
+    actor: RequestActor,
+  ) {
+    const sellerScope = await this.resolveSellerScope(actor);
+    const gsts = await this.gstModel
+      .find({ sellerId: { $in: sellerScope.aliases } })
+      .lean()
+      .exec();
+
+    let allItems: SkuMasterListItem[] = [];
+    for (const gst of gsts) {
+      const items = await this.buildSkuListFromImports(
+        sellerScope,
+        String(gst._id),
+        String(gst.gstNumber ?? '').trim().toUpperCase(),
+        this.resolveBusinessName(gst),
+      );
+      allItems = allItems.concat(items);
+    }
+
+    const marketplace = String(query.marketplace ?? 'ALL').trim().toLowerCase();
+    const status = String(query.status ?? 'ALL').trim().toUpperCase();
+    const search = String(query.search ?? '').trim().toLowerCase();
+
+    let filtered = allItems;
+    if (marketplace && marketplace !== 'all') {
+      filtered = filtered.filter((item) => item.marketplace === marketplace);
+    }
+    if (status === 'MAPPED') {
+      filtered = filtered.filter((item) => item.status === 'MAPPED');
+    } else if (status === 'UNMAPPED') {
+      filtered = filtered.filter((item) => item.status === 'UNMAPPED');
+    }
+    if (search) {
+      filtered = filtered.filter(
+        (item) =>
+          item.marketplaceSku.toLowerCase().includes(search) ||
+          String(item.masterSku ?? '').toLowerCase().includes(search),
+      );
+    }
+
+    return {
+      allItems,
+      filtered,
+      gst: gsts[0] ?? null,
+    };
   }
 
   async upsertMapping(dto: UpsertSkuMasterDto, actor: RequestActor) {
@@ -592,11 +653,7 @@ export class SkuMasterService {
   }
 
   private resolveBusinessName(gst: GstScope['gst']) {
-    return (
-      String(gst.businessName ?? '').trim() ||
-      String(gst.tradeName ?? '').trim() ||
-      undefined
-    );
+    return resolveGstDisplayName(gst) || undefined;
   }
 
   private resolveMappingStatus(

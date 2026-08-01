@@ -209,18 +209,12 @@ export class ImportSessionService {
         (key) => key === 'paymentReportFile' || key.startsWith('amazonPaymentFile:'),
       );
       const hasReturn = session.files.has('amazonReturnReportFile');
-      if (hasPayment && (hasMtr || hasReturn)) {
-        throw new BadRequestException(
-          'Amazon Payment Report must be uploaded separately from MTR and return reports',
-        );
-      }
-      const hasReturnOnly =
-        hasReturn && !hasMtr;
-      if (!hasMtr && !hasReturnOnly && !hasPayment) {
+      if (!hasMtr && !hasReturn && !hasPayment) {
         throw new BadRequestException(
           'Amazon upload requires an MTR, return, or payment report file',
         );
       }
+      const hasReturnOnly = hasReturn && !hasMtr;
       if (hasReturnOnly) {
         const b2cAlreadyUploaded = await this.importWorkflow.hasCompletedSlot({
           sellerId: dto.sellerId,

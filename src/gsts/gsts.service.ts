@@ -39,6 +39,8 @@ import {
 } from '../common/utils/permanent-delete.util';
 import { TrialValidationService } from '../trial/trial-validation.service';
 import { TrialService } from '../trial/trial.service';
+import { resolveGstDisplayName } from './utils/gst-display.util';
+import { computeSlotUsageFromGstRecords } from '../common/utils/seller-slot-usage.util';
 
 @Injectable()
 export class GstsService {
@@ -111,6 +113,10 @@ export class GstsService {
       .lean()
       .exec();
 
+    if (options?.actorRole !== 'super_admin') {
+      this.trialValidation.assertSellerOperationalAccess(seller);
+    }
+
     if (
       seller.isTrial &&
       seller.trialStatus !== 'converted' &&
@@ -154,8 +160,18 @@ export class GstsService {
     )
       .trim()
       .toUpperCase();
+    const purchasedPanSlots = Math.max(
+      0,
+      Number(
+        seller.totalPanSlots ??
+          seller.gstSlotsPurchased ??
+          seller.gstSlots ??
+          0,
+      ),
+    );
     if (
       lockedPan &&
+      purchasedPanSlots <= 1 &&
       extractedPan !== lockedPan &&
       options?.actorRole !== 'super_admin'
     ) {
@@ -165,32 +181,30 @@ export class GstsService {
     }
 
     if (
-      seller.subscriptionPlanType === 'single_gst' &&
+      (seller.subscriptionPlanType === 'single_gst' ||
+        seller.subscriptionPlanType === 'single_gst_multi_marketplace') &&
       sellerGsts.length >= 1 &&
       options?.actorRole !== 'super_admin'
     ) {
       throw new BadRequestException(
-        'Single GST plan allows only one GST and one marketplace portal. Upgrade to a Multi GST / PAN plan to add more.',
+        'This plan allows only one GST. Upgrade to a Multi GST / PAN plan to add more.',
       );
     }
 
-    let purchasedPanSlots = Math.max(
-      0,
-      Number(seller.gstSlotsPurchased ?? seller.gstSlots ?? 0),
-    );
+    let remainingPanSlots = purchasedPanSlots;
     const usedPanSlots = sellerPanSet.size;
     const isSuperAdmin = options?.actorRole === 'super_admin';
-    if (!isExistingPanForSeller && usedPanSlots >= purchasedPanSlots) {
+    if (!isExistingPanForSeller && usedPanSlots >= remainingPanSlots) {
       if (!isSuperAdmin) {
         throw new BadRequestException(
           'You have reached your GST limit. Please upgrade your plan to add a new PAN.',
         );
       }
-      purchasedPanSlots += 1;
-      seller.gstSlotsPurchased = purchasedPanSlots;
+      remainingPanSlots += 1;
+      seller.gstSlotsPurchased = remainingPanSlots;
       seller.gstSlots = Math.max(
         Number(seller.gstSlots ?? 0),
-        purchasedPanSlots,
+        remainingPanSlots,
       );
     }
 
@@ -236,9 +250,6 @@ export class GstsService {
     });
 
     seller.panProfiles = panProfiles;
-    seller.gstSlotsUsed = isExistingPanForSeller
-      ? usedPanSlots
-      : usedPanSlots + 1;
 
     if (isFirstGstForSeller) {
       this.applyFirstGstBusinessProfile(seller, {
@@ -257,6 +268,7 @@ export class GstsService {
     }
 
     await seller.save();
+    await this.syncSellerSlotUsage(sellerId);
 
     await this.logGstVerificationActivity({
       gstNumber,
@@ -477,7 +489,12 @@ export class GstsService {
     // to pre-seed panProfiles without creating a Gst, which locked Add GST).
     const purchased = Math.max(
       0,
-      Number(seller.gstSlotsPurchased ?? seller.gstSlots ?? 0),
+      Number(
+        seller.totalPanSlots ??
+          seller.gstSlotsPurchased ??
+          seller.gstSlots ??
+          0,
+      ),
     );
     const used = sellerPanSet.size;
     return {
@@ -638,7 +655,7 @@ export class GstsService {
       return {
         id: gstId,
         gstNumber: gst.gstNumber,
-        businessName: gst.businessName ?? '—',
+        businessName: resolveGstDisplayName(gst, '—'),
         state: gst.state ?? '—',
         panNumber: gst.panNumber,
         status,
@@ -846,8 +863,8 @@ export class GstsService {
           ? seller.panProfiles.filter((item) => panSet.has(item.panNumber))
           : [];
         seller.panProfiles = nextProfiles;
-        seller.gstSlotsUsed = panSet.size;
         await seller.save();
+        await this.syncSellerSlotUsage(String(gst.sellerId ?? ''));
       }
 
       const auditInsert = await this.deletionAuditModel.collection.insertOne({
@@ -1025,8 +1042,8 @@ export class GstsService {
     });
 
     seller.panProfiles = panProfiles;
-    seller.gstSlotsUsed = isExistingPanForSeller ? usedPanSlots : usedPanSlots + 1;
     await seller.save();
+    await this.syncSellerSlotUsage(sellerId);
 
     return { success: true, data: created };
   }
@@ -1144,7 +1161,7 @@ export class GstsService {
     await this.userModel
       .updateMany(
         { role: 'seller', email },
-        { $set: { companyName: seller.firmName || seller.tradeName || '' } },
+        { $set: { companyName: seller.tradeName || seller.firmName || '' } },
       )
       .exec();
   }
@@ -1221,5 +1238,28 @@ export class GstsService {
       aliases.add(requestedId.trim());
     }
     return Array.from(aliases);
+  }
+
+  private async syncSellerSlotUsage(sellerId: string) {
+    const normalizedSellerId = String(sellerId ?? '').trim();
+    if (!normalizedSellerId) {
+      return;
+    }
+
+    const records = await this.gstModel
+      .find({ sellerId: normalizedSellerId })
+      .select('panNumber gstNumber')
+      .lean()
+      .exec();
+    const { gstUsed, panUsed } = computeSlotUsageFromGstRecords(records);
+    const update =
+      gstUsed === 0
+        ? {
+            $set: { gstSlotsUsed: 0, usedPanSlots: 0, gstNumber: '' },
+          }
+        : {
+            $set: { gstSlotsUsed: gstUsed, usedPanSlots: panUsed },
+          };
+    await this.sellerModel.updateOne({ _id: normalizedSellerId }, update).exec();
   }
 }
