@@ -36,19 +36,92 @@ export function extractPanFromGstin(gstin: string): string | null {
   return value.slice(2, 12);
 }
 
-/** Registration month + previous 3 months (4 months total). */
-export function getTrialAllowedReportMonths(reference: Date): string[] {
-  const months: string[] = [];
-  const cursor = new Date(
-    Date.UTC(reference.getUTCFullYear(), reference.getUTCMonth(), 1),
-  );
-  for (let i = 0; i <= TRIAL_ALLOWED_IMPORT_MONTHS; i += 1) {
-    const year = cursor.getUTCFullYear();
-    const month = String(cursor.getUTCMonth() + 1).padStart(2, '0');
-    months.push(`${year}-${month}`);
-    cursor.setUTCMonth(cursor.getUTCMonth() - 1);
+export function resolveTrialRegistrationDate(input: {
+  trialStart?: Date | string;
+  accountCreatedAt?: Date | string;
+  createdAt?: Date | string;
+}): Date {
+  for (const value of [input.trialStart, input.accountCreatedAt, input.createdAt]) {
+    if (!value) continue;
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed;
+    }
   }
-  return months;
+  return new Date();
+}
+
+/**
+ * Trial uploads: the 3 calendar months immediately before registration month
+ * (registration month itself is excluded).
+ */
+export function getTrialAllowedReportMonthsFromRegistration(
+  registrationDate: Date = new Date(),
+): string[] {
+  const anchor = new Date(
+    registrationDate.getFullYear(),
+    registrationDate.getMonth() - 1,
+    1,
+  );
+  const months: string[] = [];
+
+  for (let i = 0; i < TRIAL_ALLOWED_IMPORT_MONTHS; i += 1) {
+    const y = anchor.getFullYear();
+    const m = String(anchor.getMonth() + 1).padStart(2, '0');
+    months.push(`${y}-${m}`);
+    anchor.setMonth(anchor.getMonth() - 1);
+  }
+
+  return months.sort();
+}
+
+export function getTrialAllowedReportMonthsForSeller(seller: {
+  trialStart?: Date | string;
+  accountCreatedAt?: Date | string;
+  createdAt?: Date | string;
+}): string[] {
+  return getTrialAllowedReportMonthsFromRegistration(
+    resolveTrialRegistrationDate(seller),
+  );
+}
+
+/** Whether this seller ever received trial reconciliation month access. */
+export function sellerHadTrialCoverage(seller: {
+  isTrial?: boolean;
+  trialStart?: Date | string;
+  trialStatus?: string;
+  convertedToPaid?: boolean;
+}): boolean {
+  if (seller.isTrial) return true;
+  if (seller.trialStart) return true;
+  if (seller.convertedToPaid) return true;
+  if (seller.trialStatus === 'converted') return true;
+  return (
+    seller.trialStatus === 'active' ||
+    seller.trialStatus === 'expired' ||
+    seller.trialStatus === 'pending_payment' ||
+    seller.trialStatus === 'suspended'
+  );
+}
+
+/** Trial months that must not be purchased again when upgrading from trial. */
+export function getTrialCoveredMonthsForPurchase(seller: {
+  isTrial?: boolean;
+  trialStart?: Date | string;
+  trialStatus?: string;
+  convertedToPaid?: boolean;
+  accountCreatedAt?: Date | string;
+  createdAt?: Date | string;
+}): string[] {
+  if (!sellerHadTrialCoverage(seller)) {
+    return [];
+  }
+  return getTrialAllowedReportMonthsForSeller(seller);
+}
+
+/** @deprecated Use getTrialAllowedReportMonthsForSeller — kept for compatibility. */
+export function getTrialAllowedReportMonths(reference: Date = new Date()): string[] {
+  return getTrialAllowedReportMonthsFromRegistration(reference);
 }
 
 export function addDays(date: Date, days: number): Date {

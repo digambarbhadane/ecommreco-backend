@@ -16,6 +16,10 @@ import { RegisterSellerDto } from './dto/register-seller.dto';
 import { SendPaymentLinkDto } from './dto/send-payment-link.dto';
 import { Seller, SellerDocument } from './schemas/seller.schema';
 import { User, UserDocument } from '../users/schemas/user.schema';
+import {
+  UserSecurity,
+  UserSecurityDocument,
+} from '../profile/schemas/user-security.schema';
 import { LeadsService } from '../leads/leads.service';
 import { generatePublicId } from '../common/public-id';
 
@@ -43,6 +47,8 @@ export class SellersService {
     private readonly sellerModel: Model<SellerDocument>,
     @InjectModel(User.name)
     private readonly userModel: Model<UserDocument>,
+    @InjectModel(UserSecurity.name)
+    private readonly userSecurityModel: Model<UserSecurityDocument>,
     private readonly leadsService: LeadsService,
     private readonly notificationsService: NotificationsService,
     private readonly emailService: EmailService,
@@ -633,7 +639,11 @@ export class SellersService {
     };
   }
 
-  async updateAccountStatus(sellerId: string, status: string) {
+  async updateAccountStatus(
+    sellerId: string,
+    status: string,
+    options?: { reason?: string },
+  ) {
     const allowed = new Set(['active', 'paused', 'suspended', 'suspected']);
     if (!allowed.has(status)) {
       throw new BadRequestException({
@@ -642,8 +652,40 @@ export class SellersService {
       });
     }
 
+    const trimmedReason = String(options?.reason ?? '').trim();
+    if (status === 'suspended' && !trimmedReason) {
+      throw new BadRequestException({
+        success: false,
+        message: 'Suspension reason is required.',
+        errorCode: 'SUSPENSION_REASON_REQUIRED',
+      });
+    }
+
+    const existing = await this.sellerModel
+      .findById(sellerId)
+      .select('accountStatus fullName email')
+      .lean()
+      .exec();
+    if (!existing) {
+      throw new NotFoundException({
+        success: false,
+        message: 'Seller not found',
+      });
+    }
+
+    const previousStatus = existing.accountStatus ?? 'active';
+    const statusUpdate: Record<string, unknown> = {
+      accountStatus: status,
+      accountStatusUpdatedAt: new Date(),
+    };
+    if (status === 'suspended' || status === 'paused') {
+      statusUpdate.accountStatusReason = trimmedReason;
+    } else if (status === 'active') {
+      statusUpdate.accountStatusReason = '';
+    }
+
     const updated = await this.sellerModel
-      .findByIdAndUpdate(sellerId, { accountStatus: status }, { new: true })
+      .findByIdAndUpdate(sellerId, { $set: statusUpdate }, { new: true })
       .lean()
       .exec();
 
@@ -654,11 +696,39 @@ export class SellersService {
       });
     }
 
+    if (status === 'suspended' || status === 'paused') {
+      await this.invalidateSellerSessions({
+        _id: sellerId,
+        email: existing.email,
+      });
+    }
+
     await this.notificationsService.createNotification({
       event: 'seller_account_status_updated',
       recipientRole: 'super_admin',
-      message: `Seller ${updated._id.toString()} account status updated to ${status}.`,
+      message: `Seller ${existing.fullName || existing.email} account status updated to ${status}.`,
     });
+
+    if (status === 'suspended' || status === 'paused') {
+      const sellerMessage =
+        status === 'paused'
+          ? trimmedReason
+            ? `Your account has been paused. Reason: ${trimmedReason}`
+            : 'Your account has been paused. Contact support to resume access.'
+          : `Your account has been suspended. Reason: ${trimmedReason}`;
+      await this.notificationsService.createNotification({
+        event: 'seller_account_suspended',
+        recipientRole: 'seller',
+        message: sellerMessage,
+      });
+    } else if (status === 'active' && previousStatus !== 'active') {
+      await this.notificationsService.createNotification({
+        event: 'seller_account_reactivated',
+        recipientRole: 'seller',
+        message:
+          'Your account has been reactivated. You can log in and continue using the platform.',
+      });
+    }
 
     return {
       success: true,
@@ -667,6 +737,44 @@ export class SellersService {
         'super_admin',
       ),
     };
+  }
+
+  private async invalidateSellerSessions(
+    seller: Pick<Seller, 'email'> & { _id?: unknown },
+  ) {
+    const userIds = new Set<string>();
+    if (seller._id) {
+      userIds.add(String(seller._id));
+    }
+
+    const email = String(seller.email ?? '')
+      .trim()
+      .toLowerCase();
+    if (email) {
+      const linkedUser = await this.userModel
+        .findOne({ email, role: 'seller' })
+        .select('_id')
+        .lean()
+        .exec();
+      if (linkedUser?._id) {
+        userIds.add(String(linkedUser._id));
+      }
+    }
+
+    await Promise.all(
+      Array.from(userIds).map((userId) =>
+        this.userSecurityModel
+          .updateOne(
+            { userId },
+            {
+              $inc: { tokenVersion: 1 },
+              $set: { activeSessions: [], refreshTokens: [] },
+            },
+            { upsert: true },
+          )
+          .exec(),
+      ),
+    );
   }
 
   async resetCredentials(

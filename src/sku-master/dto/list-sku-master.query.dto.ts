@@ -2,7 +2,6 @@ import { Type } from 'class-transformer';
 import {
   IsIn,
   IsInt,
-  IsNotEmpty,
   IsOptional,
   IsString,
   Max,
@@ -20,9 +19,9 @@ const MARKETPLACE_FILTERS = [
 const STATUS_FILTERS = ['ALL', 'MAPPED', 'UNMAPPED'] as const;
 
 export class ListSkuMasterQueryDto {
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  gstId: string;
+  gstId?: string;
 
   @IsOptional()
   @IsIn(MARKETPLACE_FILTERS)

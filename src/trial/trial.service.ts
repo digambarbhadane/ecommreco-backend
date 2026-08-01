@@ -1,8 +1,10 @@
 import {
   BadRequestException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
+  forwardRef,
 } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import * as bcrypt from 'bcrypt';
@@ -11,18 +13,28 @@ import { EmailService } from '../email/email.service';
 import { EmailType } from '../email/email.types';
 import { NotificationsService } from '../notifications/notifications.service';
 import { Seller, SellerDocument } from '../sellers/schemas/seller.schema';
+import { generatePublicId } from '../common/public-id';
 import {
   SubscriptionPackage,
   SubscriptionPackageDocument,
 } from '../subscription/schemas/subscription-package.schema';
+import { SubscriptionService } from '../subscription/subscription.service';
 import {
   addDays,
   computeTrialPayable,
+  getTrialAllowedReportMonthsForSeller,
+  getTrialCoveredMonthsForPurchase,
+  sellerHadTrialCoverage,
   TRIAL_DATA_RETENTION_DAYS,
   TRIAL_DURATION_DAYS,
   TRIAL_GST_SLOTS,
   TRIAL_PAN_SLOTS,
 } from './trial.constants';
+import {
+  formatPlanDurationLabel,
+  getAccountTypeLabel,
+  resolveSellerAccountKind,
+} from './seller-account-type';
 import {
   AdminTrialActionDto,
   ConfirmTrialPaymentDto,
@@ -41,6 +53,19 @@ import {
 import { Gst, GstDocument } from '../gsts/schemas/gst.schema';
 import { TrialHistoryService } from './trial-history.service';
 import { TrialValidationService } from './trial-validation.service';
+import {
+  SellerSubscription,
+  SellerSubscriptionDocument,
+  type SubscriptionType,
+} from '../payments/schemas/seller-subscription.schema';
+import {
+  resolveSubscriptionCheckoutPricing,
+  type GstCheckoutSelection,
+  type TrialCoverageContext,
+} from './subscription-checkout.pricing';
+import { GstsService } from '../gsts/gsts.service';
+import { MarketplacesService } from '../marketplaces/marketplaces.service';
+import { PaymentsService } from '../payments/payments.service';
 
 @Injectable()
 export class TrialService {
@@ -57,11 +82,20 @@ export class TrialService {
     private readonly packageModel: Model<SubscriptionPackageDocument>,
     @InjectModel(Gst.name)
     private readonly gstModel: Model<GstDocument>,
+    @InjectModel(SellerSubscription.name)
+    private readonly sellerSubscriptionModel: Model<SellerSubscriptionDocument>,
     @InjectConnection() private readonly connection: Connection,
     private readonly validation: TrialValidationService,
     private readonly history: TrialHistoryService,
     private readonly emailService: EmailService,
     private readonly notifications: NotificationsService,
+    @Inject(forwardRef(() => PaymentsService))
+    private readonly paymentsService: PaymentsService,
+    private readonly subscriptionService: SubscriptionService,
+    @Inject(forwardRef(() => GstsService))
+    private readonly gstsService: GstsService,
+    @Inject(forwardRef(() => MarketplacesService))
+    private readonly marketplacesService: MarketplacesService,
   ) {}
 
   getPricing() {
@@ -83,10 +117,176 @@ export class TrialService {
     };
   }
 
+  private inferSubscriptionType(durationDays: number): SubscriptionType {
+    if (durationDays >= 365) return 'yearly';
+    if (durationDays >= 180) return 'half_yearly';
+    if (durationDays >= 90) return 'quarterly';
+    if (durationDays >= 30) return 'monthly';
+    return 'custom';
+  }
+
+  private async resolveTrialCoverageContext(
+    seller: SellerDocument,
+  ): Promise<
+    | (TrialCoverageContext & {
+        trialMarketplaces: Array<{ id: string; name: string }>;
+        trialTradeName?: string;
+      })
+    | null
+  > {
+    if (!sellerHadTrialCoverage(seller)) {
+      return null;
+    }
+
+    const coveredMonths = getTrialCoveredMonthsForPurchase(seller);
+    const trialGstNumber =
+      String(seller.gstNumber ?? '')
+        .trim()
+        .toUpperCase() || null;
+    if (!trialGstNumber) {
+      return {
+        coveredMonths,
+        trialGstNumber: null,
+        trialMarketplacePlatformIds: [],
+        trialMarketplaces: [],
+        trialTradeName: seller.firmName?.trim() || seller.fullName?.trim(),
+      };
+    }
+
+    const sellerId = String(seller._id);
+    const gstDoc = await this.gstModel
+      .findOne({ sellerId, gstNumber: trialGstNumber })
+      .select('_id')
+      .lean()
+      .exec();
+
+    if (!gstDoc?._id) {
+      return {
+        coveredMonths,
+        trialGstNumber,
+        trialMarketplacePlatformIds: [],
+        trialMarketplaces: [],
+        trialTradeName: seller.firmName?.trim() || seller.fullName?.trim(),
+      };
+    }
+
+    const trialGstId = String(gstDoc._id);
+    const marketplaceResult = await this.marketplacesService.listSeller({
+      sellerId,
+    });
+    const trialMarketplaces: Array<{ id: string; name: string }> = [];
+    const seenMarketplaceIds = new Set<string>();
+    for (const link of marketplaceResult.data ?? []) {
+      if (!link || String(link.gstId ?? '') !== trialGstId) {
+        continue;
+      }
+      const platform = link.platformMarketplaceId as
+        | { _id?: string; name?: string }
+        | string
+        | undefined;
+      let id = '';
+      let name = String(link.name ?? 'Marketplace');
+      if (platform && typeof platform === 'object' && platform._id) {
+        id = String(platform._id);
+        name = String(platform.name ?? name);
+      } else {
+        id = String(platform ?? '').trim();
+      }
+      if (!id || seenMarketplaceIds.has(id)) {
+        continue;
+      }
+      seenMarketplaceIds.add(id);
+      trialMarketplaces.push({ id, name });
+    }
+    const trialMarketplaceIds = trialMarketplaces.map((row) => row.id);
+
+    return {
+      coveredMonths,
+      trialGstNumber,
+      trialMarketplacePlatformIds: trialMarketplaceIds,
+      trialMarketplaces,
+      trialTradeName: seller.firmName?.trim() || seller.fullName?.trim(),
+    };
+  }
+
+  private assertSubscriptionMonthsExcludeTrialCoverage(
+    seller: SellerDocument,
+    selectedMonths: string[],
+  ) {
+    const trialCovered = new Set(getTrialCoveredMonthsForPurchase(seller));
+    if (!trialCovered.size) {
+      return;
+    }
+
+    const overlap = Array.from(
+      new Set(
+        (selectedMonths ?? [])
+          .map((month) => String(month).trim())
+          .filter((month) => trialCovered.has(month)),
+      ),
+    ).sort();
+
+    if (!overlap.length) {
+      return;
+    }
+
+    throw new BadRequestException(
+      `These reconciliation months were already included in your trial and cannot be purchased again: ${overlap.join(', ')}.`,
+    );
+  }
+
+  private async ensureSellerSubscriptionRecord(input: {
+    sellerId: string;
+    orderId: string;
+    planId?: Types.ObjectId | string;
+    subscriptionType?: SubscriptionType;
+    startDate: Date;
+    endDate: Date;
+    trial: boolean;
+  }) {
+    const order = await this.paymentsService.getOrderById(input.orderId);
+    if (!order) {
+      return null;
+    }
+
+    const paymentOrderId = (order as { _id?: Types.ObjectId })._id;
+    if (!paymentOrderId) {
+      return null;
+    }
+
+    const existing = await this.sellerSubscriptionModel
+      .findOne({ paymentOrderId })
+      .exec();
+    if (existing) {
+      return existing;
+    }
+
+    const planObjectId =
+      input.planId && Types.ObjectId.isValid(String(input.planId))
+        ? new Types.ObjectId(String(input.planId))
+        : order.subscriptionPlanId;
+
+    return this.sellerSubscriptionModel.create({
+      sellerId: input.sellerId,
+      paymentOrderId,
+      ...(planObjectId ? { planId: planObjectId } : {}),
+      subscriptionType: input.subscriptionType ?? 'monthly',
+      startDate: input.startDate,
+      endDate: input.endDate,
+      renewalDate: input.endDate,
+      status: 'active',
+      trial: input.trial,
+      activatedAt: input.startDate,
+      activatedBy: 'trial_service',
+      metadata: order.metadata,
+    });
+  }
+
   async listActivePackages() {
+    await this.subscriptionService.ensureDefaultPackages();
     return this.packageModel
       .find({ isActive: true })
-      .sort({ durationInDays: 1 })
+      .sort({ planType: 1, durationInDays: 1 })
       .lean()
       .exec();
   }
@@ -114,60 +314,87 @@ export class TrialService {
     const pricing = computeTrialPayable();
     const hashedPassword = await bcrypt.hash(dto.password, 10);
 
-    const seller = await this.sellerModel.create({
-      fullName: dto.ownerName.trim(),
-      firmName: dto.companyName.trim(),
-      contactNumber: mobile,
-      email,
-      gstNumber,
-      panNumber,
-      businessType: dto.businessType?.trim(),
-      state: dto.state?.trim(),
-      city: dto.city?.trim(),
-      password: hashedPassword,
-      username: email,
-      isTrial: true,
-      trialStatus: 'pending_payment',
-      convertedToPaid: false,
-      gstSlots: TRIAL_GST_SLOTS,
-      gstSlotsPurchased: TRIAL_GST_SLOTS,
-      gstSlotsUsed: 0,
-      allocatedPanSlots: TRIAL_PAN_SLOTS,
-      purchasedPanSlots: 0,
-      usedPanSlots: 0,
-      totalPanSlots: TRIAL_PAN_SLOTS,
-      panProfiles: [],
-      onboardingStatus: 'payment_pending',
-      accountStatus: 'active',
-      paymentStatus: 'pending',
-      paymentAmount: pricing.totalPayable,
-      leadSource: 'self_service_trial',
-    });
+    const session = await this.connection.startSession();
+    let seller: SellerDocument;
+    let trial: TrialSubscriptionDocument;
+    try {
+      session.startTransaction();
 
-    const trial = await this.trialModel.create({
-      sellerId: seller._id,
-      panNumber,
-      gstNumber,
-      email,
-      mobile,
-      companyName: dto.companyName.trim(),
-      ownerName: dto.ownerName.trim(),
-      status: 'pending_payment',
-      basePrice: pricing.basePrice,
-      gstPercentage: pricing.gstPercentage,
-      gstAmount: pricing.gstAmount,
-      totalPayable: pricing.totalPayable,
-      paymentStatus: 'pending',
-      paymentLink: this.buildTrialPaymentLink(String(seller._id)),
-      metadata: {
-        businessType: dto.businessType,
-        state: dto.state,
-        city: dto.city,
-      },
-    });
+      const createdSellers = await this.sellerModel.create(
+        [
+          {
+            publicId: generatePublicId('seller', email),
+            fullName: dto.ownerName.trim(),
+            firmName: dto.companyName.trim(),
+            contactNumber: mobile,
+            email,
+            gstNumber,
+            panNumber,
+            businessType: dto.businessType?.trim(),
+            state: dto.state?.trim(),
+            city: dto.city?.trim(),
+            password: hashedPassword,
+            username: email,
+            isTrial: true,
+            trialStatus: 'pending_payment',
+            convertedToPaid: false,
+            gstSlots: TRIAL_GST_SLOTS,
+            gstSlotsPurchased: TRIAL_GST_SLOTS,
+            gstSlotsUsed: 0,
+            allocatedPanSlots: TRIAL_PAN_SLOTS,
+            purchasedPanSlots: 0,
+            usedPanSlots: 0,
+            totalPanSlots: TRIAL_PAN_SLOTS,
+            panProfiles: [],
+            onboardingStatus: 'payment_pending',
+            accountStatus: 'active',
+            paymentStatus: 'pending',
+            paymentAmount: pricing.totalPayable,
+            leadSource: 'self_service_trial',
+          },
+        ],
+        { session },
+      );
+      seller = createdSellers[0];
 
-    seller.trialSubscriptionId = String(trial._id);
-    await seller.save();
+      const createdTrials = await this.trialModel.create(
+        [
+          {
+            sellerId: seller._id,
+            panNumber,
+            gstNumber,
+            email,
+            mobile,
+            companyName: dto.companyName.trim(),
+            ownerName: dto.ownerName.trim(),
+            status: 'pending_payment',
+            basePrice: pricing.basePrice,
+            gstPercentage: pricing.gstPercentage,
+            gstAmount: pricing.gstAmount,
+            totalPayable: pricing.totalPayable,
+            paymentStatus: 'pending',
+            paymentLink: this.buildTrialPaymentLink(String(seller._id)),
+            metadata: {
+              businessType: dto.businessType,
+              state: dto.state,
+              city: dto.city,
+            },
+          },
+        ],
+        { session },
+      );
+      trial = createdTrials[0];
+
+      seller.trialSubscriptionId = String(trial._id);
+      await seller.save({ session });
+
+      await session.commitTransaction();
+    } catch (error) {
+      await session.abortTransaction();
+      throw error;
+    } finally {
+      await session.endSession();
+    }
 
     await this.history.record({
       sellerId: seller._id,
@@ -215,6 +442,9 @@ export class TrialService {
 
   async getPaymentSummary(sellerId: string) {
     const trial = await this.requireTrialBySeller(sellerId);
+    const pending = (trial.metadata as Record<string, unknown>)?.pendingCheckout as
+      | { orderId?: string; paymentSessionId?: string }
+      | undefined;
     return {
       sellerId,
       trialSubscriptionId: String(trial._id),
@@ -226,9 +456,100 @@ export class TrialService {
         gstAmount: trial.gstAmount,
         totalPayable: trial.totalPayable,
       },
-      paymentLink: trial.paymentLink,
+      orderId: pending?.orderId,
+      payment_session_id: pending?.paymentSessionId,
       trialStart: trial.trialStart,
       trialEnd: trial.trialEnd,
+    };
+  }
+
+  private async resolveTrialPlanId() {
+    const trialPlan = await this.packageModel
+      .findOne({ isTrial: true, isActive: true })
+      .exec();
+    if (trialPlan) {
+      return String(trialPlan._id);
+    }
+    const fallback = await this.packageModel
+      .findOne({ isActive: true, durationInDays: { $lte: TRIAL_DURATION_DAYS } })
+      .sort({ durationInDays: 1 })
+      .exec();
+    if (fallback) {
+      return String(fallback._id);
+    }
+    const anyPlan = await this.packageModel
+      .findOne({ isActive: true })
+      .sort({ durationInDays: 1 })
+      .exec();
+    if (!anyPlan) {
+      throw new BadRequestException(
+        'Trial plan is not configured. Please contact support.',
+      );
+    }
+    return String(anyPlan._id);
+  }
+
+  async initTrialPayment(sellerId: string) {
+    const seller = await this.requireSeller(sellerId);
+    const trial = await this.requireTrialBySeller(sellerId);
+
+    if (trial.paymentStatus === 'paid' && trial.status === 'active') {
+      return {
+        success: true,
+        alreadyActive: true,
+        trialStart: trial.trialStart,
+        trialEnd: trial.trialEnd,
+      };
+    }
+
+    if (trial.status !== 'pending_payment') {
+      throw new BadRequestException(
+        `Cannot start payment for trial in status "${trial.status}".`,
+      );
+    }
+
+    const pricing = computeTrialPayable(trial.basePrice);
+    const planId = await this.resolveTrialPlanId();
+    const orderResult = await this.paymentsService.createOrderForSeller(
+      sellerId,
+      {
+        plan_id: planId,
+        idempotency_key: `trial-reg-${sellerId}`,
+        metadata: {
+          checkoutType: 'trial_registration',
+          quote: {
+            totalPayable: pricing.totalPayable,
+            basePrice: pricing.basePrice,
+            gstAmount: pricing.gstAmount,
+            gstPercentage: pricing.gstPercentage,
+          },
+          durationDays: TRIAL_DURATION_DAYS,
+          gstSlots: TRIAL_GST_SLOTS,
+          panSlots: TRIAL_PAN_SLOTS,
+          isTrial: true,
+        },
+      },
+      { id: sellerId, email: seller.email },
+    );
+
+    trial.metadata = {
+      ...(trial.metadata ?? {}),
+      pendingCheckout: {
+        orderId: orderResult.data.order_id,
+        paymentSessionId: orderResult.data.payment_session_id,
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+      },
+    };
+    await trial.save();
+
+    return {
+      success: true,
+      orderId: orderResult.data.order_id,
+      payment_session_id: orderResult.data.payment_session_id,
+      total_amount: orderResult.data.total_amount,
+      pricing,
+      message: 'Complete payment to activate your trial.',
     };
   }
 
@@ -252,13 +573,35 @@ export class TrialService {
       );
     }
 
+    const orderId = dto.orderId?.trim();
+    if (!orderId) {
+      throw new BadRequestException(
+        'Complete payment via Cashfree before activating your trial.',
+      );
+    }
+
+    const verifyResult = await this.paymentsService.verifyPayment(
+      { order_id: orderId },
+      { id: sellerId, email: seller.email },
+    );
+    if (!verifyResult.success) {
+      throw new BadRequestException(
+        verifyResult.message ?? 'Payment not verified yet. Please try again.',
+      );
+    }
+
     const now = new Date();
     const trialEnd = addDays(now, TRIAL_DURATION_DAYS);
+    const paymentId =
+      verifyResult.data?.transaction_id ??
+      dto.paymentId?.trim() ??
+      dto.transactionId?.trim() ??
+      orderId;
 
     trial.paymentStatus = 'paid';
     trial.paidAt = now;
-    trial.paymentId = dto.paymentId ?? `TRIAL-PAY-${Date.now()}`;
-    trial.transactionId = dto.transactionId ?? trial.paymentId;
+    trial.paymentId = paymentId;
+    trial.transactionId = dto.transactionId?.trim() ?? paymentId;
     trial.status = 'active';
     trial.trialStart = now;
     trial.trialEnd = trialEnd;
@@ -279,6 +622,15 @@ export class TrialService {
     seller.subscriptionStartsAt = now;
     seller.subscriptionEndsAt = trialEnd;
     await seller.save();
+
+    await this.ensureSellerSubscriptionRecord({
+      sellerId,
+      orderId,
+      subscriptionType: 'trial',
+      startDate: now,
+      endDate: trialEnd,
+      trial: true,
+    });
 
     await this.ensureTrialGstProvisioned(seller);
 
@@ -326,33 +678,91 @@ export class TrialService {
   async getSellerTrialStatus(sellerId: string) {
     const seller = await this.requireSeller(sellerId);
     const planType = seller.subscriptionPlanType ?? null;
+    const reconciliationMonths = Array.isArray(seller.reconciliationMonths)
+      ? [...seller.reconciliationMonths].sort()
+      : [];
     const planEntitlements = {
       subscriptionPlanType: planType,
-      reconciliationMonths: Array.isArray(seller.reconciliationMonths)
-        ? [...seller.reconciliationMonths].sort()
-        : [],
-      maxGsts: planType === 'single_gst' ? 1 : null,
-      maxMarketplaces: planType === 'single_gst' ? 1 : null,
+      reconciliationMonths,
+      maxGsts:
+        planType === 'single_gst' ||
+        planType === 'single_gst_multi_marketplace'
+          ? 1
+          : null,
+      maxMarketplaces:
+        planType === 'single_gst'
+          ? 1
+          : planType === 'single_gst_multi_marketplace'
+            ? Number(seller.marketplaceSlotsPurchased ?? 0) || null
+            : null,
     };
 
-    if (!seller.isTrial) {
-      return { isTrial: false, access: 'full' as const, ...planEntitlements };
+    const access = this.validation.assertTrialApiAccess(seller);
+    const accountType = resolveSellerAccountKind(seller);
+    const isTrialAccount = accountType === 'trial';
+
+    const allowedImportMonths = isTrialAccount
+      ? getTrialAllowedReportMonthsForSeller(seller)
+      : [];
+    const trialCoveredMonthsForPurchase =
+      getTrialCoveredMonthsForPurchase(seller);
+    const trialCoverage = await this.resolveTrialCoverageContext(seller);
+
+    const subscriptionEndsAt = seller.subscriptionEndsAt
+      ? new Date(seller.subscriptionEndsAt)
+      : seller.trialEnd
+        ? new Date(seller.trialEnd)
+        : null;
+    const subscriptionDaysRemaining = subscriptionEndsAt
+      ? Math.max(
+          0,
+          Math.ceil(
+            (subscriptionEndsAt.getTime() - Date.now()) / (24 * 60 * 60 * 1000),
+          ),
+        )
+      : null;
+
+    const base = {
+      accountType,
+      accountTypeLabel: getAccountTypeLabel(accountType),
+      durationLabel: formatPlanDurationLabel(seller, isTrialAccount),
+      access,
+      requiresPayment:
+        access === 'expired' ||
+        access === 'pending_payment' ||
+        access === 'suspended',
+      subscriptionStartsAt: seller.subscriptionStartsAt ?? seller.trialStart,
+      subscriptionEndsAt: seller.subscriptionEndsAt ?? seller.trialEnd,
+      subscriptionDaysRemaining,
+      allowedImportMonths,
+      trialCoveredMonthsForPurchase,
+      trialGstNumber: trialCoverage?.trialGstNumber ?? null,
+      trialMarketplacePlatformIds:
+        trialCoverage?.trialMarketplacePlatformIds ?? [],
+      trialMarketplaces: trialCoverage?.trialMarketplaces ?? [],
+      trialTradeName: trialCoverage?.trialTradeName ?? null,
+      isTrial: isTrialAccount,
+      ...planEntitlements,
+    };
+
+    if (!isTrialAccount) {
+      return base;
     }
+
     if (seller.trialStatus === 'active') {
       await this.ensureTrialGstProvisioned(seller);
     }
-    const access = this.validation.assertTrialApiAccess(seller);
+
     const trial = await this.trialModel
       .findOne({ sellerId: new Types.ObjectId(sellerId) })
       .lean()
       .exec();
+
     return {
-      isTrial: true,
       trialStatus: seller.trialStatus,
       trialStart: seller.trialStart,
       trialEnd: seller.trialEnd,
       convertedToPaid: Boolean(seller.convertedToPaid),
-      access,
       pricing: trial
         ? {
             basePrice: trial.basePrice,
@@ -369,18 +779,26 @@ export class TrialService {
             ),
           )
         : 0,
-      ...planEntitlements,
+      ...base,
     };
   }
 
   calculateSubscriptionQuote(input: {
     basePrice: number;
     durationInDays: number;
-    planType?: 'single_gst' | 'multi_gst_pan';
-    billingMode: 'single_gst' | 'multi_gst_pan';
+    planType?:
+      | 'single_gst'
+      | 'multi_gst_pan'
+      | 'single_gst_multi_marketplace';
+    billingMode:
+      | 'single_gst'
+      | 'multi_gst_pan'
+      | 'single_gst_multi_marketplace';
     selectedMonths: string[];
     gstNumbers?: string[];
     panNumber?: string;
+    gstSlots?: number;
+    panSlots?: number;
     discountType?: 'percentage' | 'flat' | 'none';
     discountValue?: number;
   }) {
@@ -401,9 +819,20 @@ export class TrialService {
     const billingMode = input.billingMode;
     const planType = input.planType ?? 'multi_gst_pan';
 
-    if (billingMode === 'single_gst' && planType !== 'single_gst') {
+    if (
+      billingMode === 'single_gst' &&
+      planType !== 'single_gst'
+    ) {
       throw new BadRequestException(
         'Selected package is not a Single GST plan.',
+      );
+    }
+    if (
+      billingMode === 'single_gst_multi_marketplace' &&
+      planType !== 'single_gst_multi_marketplace'
+    ) {
+      throw new BadRequestException(
+        'Selected package is not a Single GST + Multi Marketplace plan.',
       );
     }
     if (billingMode === 'multi_gst_pan' && planType !== 'multi_gst_pan') {
@@ -418,10 +847,12 @@ export class TrialService {
     let resolvedPan: string | undefined;
     let resolvedGsts: string[] | undefined;
 
-    if (billingMode === 'single_gst') {
+    if (
+      billingMode === 'single_gst' ||
+      billingMode === 'single_gst_multi_marketplace'
+    ) {
       gstSlots = 1;
       panSlots = 1;
-      // Single GST + single portal: ₹999/month (package) × months + 18% GST
       subtotal = Number(input.basePrice) * monthCount;
     } else {
       const gstNumbers = Array.from(
@@ -431,30 +862,45 @@ export class TrialService {
             .filter(Boolean),
         ),
       );
-      if (!gstNumbers.length) {
+      const requestedSlots = Math.max(
+        1,
+        Math.min(
+          50,
+          Number(input.gstSlots ?? input.panSlots ?? 0) || 1,
+        ),
+      );
+
+      if (requestedSlots === 1 && !gstNumbers.length) {
         throw new BadRequestException(
-          'Add at least one GST number for the Multi GST / PAN plan.',
+          'Add at least one GST number when purchasing a single PAN slot.',
         );
       }
-      const pan =
-        String(input.panNumber ?? '').trim().toUpperCase() ||
-        (gstNumbers[0].length >= 12 ? gstNumbers[0].slice(2, 12) : '');
-      if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(pan)) {
-        throw new BadRequestException('A valid PAN is required for this plan.');
-      }
-      for (const gst of gstNumbers) {
-        const embedded = gst.length >= 12 ? gst.slice(2, 12) : '';
-        if (embedded !== pan) {
+
+      let pan: string | undefined;
+      if (gstNumbers.length) {
+        pan =
+          String(input.panNumber ?? '').trim().toUpperCase() ||
+          (gstNumbers[0].length >= 12 ? gstNumbers[0].slice(2, 12) : '');
+        if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(pan)) {
           throw new BadRequestException(
-            `GST ${gst} does not belong to PAN ${pan}. Only GSTs under the same PAN are allowed.`,
+            'A valid PAN is required when GST numbers are provided.',
           );
         }
+        for (const gst of gstNumbers) {
+          const embedded = gst.length >= 12 ? gst.slice(2, 12) : '';
+          if (embedded !== pan) {
+            throw new BadRequestException(
+              `GST ${gst} does not belong to PAN ${pan}. Only GSTs under the same PAN can be entered together.`,
+            );
+          }
+        }
+        resolvedPan = pan;
+        resolvedGsts = gstNumbers;
       }
-      gstSlots = Math.max(gstNumbers.length, 1);
-      panSlots = 1;
-      subtotal = Number(input.basePrice) * monthCount;
-      resolvedPan = pan;
-      resolvedGsts = gstNumbers;
+
+      gstSlots = requestedSlots;
+      panSlots = requestedSlots;
+      subtotal = Number(input.basePrice) * requestedSlots * monthCount;
     }
 
     const discountType = input.discountType ?? 'none';
@@ -476,7 +922,12 @@ export class TrialService {
       monthCount,
       gstSlots,
       panSlots,
-      marketplaceSlots: billingMode === 'single_gst' ? 1 : null,
+      marketplaceSlots:
+        billingMode === 'single_gst'
+          ? 1
+          : billingMode === 'single_gst_multi_marketplace'
+            ? null
+            : null,
       durationDays: monthCount * 30,
       basePricePerMonth: Number(input.basePrice),
       discountType,
@@ -492,91 +943,202 @@ export class TrialService {
   }
 
   async quotePurchase(sellerId: string, dto: PurchaseTrialSubscriptionDto) {
-    await this.requireSeller(sellerId);
+    const seller = await this.requireSeller(sellerId);
 
-    // Single GST + one portal is a fixed built-in plan (₹999/month + 18% GST).
-    if (dto.billingMode === 'single_gst') {
-      let basePrice = 999;
-      let durationInDays = 30;
-      let packageName = 'Single GST';
-      let packageId = 'single_gst_builtin';
-
-      if (dto.packageId?.trim()) {
-        const pkg = await this.packageModel.findById(dto.packageId).lean().exec();
-        if (pkg?.isActive) {
-          const planType = (pkg as { planType?: string }).planType;
-          if (planType && planType !== 'single_gst') {
-            throw new BadRequestException(
-              'Selected package is not a Single GST plan.',
-            );
-          }
-          basePrice = Number(pkg.finalPriceAfterDiscount ?? pkg.basePrice ?? 999);
-          durationInDays = Number(pkg.durationInDays ?? 30);
-          packageName = pkg.name || packageName;
-          packageId = String(pkg._id);
-        }
-      } else {
-        const builtin = await this.packageModel
-          .findOne({ planType: 'single_gst', isActive: true })
-          .sort({ finalPriceAfterDiscount: 1 })
-          .lean()
-          .exec();
-        if (builtin) {
-          basePrice = Number(
-            builtin.finalPriceAfterDiscount ?? builtin.basePrice ?? 999,
-          );
-          durationInDays = Number(builtin.durationInDays ?? 30);
-          packageName = builtin.name || packageName;
-          packageId = String(builtin._id);
-        }
-      }
-
-      return {
-        package: {
-          _id: packageId,
-          name: packageName,
-          basePrice,
-          finalPriceAfterDiscount: basePrice,
-          durationInDays,
-          planType: 'single_gst' as const,
-          isActive: true,
-        },
-        quote: this.calculateSubscriptionQuote({
-          basePrice,
-          durationInDays,
-          planType: 'single_gst',
-          billingMode: 'single_gst',
-          selectedMonths: dto.selectedMonths ?? [],
-          discountType: 'none',
-          discountValue: 0,
-        }),
-      };
+    if (dto.gstSelections?.length) {
+      return this.quoteFromGstSelections(seller, dto);
     }
 
-    if (!dto.packageId?.trim()) {
+    this.assertSubscriptionMonthsExcludeTrialCoverage(
+      seller,
+      dto.selectedMonths ?? [],
+    );
+
+    const billingMode = dto.billingMode;
+    if (!billingMode) {
       throw new BadRequestException(
-        'Select a plan package for Multi GST / PAN billing.',
+        'Select a subscription plan or add verified GST profiles to continue.',
       );
     }
-    const pkg = await this.packageModel.findById(dto.packageId).lean().exec();
-    if (!pkg || !pkg.isActive) {
-      throw new NotFoundException('Subscription package not found');
-    }
+
+    const pkg = await this.subscriptionService.resolveActivePackage({
+      planType: billingMode,
+      packageId: dto.packageId,
+    });
+
+    const basePrice = Number(pkg.finalPriceAfterDiscount ?? pkg.basePrice ?? 0);
+    const durationInDays = Number(pkg.durationInDays ?? 30);
+    const planType = (pkg.planType ?? billingMode) as
+      | 'single_gst'
+      | 'multi_gst_pan'
+      | 'single_gst_multi_marketplace';
+
     return {
-      package: pkg,
+      package: pkg.toObject(),
       quote: this.calculateSubscriptionQuote({
-        basePrice: pkg.finalPriceAfterDiscount ?? pkg.basePrice,
-        durationInDays: pkg.durationInDays,
-        planType: (pkg as { planType?: 'single_gst' | 'multi_gst_pan' })
-          .planType,
-        billingMode: dto.billingMode,
+        basePrice,
+        durationInDays,
+        planType,
+        billingMode,
         selectedMonths: dto.selectedMonths ?? [],
         gstNumbers: dto.gstNumbers,
         panNumber: dto.panNumber,
+        gstSlots: dto.gstSlots,
+        panSlots: dto.panSlots,
         discountType: 'none',
         discountValue: 0,
       }),
     };
+  }
+
+  private async quoteFromGstSelections(
+    seller: SellerDocument,
+    dto: PurchaseTrialSubscriptionDto,
+  ) {
+    const trialCoverage = await this.resolveTrialCoverageContext(seller);
+
+    let pricing;
+    try {
+      pricing = resolveSubscriptionCheckoutPricing({
+        selections: (dto.gstSelections ?? []) as GstCheckoutSelection[],
+        selectedMonths: dto.selectedMonths,
+        trialCoverage,
+      });
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error ? error.message : 'Invalid GST checkout selection.',
+      );
+    }
+
+    if (pricing.subtotalBeforeDiscount <= 0) {
+      throw new BadRequestException(
+        'Selected months are already included in your trial for the original GST and marketplace. Add a new GST or marketplace, or choose months outside your trial period.',
+      );
+    }
+
+    const pkg = await this.subscriptionService.resolveActivePackage({
+      planType: pricing.planType,
+      packageId: dto.packageId,
+    });
+    const subtotal = Number(pricing.subtotalBeforeDiscount.toFixed(2));
+    const gstAmount = Number(((subtotal * 18) / 100).toFixed(2));
+    const totalPayable = Number((subtotal + gstAmount).toFixed(2));
+    const months = pricing.selectedMonths;
+
+    return {
+      package: pkg.toObject(),
+      quote: {
+        billingMode: pricing.billingMode,
+        planType: pricing.planType,
+        selectedMonths: months,
+        monthCount: months.length,
+        billableMonthCount: pricing.billableMonthCount,
+        gstSlots: pricing.gstSlots,
+        panSlots: pricing.panSlots,
+        marketplaceSlots: pricing.marketplaceSlots,
+        gstCount: pricing.gstCount,
+        totalMonthlyRate: pricing.totalMonthlyRate,
+        panBreakdown: pricing.panBreakdown,
+        durationDays: Math.max(30, pricing.billableMonthCount * 30),
+        basePricePerMonth: pricing.totalMonthlyRate,
+        discountType: 'none' as const,
+        discountValue: 0,
+        discountAmount: 0,
+        subtotal,
+        gstPercentage: 18,
+        gstAmount,
+        totalPayable,
+        gstNumbers: pricing.gstNumbers,
+        panNumber: pricing.panNumbers[0],
+        gstSelections: pricing.selections,
+        planLabel: pricing.planLabel,
+        trialCoverageApplied: pricing.trialCoverageApplied,
+      },
+    };
+  }
+
+  private async provisionCheckoutSelections(
+    sellerId: string,
+    selections: GstCheckoutSelection[],
+  ) {
+    if (!selections.length) {
+      return;
+    }
+
+    const gstIdByNumber = new Map<string, string>();
+
+    for (const item of selections) {
+      const gstNumber = String(item.gstNumber ?? '')
+        .trim()
+        .toUpperCase();
+      if (!gstNumber) {
+        continue;
+      }
+
+      const existing = await this.gstModel
+        .findOne({ gstNumber })
+        .select('_id sellerId')
+        .lean()
+        .exec();
+      if (existing) {
+        if (String(existing.sellerId ?? '') === sellerId) {
+          gstIdByNumber.set(gstNumber, String(existing._id));
+        }
+        continue;
+      }
+
+      try {
+        const created = await this.gstsService.create(
+          {
+            sellerId,
+            verificationId: item.verificationId,
+            gstNumber,
+          },
+          { actorRole: 'super_admin' },
+        );
+        const gstId = String((created as { data?: { _id?: unknown } }).data?._id ?? '');
+        if (gstId) {
+          gstIdByNumber.set(gstNumber, gstId);
+        }
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : String(error ?? 'unknown');
+        this.logger.warn(
+          `Checkout GST provision skipped for ${gstNumber}: ${message}`,
+        );
+      }
+    }
+
+    for (const item of selections) {
+      const gstNumber = String(item.gstNumber ?? '')
+        .trim()
+        .toUpperCase();
+      const gstId = gstIdByNumber.get(gstNumber);
+      if (!gstId) {
+        continue;
+      }
+
+      for (const platformId of item.marketplacePlatformIds ?? []) {
+        try {
+          await this.marketplacesService.create({
+            sellerId,
+            gstId,
+            platformMarketplaceId: platformId,
+          });
+        } catch (error) {
+          const payload = (error as { response?: { errorCode?: string } })
+            ?.response;
+          if (payload?.errorCode === 'DUPLICATE_MARKETPLACE') {
+            continue;
+          }
+          const message =
+            error instanceof Error ? error.message : String(error ?? 'unknown');
+          this.logger.warn(
+            `Checkout marketplace link skipped for ${gstNumber}: ${message}`,
+          );
+        }
+      }
+    }
   }
 
   async initPurchaseSubscription(
@@ -584,52 +1146,85 @@ export class TrialService {
     dto: PurchaseTrialSubscriptionDto,
   ) {
     const seller = await this.requireSeller(sellerId);
-    if (!seller.isTrial) {
+    const access = this.validation.assertTrialApiAccess(seller);
+    if (access === 'suspended') {
       throw new BadRequestException(
-        'Only trial sellers can use this upgrade path.',
+        'Your account is suspended. Contact support to purchase a subscription.',
       );
     }
-    if (seller.trialStatus === 'converted' || seller.convertedToPaid) {
-      throw new BadRequestException('Subscription is already active.');
-    }
-    const trial = await this.requireTrialBySeller(sellerId);
+
     const quoteResult = await this.quotePurchase(sellerId, dto);
     const quote = quoteResult.quote;
     const pkg = quoteResult.package;
-    const orderId = `SUB-ORD-${Date.now()}`;
-    const paymentLink = this.buildSubscriptionPaymentLink(
-      sellerId,
-      orderId,
-      quote.totalPayable,
-    );
+    const planId = String((pkg as { _id?: Types.ObjectId | string })._id ?? '');
+    if (!Types.ObjectId.isValid(planId)) {
+      throw new BadRequestException(
+        'No active subscription plan configured. Please contact support.',
+      );
+    }
 
-    trial.metadata = {
-      ...(trial.metadata ?? {}),
-      pendingCheckout: {
-        orderId,
-        status: 'pending',
-        createdAt: new Date().toISOString(),
-        paymentLink,
-        purchaseDto: {
-          packageId: dto.packageId,
-          billingMode: dto.billingMode,
-          selectedMonths: dto.selectedMonths,
-          gstNumbers: dto.gstNumbers,
-          panNumber: dto.panNumber,
-        },
-        quote,
-        package: {
-          _id: String((pkg as { _id?: string })._id ?? ''),
-          name: (pkg as { name?: string }).name ?? 'Subscription',
+    const isRenewal =
+      seller.convertedToPaid ||
+      seller.trialStatus === 'converted' ||
+      (!seller.isTrial && seller.paymentStatus === 'paid');
+
+    const orderResult = await this.paymentsService.createOrderForSeller(
+      sellerId,
+      {
+        plan_id: planId,
+        metadata: {
+          checkoutType: isRenewal ? 'subscription_renewal' : 'trial_upgrade',
+          quote,
+          purchaseDto: dto,
+          durationDays: quote.durationDays,
+          gstSlots: quote.gstSlots,
+          panSlots: quote.panSlots,
+          selectedMonths: quote.selectedMonths,
+          billingMode: quote.billingMode,
+          panNumber: quote.panNumber,
         },
       },
-    };
-    await trial.save();
+      { id: sellerId, email: seller.email },
+    );
+    const orderId = orderResult.data.order_id;
+    const paymentSessionId = orderResult.data.payment_session_id;
+
+    const trial = await this.trialModel
+      .findOne({ sellerId: new Types.ObjectId(sellerId) })
+      .exec();
+    if (trial) {
+      trial.metadata = {
+        ...(trial.metadata ?? {}),
+        pendingCheckout: {
+          orderId,
+          paymentSessionId,
+          status: 'pending',
+          createdAt: new Date().toISOString(),
+          purchaseDto: {
+            packageId: dto.packageId,
+            billingMode: dto.billingMode,
+            selectedMonths: dto.selectedMonths,
+            gstNumbers: dto.gstNumbers,
+            panNumber: dto.panNumber,
+            gstSlots: dto.gstSlots,
+            panSlots: dto.panSlots,
+            gstSelections: dto.gstSelections,
+          },
+          quote,
+          package: {
+            _id: String((pkg as { _id?: Types.ObjectId | string })._id ?? ''),
+            name: (pkg as { name?: string }).name ?? 'Subscription',
+          },
+        },
+      };
+      await trial.save();
+    }
 
     return {
       success: true,
       orderId,
-      paymentLink,
+      payment_session_id: paymentSessionId,
+      paymentLink: '',
       quote,
       package: pkg,
       message: 'Checkout created. Complete payment to activate your subscription.',
@@ -645,16 +1240,24 @@ export class TrialService {
     },
   ) {
     const seller = await this.requireSeller(sellerId);
-    if (!seller.isTrial) {
-      throw new BadRequestException(
-        'Only trial sellers can use this upgrade path.',
-      );
-    }
-    if (seller.trialStatus === 'converted' || seller.convertedToPaid) {
-      throw new BadRequestException('Subscription is already active.');
-    }
-    const trial = await this.requireTrialBySeller(sellerId);
-    const pending = (trial.metadata as any)?.pendingCheckout;
+    const trial = await this.trialModel
+      .findOne({ sellerId: new Types.ObjectId(sellerId) })
+      .exec();
+
+    const order = await this.paymentsService.getOrderById(confirm.orderId);
+    const orderMeta = (order?.metadata ?? {}) as Record<string, unknown>;
+    const pendingFromTrial = (trial?.metadata as any)?.pendingCheckout;
+    const pendingFromOrder =
+      orderMeta.purchaseDto && orderMeta.quote
+        ? {
+            purchaseDto: orderMeta.purchaseDto,
+            quote: orderMeta.quote,
+            status: 'pending',
+            orderId: confirm.orderId,
+          }
+        : null;
+    const pending = pendingFromTrial ?? pendingFromOrder;
+
     if (
       !pending ||
       pending.status !== 'pending' ||
@@ -665,14 +1268,47 @@ export class TrialService {
       );
     }
 
+    const verifyResult = await this.paymentsService.verifyPayment(
+      { order_id: confirm.orderId },
+      { id: sellerId, email: seller.email },
+    );
+    if (!verifyResult.success) {
+      throw new BadRequestException(
+        verifyResult.message ?? 'Payment not verified yet.',
+      );
+    }
+
     const dto = pending.purchaseDto as PurchaseTrialSubscriptionDto;
     const quoteResult = await this.quotePurchase(sellerId, dto);
     const quote = quoteResult.quote;
     const pkg = quoteResult.package;
     const paymentId =
-      confirm.paymentId?.trim() ||
-      confirm.transactionId?.trim() ||
+      verifyResult.data?.transaction_id ??
+      confirm.paymentId?.trim() ??
+      confirm.transactionId?.trim() ??
       `SUB-PAY-${confirm.orderId}`;
+
+    const isRenewal =
+      seller.convertedToPaid ||
+      seller.trialStatus === 'converted' ||
+      (!seller.isTrial && seller.paymentStatus === 'paid');
+
+    if (isRenewal) {
+      return this.applyPaidRenewal({
+        seller,
+        trial,
+        quote,
+        pkg,
+        paymentId,
+        orderId: confirm.orderId,
+      });
+    }
+
+    if (!trial) {
+      throw new BadRequestException(
+        'Trial record not found. Contact support to complete activation.',
+      );
+    }
 
     return this.applyPaidConversion({
       seller,
@@ -719,12 +1355,28 @@ export class TrialService {
     seller.gstSlotsPurchased = quote.gstSlots;
     seller.allocatedPanSlots = quote.panSlots;
     seller.totalPanSlots = quote.panSlots;
-    seller.subscriptionPlanType = quote.billingMode;
+    seller.marketplaceSlotsPurchased = Number(quote.marketplaceSlots ?? 0);
+    seller.subscriptionPlanType = quote.planType ?? quote.billingMode;
     seller.reconciliationMonths = quote.selectedMonths;
     if (quote.billingMode === 'multi_gst_pan' && quote.panNumber) {
-      seller.lockedPanNumber = quote.panNumber;
-      seller.panNumber = quote.panNumber;
-    } else if (seller.panNumber) {
+      if (Number(quote.panSlots ?? 1) <= 1) {
+        seller.lockedPanNumber = quote.panNumber;
+        seller.panNumber = quote.panNumber;
+      } else {
+        seller.lockedPanNumber = undefined;
+        if (!seller.panNumber) {
+          seller.panNumber = quote.panNumber;
+        }
+      }
+    } else if (quote.billingMode === 'single_gst_multi_marketplace') {
+      seller.lockedPanNumber = undefined;
+      if (quote.panNumber && !seller.panNumber) {
+        seller.panNumber = quote.panNumber;
+      }
+    } else if (
+      quote.billingMode === 'single_gst' &&
+      seller.panNumber
+    ) {
       seller.lockedPanNumber = String(seller.panNumber).toUpperCase();
     }
     seller.durationYears = quote.durationDays / 365;
@@ -742,6 +1394,22 @@ export class TrialService {
     await seller.save();
 
     const sellerId = String(seller._id);
+    if (Array.isArray(quote.gstSelections) && quote.gstSelections.length) {
+      await this.provisionCheckoutSelections(
+        sellerId,
+        quote.gstSelections as GstCheckoutSelection[],
+      );
+    }
+    await this.ensureSellerSubscriptionRecord({
+      sellerId,
+      orderId,
+      planId: (pkg as { _id?: Types.ObjectId })._id,
+      subscriptionType: this.inferSubscriptionType(quote.durationDays),
+      startDate: now,
+      endDate: endsAt,
+      trial: false,
+    });
+
     trial.status = 'converted';
     trial.convertedToPaid = true;
     trial.convertedAt = now;
@@ -799,6 +1467,139 @@ export class TrialService {
       subscriptionEndsAt: endsAt,
       message:
         'Payment confirmed. Your trial account is now a permanent seller. All data is preserved.',
+    };
+  }
+
+  private async applyPaidRenewal(input: {
+    seller: any;
+    trial: any;
+    quote: any;
+    pkg: any;
+    paymentId: string;
+    orderId: string;
+  }) {
+    const { seller, trial, quote, pkg, paymentId, orderId } = input;
+    const now = new Date();
+    const packageName =
+      (pkg as { name?: string }).name ??
+      (quote.billingMode === 'single_gst' ? 'Single GST' : 'Subscription');
+
+    const existingMonths = Array.isArray(seller.reconciliationMonths)
+      ? seller.reconciliationMonths.map((m: string) => String(m).trim())
+      : [];
+    const mergedMonths = Array.from(
+      new Set([...existingMonths, ...(quote.selectedMonths ?? [])]),
+    ).sort();
+
+    const currentEnd = seller.subscriptionEndsAt
+      ? new Date(seller.subscriptionEndsAt)
+      : now;
+    const renewalBase =
+      !Number.isNaN(currentEnd.getTime()) && currentEnd.getTime() > now.getTime()
+        ? currentEnd
+        : now;
+    const endsAt = addDays(renewalBase, quote.durationDays);
+
+    seller.reconciliationMonths = mergedMonths;
+    seller.gstSlots = Math.max(Number(seller.gstSlots ?? 0), quote.gstSlots);
+    seller.gstSlotsPurchased = Math.max(
+      Number(seller.gstSlotsPurchased ?? 0),
+      quote.gstSlots,
+    );
+    seller.allocatedPanSlots = Math.max(
+      Number(seller.allocatedPanSlots ?? 0),
+      quote.panSlots,
+    );
+    seller.totalPanSlots = Math.max(
+      Number(seller.totalPanSlots ?? 0),
+      quote.panSlots,
+    );
+    seller.marketplaceSlotsPurchased = Math.max(
+      Number(seller.marketplaceSlotsPurchased ?? 0),
+      Number(quote.marketplaceSlots ?? 0),
+    );
+    seller.subscriptionPlanType =
+      quote.planType ?? quote.billingMode ?? seller.subscriptionPlanType;
+    if (Number(quote.panSlots ?? 1) > 1) {
+      seller.lockedPanNumber = undefined;
+    }
+    seller.amount = quote.totalPayable;
+    seller.paymentStatus = 'paid';
+    seller.paymentAmount = quote.totalPayable;
+    seller.paymentId = paymentId;
+    seller.paymentCompletedAt = now;
+    seller.paymentVerifiedAt = now;
+    seller.subscriptionStartsAt = seller.subscriptionStartsAt ?? now;
+    seller.subscriptionEndsAt = endsAt;
+    seller.onboardingStatus = 'active';
+    seller.accountStatus = 'active';
+    seller.trialStatus = seller.isTrial ? 'converted' : seller.trialStatus;
+    seller.convertedToPaid = true;
+    await seller.save();
+
+    const sellerId = String(seller._id);
+    if (Array.isArray(quote.gstSelections) && quote.gstSelections.length) {
+      await this.provisionCheckoutSelections(
+        sellerId,
+        quote.gstSelections as GstCheckoutSelection[],
+      );
+    }
+    await this.ensureSellerSubscriptionRecord({
+      sellerId,
+      orderId,
+      planId: (pkg as { _id?: Types.ObjectId })._id,
+      subscriptionType: this.inferSubscriptionType(quote.durationDays),
+      startDate: seller.subscriptionStartsAt ?? now,
+      endDate: endsAt,
+      trial: false,
+    });
+
+    if (trial) {
+      trial.metadata = {
+        ...(trial.metadata ?? {}),
+        pendingCheckout: {
+          ...((trial.metadata as any)?.pendingCheckout ?? {}),
+          status: 'paid',
+          paidAt: now.toISOString(),
+          paymentId,
+          orderId,
+        },
+      };
+      await trial.save();
+    }
+
+    await this.history.record({
+      sellerId,
+      trialSubscriptionId: trial?._id,
+      event: 'subscription_renewed',
+      message: `Subscription renewed for ${quote.monthCount} month(s): ${packageName}`,
+      payload: { quote, paymentId, orderId, mergedMonths },
+    });
+
+    void this.emailService
+      .sendEmail({
+        to: seller.email,
+        type: EmailType.SUBSCRIPTION,
+        subject: 'Subscription Renewed - EcommReco',
+        payload: {
+          name: seller.fullName,
+          plan: packageName,
+          amount: quote.totalPayable,
+          validUntil: endsAt.toISOString().slice(0, 10),
+        },
+      })
+      .catch(() => undefined);
+
+    return {
+      success: true,
+      status: 'renewed',
+      paymentId,
+      orderId,
+      quote,
+      subscriptionStartsAt: seller.subscriptionStartsAt,
+      subscriptionEndsAt: endsAt,
+      reconciliationMonths: mergedMonths,
+      message: 'Payment confirmed. Your subscription has been renewed.',
     };
   }
 
@@ -999,9 +1800,17 @@ export class TrialService {
 
     trial.status = 'suspended';
     await trial.save();
-    seller.trialStatus = 'suspended';
-    seller.accountStatus = 'suspended';
-    await seller.save();
+    await this.sellerModel.updateOne(
+      { _id: seller._id },
+      {
+        $set: {
+          trialStatus: 'suspended',
+          accountStatus: 'suspended',
+          accountStatusReason: String(dto.reason ?? '').trim(),
+          accountStatusUpdatedAt: new Date(),
+        },
+      },
+    );
 
     await this.history.record({
       sellerId: seller._id,

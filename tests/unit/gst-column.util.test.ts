@@ -14,6 +14,22 @@ import {
 import { ParsedSheetRow } from '../../src/report-import/services/mapping.service';
 
 describe('gst-column.util', () => {
+  it('matches Amazon B2B buyer GSTIN and name header variants', () => {
+    expect(
+      headerMatchesExcelColumn('Customer Bill to GSTIN', 'Customer Bill to GSTIN'),
+    ).toBe(true);
+    expect(
+      headerMatchesExcelColumn('Customer Bill To GSTIN', 'Customer Bill To GSTIN'),
+    ).toBe(true);
+    expect(
+      headerMatchesExcelColumn('Customer Bill To Gstid', 'Customer Bill To Gstid'),
+    ).toBe(true);
+    expect(headerMatchesExcelColumn('Buyer Name', 'Buyer Name')).toBe(true);
+    expect(headerMatchesExcelColumn('Bill To Customer Name', 'Bill To Customer Name')).toBe(
+      true,
+    );
+  });
+
   it('normalizes GSTIN values', () => {
     expect(parseGstinFromCell(' 07aaxfb7609k1zs ')).toBe('07AAXFB7609K1ZS');
     expect(parseGstinFromCell('07 AAX FB 7609 K1ZS')).toBe('07AAXFB7609K1ZS');

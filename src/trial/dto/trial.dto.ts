@@ -4,12 +4,18 @@ import {
   IsBoolean,
   IsEmail,
   IsIn,
+  IsInt,
   IsOptional,
   IsString,
   Matches,
+  Max,
   MaxLength,
+  Min,
   MinLength,
+  ValidateIf,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 
 export class RegisterTrialDto {
   @IsString()
@@ -72,6 +78,9 @@ export class RegisterTrialDto {
 }
 
 export class ConfirmTrialPaymentDto {
+  @IsString()
+  orderId!: string;
+
   @IsOptional()
   @IsString()
   paymentId?: string;
@@ -81,21 +90,40 @@ export class ConfirmTrialPaymentDto {
   transactionId?: string;
 }
 
+export class GstCheckoutSelectionDto {
+  @IsString()
+  gstNumber!: string;
+
+  @IsString()
+  verificationId!: string;
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @IsString({ each: true })
+  marketplacePlatformIds!: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  selectedMonths?: string[];
+}
+
 export class PurchaseTrialSubscriptionDto {
   /** Optional for single_gst (built-in ₹999 plan). Required for multi_gst_pan. */
   @IsOptional()
   @IsString()
   packageId?: string;
 
-  /** single_gst = one GST + one portal; multi_gst_pan = multiple GSTs under one PAN */
-  @IsIn(['single_gst', 'multi_gst_pan'])
-  billingMode!: 'single_gst' | 'multi_gst_pan';
+  /** Legacy checkout mode. Optional when gstSelections is provided. */
+  @ValidateIf((dto) => !dto.gstSelections?.length)
+  @IsIn(['single_gst', 'multi_gst_pan', 'single_gst_multi_marketplace'])
+  billingMode?: 'single_gst' | 'multi_gst_pan' | 'single_gst_multi_marketplace';
 
-  /** YYYY-MM months for reconciliation / billing period */
+  /** YYYY-MM months — optional when each marketplace has selectedMonths in gstSelections */
+  @IsOptional()
   @IsArray()
-  @ArrayMinSize(1)
   @IsString({ each: true })
-  selectedMonths!: string[];
+  selectedMonths?: string[];
 
   @IsOptional()
   @IsArray()
@@ -108,9 +136,15 @@ export class PurchaseTrialSubscriptionDto {
   panNumber?: string;
 
   @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(50)
   gstSlots?: number;
 
   @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(50)
   panSlots?: number;
 
   @IsOptional()
@@ -119,6 +153,13 @@ export class PurchaseTrialSubscriptionDto {
   @IsOptional()
   @IsString()
   customDurationDays?: string;
+
+  /** Verified GST + marketplace mapping for the redesigned checkout wizard. */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => GstCheckoutSelectionDto)
+  gstSelections?: GstCheckoutSelectionDto[];
 }
 
 export class ConfirmSubscriptionPurchaseDto {

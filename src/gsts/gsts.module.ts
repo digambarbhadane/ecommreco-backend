@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { HttpModule } from '@nestjs/axios';
 import { MongooseModule } from '@nestjs/mongoose';
 import { GstsController } from './gsts.controller';
@@ -38,7 +38,7 @@ import { TrialModule } from '../trial/trial.module';
       maxRedirects: 0,
     }),
     NotificationsModule,
-    TrialModule,
+    forwardRef(() => TrialModule),
     MongooseModule.forFeature([
       { name: Gst.name, schema: GstSchema },
       { name: GstinVerification.name, schema: GstinVerificationSchema },

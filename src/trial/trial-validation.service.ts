@@ -12,8 +12,9 @@ import {
 } from './schemas/trial-subscription.schema';
 import {
   extractPanFromGstin,
-  getTrialAllowedReportMonths,
+  getTrialAllowedReportMonthsForSeller,
 } from './trial.constants';
+import { isTrialSellerAccount } from './seller-account-type';
 
 @Injectable()
 export class TrialValidationService {
@@ -170,21 +171,55 @@ export class TrialValidationService {
       return;
     }
 
-    if (!seller.isTrial) return;
+    if (!isTrialSellerAccount(seller) && !seller.isTrial) return;
 
     if (seller.trialStatus !== 'active') {
       throw new BadRequestException(
         'Trial is not active. Please purchase a subscription to continue imports.',
       );
     }
-    const reference = new Date(
-      seller.trialStart ?? seller.createdAt ?? Date.now(),
-    );
-    const allowed = getTrialAllowedReportMonths(reference);
+    const allowed = getTrialAllowedReportMonthsForSeller(seller);
     if (!allowed.includes(month)) {
       throw new BadRequestException(
-        'You can upload reports only for the last 3 months during Trial.',
+        `Trial uploads are limited to the 3 months before your registration month (${allowed.join(', ')}).`,
       );
+    }
+  }
+
+  private isSubscriptionExpired(seller: {
+    subscriptionEndsAt?: Date | string;
+  }): boolean {
+    const endsAt = seller.subscriptionEndsAt
+      ? new Date(seller.subscriptionEndsAt)
+      : null;
+    return Boolean(
+      endsAt &&
+        !Number.isNaN(endsAt.getTime()) &&
+        endsAt.getTime() < Date.now(),
+    );
+  }
+
+  assertSellerOperationalAccess(seller: {
+    isTrial?: boolean;
+    trialStatus?: string;
+    trialEnd?: Date | string;
+    convertedToPaid?: boolean;
+    subscriptionEndsAt?: Date | string;
+    paymentStatus?: string;
+  }) {
+    const access = this.assertTrialApiAccess(seller);
+    if (access === 'expired') {
+      throw new BadRequestException(
+        'Your trial or subscription has expired. Purchase a subscription from Billing to continue.',
+      );
+    }
+    if (access === 'pending_payment') {
+      throw new BadRequestException(
+        'Complete your payment before using this feature.',
+      );
+    }
+    if (access === 'suspended') {
+      throw new BadRequestException('Your account is suspended. Contact support.');
     }
   }
 
@@ -192,18 +227,30 @@ export class TrialValidationService {
     isTrial?: boolean;
     trialStatus?: string;
     trialEnd?: Date | string;
+    convertedToPaid?: boolean;
+    subscriptionEndsAt?: Date | string;
+    paymentStatus?: string;
   }) {
-    if (!seller.isTrial || seller.trialStatus === 'converted') return 'full';
-    if (seller.trialStatus === 'active') {
-      const end = seller.trialEnd ? new Date(seller.trialEnd) : null;
-      if (end && end.getTime() < Date.now()) return 'expired';
-      return 'trial';
+    if (seller.isTrial && seller.trialStatus !== 'converted') {
+      if (seller.trialStatus === 'active') {
+        const end = seller.trialEnd ? new Date(seller.trialEnd) : null;
+        if (end && end.getTime() < Date.now()) return 'expired';
+        return 'trial';
+      }
+      if (
+        seller.trialStatus === 'expired' ||
+        seller.trialStatus === 'data_deleted'
+      ) {
+        return 'expired';
+      }
+      if (seller.trialStatus === 'pending_payment') return 'pending_payment';
+      if (seller.trialStatus === 'suspended') return 'suspended';
     }
-    if (seller.trialStatus === 'expired' || seller.trialStatus === 'data_deleted') {
+
+    if (this.isSubscriptionExpired(seller)) {
       return 'expired';
     }
-    if (seller.trialStatus === 'pending_payment') return 'pending_payment';
-    if (seller.trialStatus === 'suspended') return 'suspended';
+
     return 'full';
   }
 

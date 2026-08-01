@@ -613,6 +613,7 @@ export class ImportWorkflowService {
           lastUploadedAt: lastUploadedAt
             ? new Date(lastUploadedAt).toISOString()
             : undefined,
+          reports: built.reports,
         };
       })
       .sort((a, b) => {
@@ -626,24 +627,25 @@ export class ImportWorkflowService {
 
   async getImportHistory(query: {
     sellerId: string;
-    gstId: string;
+    gstId?: string;
     reportMonth?: string;
     marketplaceId?: string;
   }) {
     const sellerId = String(query.sellerId ?? '').trim();
-    const gstId = String(query.gstId ?? '').trim();
-    if (!sellerId || !gstId) {
-      throw new BadRequestException('sellerId and gstId are required');
+    if (!sellerId) {
+      throw new BadRequestException('sellerId is required');
     }
+
+    const gstId = String(query.gstId ?? '').trim();
 
     const sellerAliases =
       await this.validationService.resolveSellerIdAliases(sellerId);
 
     const filter: Record<string, unknown> = {
       sellerId: { $in: sellerAliases },
-      gstId,
       status: { $in: ['completed', 'processing', 'failed', 'reuploaded'] },
     };
+    if (gstId) filter.gstId = gstId;
     if (query.reportMonth) filter.reportMonth = query.reportMonth;
     if (query.marketplaceId) filter.marketplaceId = query.marketplaceId;
 
@@ -677,8 +679,8 @@ export class ImportWorkflowService {
     const failedUploads = await this.uploadModel
       .find({
         sellerId: { $in: sellerAliases },
-        gstId,
         status: 'failed',
+        ...(gstId ? { gstId } : {}),
         ...(query.reportMonth ? { reportMonth: query.reportMonth } : {}),
         ...(query.marketplaceId ? { marketplace: query.marketplaceId } : {}),
       })

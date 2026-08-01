@@ -486,12 +486,20 @@ const AMAZON_MAPPINGS: MappingConfig[] = [
     transform: asString,
   },
   {
-    source: ['Customer Bill To Gstid', 'Customer GST No'],
+    source: [
+      'Customer Bill To Gstid',
+      'Customer Bill to GSTIN',
+      'Customer Bill To GSTIN',
+      'Customer GST No',
+      'Bill To GSTIN',
+      'Buyer GSTIN',
+      'Customer GSTIN',
+    ],
     target: 'customerGstNo',
     transform: asString,
   },
   {
-    source: ['Buyer Name'],
+    source: ['Buyer Name', 'Customer Name', 'Bill To Customer Name', 'Bill To Name'],
     target: 'buyerName',
     transform: asString,
   },

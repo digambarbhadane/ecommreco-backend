@@ -15,7 +15,7 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { ThrottlerGuard } from '@nestjs/throttler';
+import { SkipThrottle, ThrottlerGuard } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { BootstrapSuperAdminDto } from './dto/bootstrap-super-admin.dto';
 import { DevResetPasswordDto } from './dto/dev-reset-password.dto';
@@ -65,7 +65,7 @@ export class AuthController {
   }
 
   @Post('refresh-token')
-  @UseGuards(ThrottlerGuard)
+  @SkipThrottle()
   @ApiOperation({
     summary: 'Refresh access token',
     description:

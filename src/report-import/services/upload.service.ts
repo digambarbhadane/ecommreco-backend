@@ -37,6 +37,7 @@ import {
   getRowCell,
 } from './mapping.service';
 import { amazonImportMapping } from '../config/importMappings/amazon.mapping';
+import { AMAZON_B2B_EXTRA_HEADER_GROUPS } from '../config/importMappings/amazon-b2b.constants';
 import { flipkartImportMapping } from '../config/importMappings/flipkart.mapping';
 import { meeshoImportMapping } from '../config/importMappings/meesho.mapping';
 import { MEESHO_PAYMENT_REQUIRED_HEADER_GROUPS } from '../config/importMappings/meesho-payment.mapping';
@@ -632,21 +633,13 @@ export class UploadService {
       const hasMtr = Boolean(files.mtrB2cFile || files.mtrB2bFile);
       const hasPayment =
         Boolean(files.paymentReportFile) || Boolean(files.paymentReportFiles?.length);
-      if (
-        hasPayment &&
-        (hasMtr || Boolean(files.amazonReturnReportFile))
-      ) {
-        throw new BadRequestException(
-          'Amazon Payment Report must be uploaded separately from MTR and return reports',
-        );
-      }
-      const hasReturnOnly =
-        Boolean(files.amazonReturnReportFile) && !hasMtr;
-      if (!hasMtr && !hasReturnOnly && !hasPayment) {
+      const hasReturn = Boolean(files.amazonReturnReportFile);
+      if (!hasMtr && !hasReturn && !hasPayment) {
         throw new BadRequestException(
           'Amazon upload requires an MTR, return, or payment report file',
         );
       }
+      const hasReturnOnly = hasReturn && !hasMtr;
       if (hasReturnOnly && ownership) {
         const b2cUploaded = await this.importWorkflow.hasCompletedSlot({
           sellerId: ownership.sellerId,
@@ -989,16 +982,12 @@ export class UploadService {
     return files.paymentReportFile ? [files.paymentReportFile] : [];
   }
 
-  private async completeAmazonPaymentUpload(
-    files: MarketplaceFilesInput,
+  private async processAmazonPaymentFileBatch(
+    paymentFiles: UploadedFileInput[],
     dto: UploadReportDto,
     ctx: UploadContext,
     existingUploadId?: string | null,
   ) {
-    const paymentFiles = this.collectAmazonPaymentFiles(files);
-    if (!paymentFiles.length) {
-      throw new BadRequestException('Amazon payment report file is required');
-    }
     if (paymentFiles.length > AMAZON_MAX_PAYMENT_FILES) {
       throw new BadRequestException(
         `Amazon allows up to ${AMAZON_MAX_PAYMENT_FILES} payment report files per month`,
@@ -1137,6 +1126,28 @@ export class UploadService {
         invalidRows: paymentUploadSummary.invalidRows,
       });
     }
+
+    return { results, placeholderUploadConsumed };
+  }
+
+  private async completeAmazonPaymentUpload(
+    files: MarketplaceFilesInput,
+    dto: UploadReportDto,
+    ctx: UploadContext,
+    existingUploadId?: string | null,
+  ) {
+    const paymentFiles = this.collectAmazonPaymentFiles(files);
+    if (!paymentFiles.length) {
+      throw new BadRequestException('Amazon payment report file is required');
+    }
+
+    const { results, placeholderUploadConsumed } =
+      await this.processAmazonPaymentFileBatch(
+        paymentFiles,
+        dto,
+        ctx,
+        existingUploadId,
+      );
 
     const totalParsedRows = results.reduce((sum, item) => sum + item.parsedRows, 0);
     const totalInvalidRows = results.reduce((sum, item) => sum + item.invalidRows, 0);
@@ -2296,7 +2307,7 @@ export class UploadService {
         );
         this.validation.validateRequiredHeaderGroups(
           parsedAmazonB2b.headers,
-          [['Customer Bill To Gstid'], ['Buyer Name']],
+          AMAZON_B2B_EXTRA_HEADER_GROUPS,
           'Amazon MTR B2B Report',
         );
         const amazonB2bGstFilter = this.validation.filterAmazonRowsBySelectedGstin(
@@ -3086,6 +3097,26 @@ export class UploadService {
             error instanceof Error ? error.message : String(error)
           }`,
         );
+      }
+    }
+
+    if (isAmazon && uploadId) {
+      const amazonPaymentFiles = this.collectAmazonPaymentFiles(files);
+      if (amazonPaymentFiles.length) {
+        try {
+          await this.processAmazonPaymentFileBatch(
+            amazonPaymentFiles,
+            dto,
+            ctx,
+            null,
+          );
+        } catch (error) {
+          this.logger.warn(
+            `Amazon payment persist after MTR upload failed for upload ${uploadId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
       }
     }
 

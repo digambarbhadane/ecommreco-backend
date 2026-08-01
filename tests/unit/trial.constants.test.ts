@@ -19,9 +19,9 @@ describe('trial.constants', () => {
     expect(extractPanFromGstin('07BSGPB0667M2ZL')).toBe('BSGPB0667M');
   });
 
-  it('allows registration month plus previous 3 months', () => {
+  it('allows 3 months before registration month (registration month excluded)', () => {
     const months = getTrialAllowedReportMonths(new Date('2026-07-15T00:00:00Z'));
-    expect(months).toEqual(['2026-07', '2026-06', '2026-05', '2026-04']);
+    expect(months).toEqual(['2026-04', '2026-05', '2026-06']);
   });
 });
 

@@ -67,17 +67,7 @@ export class ValidationService {
   async assertTrialImportAllowed(sellerId: string, reportMonth?: string) {
     const seller = await this.findSellerByIdentifier(sellerId);
     if (!seller) return;
-    const access = this.trialValidation.assertTrialApiAccess(seller);
-    if (access === 'expired' || access === 'suspended') {
-      throw new BadRequestException(
-        'Trial expired. Please purchase a subscription to continue imports.',
-      );
-    }
-    if (access === 'pending_payment') {
-      throw new BadRequestException(
-        'Complete trial payment before uploading reports.',
-      );
-    }
+    this.trialValidation.assertSellerOperationalAccess(seller);
     this.trialValidation.assertTrialImportMonth(seller, reportMonth);
   }
   async validateOwnership(payload: {

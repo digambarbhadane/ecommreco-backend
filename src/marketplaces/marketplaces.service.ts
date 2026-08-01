@@ -123,6 +123,24 @@ export class MarketplacesService implements OnModuleInit {
           errorCode: 'SINGLE_GST_MARKETPLACE_LIMIT',
         });
       }
+    } else if (seller.subscriptionPlanType === 'single_gst_multi_marketplace') {
+      const maxLinks = Math.max(
+        0,
+        Number(seller.marketplaceSlotsPurchased ?? 0),
+      );
+      if (maxLinks > 0) {
+        const linkedCount = await this.marketplaceModel.countDocuments({
+          sellerId: { $in: sellerIdAliases },
+        });
+        if (linkedCount >= maxLinks) {
+          throw new BadRequestException({
+            success: false,
+            message:
+              'You have reached your marketplace limit for this subscription. Purchase additional capacity to connect more.',
+            errorCode: 'MARKETPLACE_SLOT_LIMIT',
+          });
+        }
+      }
     }
 
     const created = await this.marketplaceModel.create({

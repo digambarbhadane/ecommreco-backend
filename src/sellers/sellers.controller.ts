@@ -188,9 +188,11 @@ export class SellersController {
   @Roles('super_admin')
   updateAccountStatus(
     @Param('id') id: string,
-    @Body() body: { status?: string },
+    @Body() body: { status?: string; reason?: string },
   ) {
-    return this.sellersService.updateAccountStatus(id, body.status ?? '');
+    return this.sellersService.updateAccountStatus(id, body.status ?? '', {
+      reason: body.reason,
+    });
   }
 }
 
