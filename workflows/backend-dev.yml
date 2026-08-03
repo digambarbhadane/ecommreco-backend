@@ -3,7 +3,7 @@ name: Backend DEV Deploy
 on:
   push:
     branches:
-      - dev
+      - ecommreco_dev
 
 jobs:
   deploy:
