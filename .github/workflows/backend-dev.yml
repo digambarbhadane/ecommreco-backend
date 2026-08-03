@@ -1,6 +1,7 @@
 name: Backend DEV Deploy
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - ecommreco_dev
