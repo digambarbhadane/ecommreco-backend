@@ -1,0 +1,40 @@
+name: Frontend TEST Deploy
+
+on:
+  push:
+    branches:
+      - ecommreco_test
+
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy Frontend TEST
+        uses: appleboy/ssh-action@v1.2.0
+
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+
+          script: |
+            set -e
+
+            echo "===== FRONTEND TEST ====="
+
+            cd /home/ubuntu/ecommreco_test/ecommreco-frontend
+
+            git fetch origin
+            git checkout ecommreco_test
+            git reset --hard origin/ecommreco_test
+
+            npm install
+
+            npm run build:test
+
+            sudo systemctl reload nginx
+
+            echo "Frontend TEST deployed."
