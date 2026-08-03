@@ -1,6 +1,6 @@
 /**
  * Global test environment. Runs before each test file.
- * Uses in-memory MongoDB (NODE_ENV=test) — see AppModule Mongoose factory.
+ * Uses in-memory MongoDB when USE_MEMORY_DB=true — see AppModule Mongoose factory.
  */
 process.env.NODE_ENV = 'test';
 process.env.USE_MEMORY_DB = 'true';

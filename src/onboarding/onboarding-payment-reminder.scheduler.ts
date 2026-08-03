@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
+import { resolvePaymentReturnBaseUrl } from '../config/payment-urls';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { Lead, LeadDocument } from '../leads/schemas/lead.schema';
@@ -81,11 +82,7 @@ export class OnboardingPaymentReminderScheduler {
         continue;
       }
 
-      const frontendUrl =
-        this.config.get<string>('PAYMENT_RETURN_BASE_URL')?.trim() ||
-        this.config.get<string>('FRONTEND_URL')?.split(',')[0]?.trim() ||
-        'http://localhost:8080';
-
+      const frontendUrl = resolvePaymentReturnBaseUrl(this.config);
       const paymentUrl = `${frontendUrl.replace(/\/+$/, '')}/login`;
 
       const message =

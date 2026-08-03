@@ -139,7 +139,7 @@ const DEFAULT_LOCAL_MONGODB_URI = 'mongodb://127.0.0.1:27017/sellerspl';
             : DEFAULT_LOCAL_MONGODB_URI;
 
         const forceMemory = config.get<string>('USE_MEMORY_DB') === 'true';
-        const shouldUseMemory = forceMemory || nodeEnv === 'test';
+        const shouldUseMemory = forceMemory;
         const allowMemoryFallback =
           nodeEnv !== 'production' &&
           config.get<string>('ALLOW_MEMORY_DB_FALLBACK') === 'true';

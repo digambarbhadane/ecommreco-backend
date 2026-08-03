@@ -1,0 +1,45 @@
+name: Backend DEV Deploy
+
+on:
+  push:
+    branches:
+      - dev
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy to EC2 DEV
+        uses: appleboy/ssh-action@v1.2.0
+
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+
+          script: |
+            set -e
+
+            echo "========== BACKEND DEV DEPLOY =========="
+
+            cd /home/ubuntu/ecommreco_dev/ecommreco-backend
+
+            echo "Pulling latest code..."
+            git fetch origin
+            git checkout dev
+            git pull origin dev
+
+            echo "Installing dependencies..."
+            npm install
+
+            echo "Building application..."
+            npm run build
+
+            echo "Restarting PM2..."
+            pm2 restart api-dev
+
+            echo "Saving PM2..."
+            pm2 save
+
+            echo "Deployment completed successfully."

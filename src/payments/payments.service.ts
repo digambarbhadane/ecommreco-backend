@@ -5,6 +5,10 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import {
+  buildPaymentNotifyUrl,
+  buildPaymentReturnUrl,
+} from '../config/payment-urls';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Seller, SellerDocument } from '../sellers/schemas/seller.schema';
@@ -179,13 +183,6 @@ export class PaymentsService {
     }
 
     const orderId = `ECO-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
-    const frontendUrl =
-      this.config.get<string>('PAYMENT_RETURN_BASE_URL')?.trim() ||
-      this.config.get<string>('FRONTEND_URL')?.split(',')[0]?.trim() ||
-      'http://localhost:8080';
-    const apiUrl =
-      this.config.get<string>('API_PUBLIC_URL')?.trim() ||
-      `http://localhost:${this.config.get('PORT') ?? 5000}`;
     const checkoutType = metadata.checkoutType as string | undefined;
     const returnPath =
       checkoutType === 'trial_registration'
@@ -198,8 +195,8 @@ export class PaymentsService {
       customerId: sellerId,
       customerEmail: seller.email,
       customerPhone: seller.contactNumber || '9999999999',
-      returnUrl: `${frontendUrl.replace(/\/+$/, '')}${returnPath}`,
-      notifyUrl: `${apiUrl.replace(/\/+$/, '')}/api/v1/webhooks/cashfree`,
+      returnUrl: buildPaymentReturnUrl(this.config, returnPath),
+      notifyUrl: buildPaymentNotifyUrl(this.config),
       metadata: { seller_id: sellerId, plan_id: dto.plan_id },
     });
 
