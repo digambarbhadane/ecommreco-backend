@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { resolvePaymentReturnBaseUrl } from '../../config/payment-urls';
 import { InjectModel } from '@nestjs/mongoose';
 import { createHmac, randomBytes, randomUUID } from 'crypto';
 import { Model, Types } from 'mongoose';
@@ -75,10 +76,7 @@ export class OnboardingPaymentLinkService {
       createdBy: input.createdBy,
     });
 
-    const frontendUrl =
-      this.config.get<string>('PAYMENT_RETURN_BASE_URL')?.trim() ||
-      this.config.get<string>('FRONTEND_URL')?.split(',')[0]?.trim() ||
-      'http://localhost:8080';
+    const frontendUrl = resolvePaymentReturnBaseUrl(this.config);
     const url = `${frontendUrl.replace(/\/+$/, '')}/pay/l/${token}`;
 
     await this.timeline.record({

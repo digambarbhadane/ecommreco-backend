@@ -136,21 +136,44 @@ Full example site file: `deploy/nginx/api-dev.ecommreco.com.conf`.
 
 ## PM2 (development on EC2)
 
-`ecosystem.config.js` only defines **`api-dev`** (`NODE_ENV=development` → `.env.development`).
+`ecosystem.config.js` defines **`api-dev`**, **`api-test`**, **`api-uat`**, and **`api-prod`**. Each app uses `start-dist.js` and loads the matching `.env.*` file from `NODE_ENV`.
 
 ```bash
 cd ~/ecommreco_dev/ecommreco-backend
 ls -la .env.development    # must exist and contain MONGODB_URI, JWT_SECRET, etc.
 npm run build
 pm2 delete all             # stop api-prod if it was started by mistake
-pm2 start ecosystem.config.js
+pm2 start ecosystem.config.js --only api-dev
 pm2 logs api-dev
 curl http://127.0.0.1:5000/api/v1/health
 pm2 save
 ```
 
-**Do not start `api-prod`** unless you add a real `.env.production` file.  
-`injecting env (0) from .env.production` means that file is missing or empty.
+### Test server (`api-test.ecommreco.com`)
+
+The test API must run the **latest compiled build**. A 404 on routes like `/api/v1/report-imports/platform-analytics` means the server is still on an old build (Nest returns 401 when the route exists but you are not logged in).
+
+```bash
+cd ~/ecommreco_test/ecommreco-backend   # adjust path on EC2
+git pull
+npm ci --include=dev
+npm run build
+ls -la .env.test                        # must exist on the server
+pm2 start ecosystem.config.js --only api-test   # first time
+# or after deploy:
+pm2 restart api-test
+npm run verify:routes -- https://api-test.ecommreco.com
+```
+
+Expected after deploy:
+
+```text
+[OK] GET /api/v1/report-imports/platform-analytics?... → 401
+```
+
+If you see `404`, the new build was not picked up — check `pm2 describe api-test` → `script path` and `cwd`.
+
+**Do not start `api-prod`** unless you add a real `.env.production` file.
 
 Do **not** point PM2 at `dist/main.js` (wrong path) or `dist/src/main.js` (skips dotenv).
 

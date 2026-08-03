@@ -83,7 +83,11 @@ export class AuthService implements OnModuleInit {
     );
     if (isInMemoryMongo()) {
       this.logger.warn(
-        'Running on in-memory MongoDB — only users in this empty DB exist. Connect Atlas to use ecommreco_dev data.',
+        'Running on in-memory MongoDB — data is empty/ephemeral. Set USE_MEMORY_DB=false and configure MONGODB_URI_STANDARD for Atlas.',
+      );
+    } else if (mode === 'fallback') {
+      this.logger.warn(
+        'Running on local MongoDB fallback — Atlas data is NOT visible. Set MONGODB_URI_STANDARD in your .env file (Windows querySrv fix).',
       );
     }
   }
@@ -981,10 +985,6 @@ export class AuthService implements OnModuleInit {
     if (nodeEnv === 'production') {
       return;
     }
-    // Only auto-seed when using in-memory DB (empty). Never seed over Atlas ecommreco_dev data.
-    if (!isInMemoryMongo()) {
-      return;
-    }
 
     const existingSuperAdmin = await this.userModel
       .findOne({ role: 'super_admin' })
@@ -1024,7 +1024,9 @@ export class AuthService implements OnModuleInit {
       credentialsGeneratedBy: 'system',
     });
 
-    this.logger.log(`Created development super admin: ${email}`);
+    this.logger.log(
+      `Created ${nodeEnv} super admin (${getMongoStorageMode()}): ${email}`,
+    );
   }
 
   private async verifyPassword(stored: string, provided: string) {
