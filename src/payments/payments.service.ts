@@ -24,7 +24,10 @@ import {
   RefundPaymentDto,
   VerifyPaymentDto,
 } from './dto/payment.dto';
-import type { PaymentGateway } from './gateways/payment-gateway.interface';
+import type {
+  GatewayPaymentStatus,
+  PaymentGateway,
+} from './gateways/payment-gateway.interface';
 import { PAYMENT_GATEWAY } from './gateways/payment-gateway.interface';
 import { PaymentActivationService } from './payment-activation.service';
 import { PaymentInvoiceService } from './payment-invoice.service';
@@ -109,15 +112,27 @@ export class PaymentsService {
         })
         .exec();
       if (existing?.paymentSessionId) {
-        return {
-          success: true,
-          data: {
-            order_id: existing.orderId,
-            payment_session_id: existing.paymentSessionId,
-            total_amount: existing.totalAmount,
-          },
-          message: 'Existing pending order returned',
-        };
+        const gatewayStatus = await this.gateway.getOrderStatus(existing.orderId);
+        if (
+          gatewayStatus.paymentStatus === 'pending' ||
+          gatewayStatus.paymentStatus === 'paid'
+        ) {
+          return {
+            success: true,
+            data: {
+              order_id: existing.orderId,
+              payment_session_id: existing.paymentSessionId,
+              total_amount: existing.totalAmount,
+            },
+            message: 'Existing pending order returned',
+          };
+        }
+
+        existing.paymentStatus =
+          gatewayStatus.paymentStatus === 'failed' ? 'failed' : 'expired';
+        existing.orderStatus =
+          gatewayStatus.paymentStatus === 'failed' ? 'failed' : 'expired';
+        await existing.save();
       }
     }
 
@@ -282,7 +297,7 @@ export class PaymentsService {
       };
     }
 
-    const status = await this.gateway.getOrderStatus(order.orderId);
+    const status = await this.pollGatewayPaymentStatus(order.orderId);
     await this.paymentLog.log({
       eventType: 'verification',
       orderId: order.orderId,
@@ -297,14 +312,22 @@ export class PaymentsService {
         order.paymentStatus = 'failed';
         order.orderStatus = 'failed';
         await order.save();
+      } else if (status.paymentStatus === 'expired') {
+        order.paymentStatus = 'expired';
+        order.orderStatus = 'expired';
+        await order.save();
       }
+      const message =
+        status.paymentStatus === 'expired'
+          ? 'Payment session expired. Please start payment again.'
+          : 'Payment not completed yet. Please wait or retry.';
       return {
         success: false,
         data: {
           payment_status: status.paymentStatus,
           order_id: order.orderId,
         },
-        message: 'Payment not completed yet. Please wait or retry.',
+        message,
       };
     }
 
@@ -815,5 +838,20 @@ export class PaymentsService {
     }
 
     throw new NotFoundException('Seller not found');
+  }
+
+  private async pollGatewayPaymentStatus(
+    orderId: string,
+    maxAttempts = 5,
+  ): Promise<GatewayPaymentStatus> {
+    let lastStatus = await this.gateway.getOrderStatus(orderId);
+    for (let attempt = 1; attempt < maxAttempts; attempt++) {
+      if (lastStatus.paymentStatus !== 'pending') {
+        return lastStatus;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      lastStatus = await this.gateway.getOrderStatus(orderId);
+    }
+    return lastStatus;
   }
 }
