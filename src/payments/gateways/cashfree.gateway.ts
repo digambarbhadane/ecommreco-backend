@@ -186,6 +186,20 @@ export class CashfreeGateway implements PaymentGateway {
         },
       };
     } catch (err: unknown) {
+      if (this.isOrderNotFoundError(err)) {
+        this.logger.warn(
+          `Cashfree order ${orderId} not found — treating as expired`,
+        );
+        return {
+          orderId,
+          cashfreeOrderId: orderId,
+          paymentStatus: 'expired',
+          raw: {
+            order: { order_status: 'NOT_FOUND' },
+            payments: [],
+          },
+        };
+      }
       this.logger.error(`Cashfree getOrderStatus failed: ${this.extractError(err)}`);
       throw new BadRequestException({
         success: false,
@@ -193,6 +207,21 @@ export class CashfreeGateway implements PaymentGateway {
         errorCode: 'CASHFREE_VERIFY_FAILED',
       });
     }
+  }
+
+  private isOrderNotFoundError(err: unknown): boolean {
+    if (!err || typeof err !== 'object' || !('response' in err)) {
+      return false;
+    }
+    const response = (
+      err as {
+        response?: { status?: number; data?: { code?: string } };
+      }
+    ).response;
+    return (
+      response?.status === 404 ||
+      response?.data?.code === 'order_not_found'
+    );
   }
 
   async createRefund(input: GatewayRefundInput): Promise<GatewayRefundResult> {
