@@ -865,6 +865,7 @@ export class ProfileService {
       data: {
         changed: true,
         tokenVersion: security?.tokenVersion ?? 0,
+        requiresReLogin: true,
       },
     };
   }

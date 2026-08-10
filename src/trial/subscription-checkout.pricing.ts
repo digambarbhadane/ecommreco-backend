@@ -345,7 +345,7 @@ export function resolveSubscriptionCheckoutPricing(input: {
     monthCount: allSelectedMonths.length,
     billableMonthCount,
     panSlots,
-    gstSlots: panSlots,
+    gstSlots: gstCount,
     gstCount,
     marketplaceSlots,
     totalMonthlyRate,

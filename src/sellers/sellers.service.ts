@@ -22,6 +22,7 @@ import {
 } from '../profile/schemas/user-security.schema';
 import { LeadsService } from '../leads/leads.service';
 import { generatePublicId } from '../common/public-id';
+import { SessionRevocationService } from '../auth/session-revocation.service';
 
 type RequestUser = {
   id?: string;
@@ -49,6 +50,7 @@ export class SellersService {
     private readonly userModel: Model<UserDocument>,
     @InjectModel(UserSecurity.name)
     private readonly userSecurityModel: Model<UserSecurityDocument>,
+    private readonly sessionRevocationService: SessionRevocationService,
     private readonly leadsService: LeadsService,
     private readonly notificationsService: NotificationsService,
     private readonly emailService: EmailService,
@@ -742,39 +744,7 @@ export class SellersService {
   private async invalidateSellerSessions(
     seller: Pick<Seller, 'email'> & { _id?: unknown },
   ) {
-    const userIds = new Set<string>();
-    if (seller._id) {
-      userIds.add(String(seller._id));
-    }
-
-    const email = String(seller.email ?? '')
-      .trim()
-      .toLowerCase();
-    if (email) {
-      const linkedUser = await this.userModel
-        .findOne({ email, role: 'seller' })
-        .select('_id')
-        .lean()
-        .exec();
-      if (linkedUser?._id) {
-        userIds.add(String(linkedUser._id));
-      }
-    }
-
-    await Promise.all(
-      Array.from(userIds).map((userId) =>
-        this.userSecurityModel
-          .updateOne(
-            { userId },
-            {
-              $inc: { tokenVersion: 1 },
-              $set: { activeSessions: [], refreshTokens: [] },
-            },
-            { upsert: true },
-          )
-          .exec(),
-      ),
-    );
+    await this.sessionRevocationService.revokeForSeller(seller);
   }
 
   async resetCredentials(
@@ -818,6 +788,8 @@ export class SellersService {
       credentialsGeneratedAt,
     });
 
+    await this.invalidateSellerSessions(seller);
+
     await this.notificationsService.createNotification({
       event: 'credentials_reset',
       recipientRole: 'super_admin',
@@ -831,6 +803,7 @@ export class SellersService {
         'super_admin',
       ),
       credentials: { username: email, password },
+      sessionsRevoked: true,
     };
   }
 

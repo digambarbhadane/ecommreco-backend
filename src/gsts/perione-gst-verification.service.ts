@@ -189,6 +189,38 @@ export class PerioneGstVerificationService {
     return record;
   }
 
+  async getVerificationBusinessProfile(
+    verificationId: string,
+    gstNumber: string,
+  ) {
+    const record = await this.getRecentVerification(verificationId, gstNumber);
+    const gstin = normalizeGstin(record.gstin);
+    const panNumber = gstin.length >= 12 ? gstin.slice(2, 12) : '';
+    const state = this.readStateFromRaw(record.rawResponse as PerioneRecord);
+
+    return {
+      gstNumber: gstin,
+      panNumber,
+      businessName: String(record.legalName ?? record.tradeName ?? '').trim(),
+      tradeName: String(record.tradeName ?? record.legalName ?? '').trim(),
+      state,
+      address: String(record.principalAddress ?? '').trim(),
+      businessType: String(
+        record.constitution ?? record.taxpayerType ?? '',
+      ).trim(),
+      taxpayerType: String(record.taxpayerType ?? '').trim(),
+    };
+  }
+
+  private readStateFromRaw(raw?: PerioneRecord | null): string {
+    if (!raw) {
+      return '';
+    }
+    return (
+      this.readString(raw, ['stj', 'state', 'state_name', 'stateName']) || ''
+    );
+  }
+
   private getCredentials() {
     const email = this.config.get<string>('GST_VERIFICATION_EMAIL')?.trim();
     const clientId = this.config

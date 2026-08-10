@@ -72,6 +72,23 @@ export class GstsService {
     return this.perioneVerification.verifyGstNumber(dto.gstNumber, sellerId);
   }
 
+  async resolveVerificationForGst(verificationId: string, gstNumber: string) {
+    return this.perioneVerification.getRecentVerification(
+      verificationId,
+      gstNumber,
+    );
+  }
+
+  async getVerificationBusinessProfile(
+    verificationId: string,
+    gstNumber: string,
+  ) {
+    return this.perioneVerification.getVerificationBusinessProfile(
+      verificationId,
+      gstNumber,
+    );
+  }
+
   async create(
     dto: CreateGstDto,
     options?: {

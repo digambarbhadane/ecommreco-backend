@@ -13,6 +13,7 @@ import { User, UserDocument } from './schemas/user.schema';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { ResetCredentialsDto } from './dto/reset-credentials.dto';
+import { SessionRevocationService } from '../auth/session-revocation.service';
 
 type RequestUser = {
   email?: string;
@@ -24,6 +25,7 @@ export class UsersService {
     @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
     @InjectModel(Role.name) private readonly roleModel: Model<RoleDocument>,
     @InjectModel(Seller.name) private readonly sellerModel: Model<SellerDocument>,
+    private readonly sessionRevocationService: SessionRevocationService,
   ) {}
 
   async list(params: {
@@ -303,6 +305,12 @@ export class UsersService {
 
     const username = linkedSeller?.email?.trim().toLowerCase() || activeUser?.email?.trim().toLowerCase() || '';
 
+    if (activeUser) {
+      await this.sessionRevocationService.revokeForUser(activeUser);
+    } else if (linkedSeller) {
+      await this.sessionRevocationService.revokeForSeller(linkedSeller);
+    }
+
     const safe = activeUser
       ? await this.userModel
           .findById(activeUser._id)
@@ -315,6 +323,7 @@ export class UsersService {
       success: true,
       data: safe,
       credentials: { username, password },
+      sessionsRevoked: true,
     };
   }
 

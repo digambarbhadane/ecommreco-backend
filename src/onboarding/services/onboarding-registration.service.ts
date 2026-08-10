@@ -170,7 +170,7 @@ export class OnboardingRegistrationService {
         payment_session_id: payment.payment_session_id,
         totalAmount: payment.total_amount,
         pricing: payment.pricing,
-        redirectPath: '/onboarding/payment',
+        redirectPath: '/seller/register?mode=trial',
       },
       message: 'Registration successful. Complete payment to activate your trial.',
     };
@@ -214,7 +214,7 @@ export class OnboardingRegistrationService {
           payment_session_id: resumed.data.payment_session_id,
           totalAmount: resumed.data.totalAmount,
           pricing: resumed.data.pricing,
-          redirectPath: '/onboarding/payment',
+          redirectPath: '/seller/register?mode=trial',
         },
         message: 'Continue to payment to activate your trial.',
       };

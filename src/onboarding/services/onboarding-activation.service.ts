@@ -351,11 +351,19 @@ export class OnboardingActivationService {
       payload: { orderId },
     });
 
+    const failureMessage = `Trial payment failed for order ${orderId}`;
     void this.notifications
       .createNotification({
         event: 'trial_payment_failed',
         recipientRole: 'sales_manager',
-        message: `Trial payment failed for order ${orderId}`,
+        message: failureMessage,
+      })
+      .catch(() => undefined);
+    void this.notifications
+      .createNotification({
+        event: 'trial_payment_failed',
+        recipientRole: 'super_admin',
+        message: failureMessage,
       })
       .catch(() => undefined);
 

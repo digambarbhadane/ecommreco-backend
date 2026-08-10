@@ -37,6 +37,13 @@ import { OnboardingModule } from '../onboarding/onboarding.module';
 import { SubscriptionModule } from '../subscription/subscription.module';
 import { GstsModule } from '../gsts/gsts.module';
 import { MarketplacesModule } from '../marketplaces/marketplaces.module';
+import { OtpModule } from '../otp/otp.module';
+import { SmsModule } from '../sms/sms.module';
+import {
+  TrialContactOtp,
+  TrialContactOtpSchema,
+} from './schemas/trial-contact-otp.schema';
+import { TrialOtpService } from './trial-otp.service';
 
 @Module({
   imports: [
@@ -49,8 +56,11 @@ import { MarketplacesModule } from '../marketplaces/marketplaces.module';
       { name: SubscriptionPackage.name, schema: SubscriptionPackageSchema },
       { name: Gst.name, schema: GstSchema },
       { name: SellerSubscription.name, schema: SellerSubscriptionSchema },
+      { name: TrialContactOtp.name, schema: TrialContactOtpSchema },
     ]),
     EmailModule,
+    OtpModule,
+    SmsModule,
     NotificationsModule,
     forwardRef(() => PaymentsModule),
     forwardRef(() => OnboardingModule),
@@ -61,6 +71,7 @@ import { MarketplacesModule } from '../marketplaces/marketplaces.module';
   controllers: [TrialController],
   providers: [
     TrialService,
+    TrialOtpService,
     TrialValidationService,
     TrialHistoryService,
     TrialSchedulerService,

@@ -9,14 +9,23 @@ import {
   Body,
   Controller,
   Get,
+  BadRequestException,
   Headers,
   Post,
   Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { SkipThrottle, ThrottlerGuard } from '@nestjs/throttler';
+import { SkipThrottle, Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
+import { OtpService } from '../otp/otp.service';
+import { SendOtpDto, VerifyOtpDto, ResendOtpDto } from '../otp/dto/otp.dto';
+import { OtpVerifiedGuard, verifyOtpRequired } from '../otp/guards/otp-verified.guard';
+import { OTP_PURPOSE } from '../otp/otp.constants';
+import {
+  ForgotPasswordOtpDto,
+  ResetPasswordWithOtpDto,
+} from './dto/reset-password-otp.dto';
 import { BootstrapSuperAdminDto } from './dto/bootstrap-super-admin.dto';
 import { DevResetPasswordDto } from './dto/dev-reset-password.dto';
 import { LoginDto } from './dto/login.dto';
@@ -26,7 +35,121 @@ import type { Request } from 'express';
 @ApiTags('Auth')
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly otpService: OtpService,
+  ) {}
+
+  private otpContext(req: Request) {
+    return {
+      ip: req.ip || req.socket?.remoteAddress,
+      userAgent: req.headers['user-agent'],
+    };
+  }
+
+  @Post('send-otp')
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @ApiOperation({ summary: 'Send mobile OTP' })
+  sendOtp(@Body() dto: SendOtpDto, @Req() req: Request) {
+    return this.otpService.sendOtp(
+      dto.mobile,
+      dto.purpose,
+      this.otpContext(req),
+      dto.captchaToken,
+    );
+  }
+
+  @Get('msg91-widget-config')
+  @ApiOperation({
+    summary: 'MSG91 OTP widget public config (captcha settings)',
+    security: [],
+  })
+  getMsg91WidgetConfig() {
+    return this.otpService.getMsg91WidgetConfig();
+  }
+
+  @Post('verify-otp')
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 20, ttl: 60000 } })
+  @ApiOperation({ summary: 'Verify mobile OTP' })
+  verifyOtp(@Body() dto: VerifyOtpDto, @Req() req: Request) {
+    if (dto.reqId?.trim() && dto.otp?.trim()) {
+      return this.otpService.verifyWidgetOtp(
+        dto.mobile,
+        dto.purpose,
+        dto.reqId.trim(),
+        dto.otp.trim(),
+        this.otpContext(req),
+      );
+    }
+    if (dto.accessToken?.trim()) {
+      return this.otpService.verifyWidgetAccessToken(
+        dto.mobile,
+        dto.purpose,
+        dto.accessToken.trim(),
+        this.otpContext(req),
+      );
+    }
+    if (!dto.otp?.trim()) {
+      throw new BadRequestException('OTP or access token is required.');
+    }
+    return this.otpService.verifyOtp(
+      dto.mobile,
+      dto.otp,
+      dto.purpose,
+      this.otpContext(req),
+    );
+  }
+
+  @Post('resend-otp')
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @ApiOperation({ summary: 'Resend mobile OTP' })
+  resendOtp(@Body() dto: ResendOtpDto, @Req() req: Request) {
+    return this.otpService.resendOtp(
+      dto.mobile,
+      dto.purpose,
+      this.otpContext(req),
+      dto.captchaToken,
+    );
+  }
+
+  @Post('forgot-password')
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @ApiOperation({
+    summary: 'Forgot password — send OTP to mobile',
+    description:
+      'Sends OTP for password reset when an account exists. Always returns a generic success message.',
+    security: [],
+  })
+  async forgotPassword(@Body() dto: ForgotPasswordOtpDto, @Req() req: Request) {
+    const account = await this.authService.findAccountByMobile(dto.mobile);
+    if (account.user || account.seller) {
+      await this.otpService.sendOtp(
+        dto.mobile,
+        OTP_PURPOSE.FORGOT_PASSWORD,
+        this.otpContext(req),
+      );
+    }
+    return {
+      success: true,
+      message: 'If an account exists for this mobile number, an OTP has been sent.',
+    };
+  }
+
+  @Post('reset-password')
+  @UseGuards(ThrottlerGuard, OtpVerifiedGuard)
+  @verifyOtpRequired(OTP_PURPOSE.FORGOT_PASSWORD)
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @ApiOperation({
+    summary: 'Reset password after OTP verification',
+    security: [],
+  })
+  resetPassword(@Body() dto: ResetPasswordWithOtpDto) {
+    return this.authService.resetPasswordWithOtp(dto);
+  }
 
   @Get('health')
   @ApiOperation({ summary: 'Health check', description: 'Returns server health status' })
@@ -40,14 +163,14 @@ export class AuthController {
     return this.authService.databaseConnection();
   }
 
-  @Post('forgot-password')
+  @Post('forgot-password-legacy')
   @UseGuards(ThrottlerGuard)
   @ApiOperation({
-    summary: 'Forgot password',
-    description: 'Request a password reset link. Always returns success to prevent email enumeration.',
+    summary: 'Forgot password (legacy email stub)',
+    description: 'Deprecated email-only stub. Use forgot-password with mobile OTP.',
     security: [],
   })
-  forgotPassword(@Body() dto: { email?: string }) {
+  forgotPasswordLegacy(@Body() dto: { email?: string }) {
     void dto;
     return { success: true, message: 'If the email exists, a reset link has been sent.' };
   }

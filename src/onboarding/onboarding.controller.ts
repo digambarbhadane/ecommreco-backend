@@ -17,6 +17,7 @@ import {
   OnboardingConfirmPaymentDto,
   OnboardingConfirmPublicDto,
   OnboardingRegisterDto,
+  OnboardingResumePaymentDto,
 } from './dto/onboarding.dto';
 import { OnboardingService } from './services/onboarding.service';
 
@@ -64,6 +65,13 @@ export class OnboardingController {
   ) {
     const userId = String(req.user?.id ?? req.user?.sub ?? '');
     return this.onboardingService.verifyAndActivate(userId, dto.orderId);
+  }
+
+  @Post('payment/retry-public')
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @ApiOperation({ summary: 'Create new payment attempt for pending user (no auth)' })
+  retryPaymentPublic(@Body() dto: OnboardingResumePaymentDto) {
+    return this.onboardingService.resumePaymentByEmail(dto.email ?? '');
   }
 
   @Post('payment/retry')
