@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Injectable,
   Logger,
   NotFoundException,
@@ -27,6 +28,10 @@ import {
 } from '../profile/schemas/user-activity-log.schema';
 import { getMongoStorageMode, isInMemoryMongo } from '../config/mongo-connection';
 import { evaluateSellerLogin } from '../trial/trial-login.policy';
+import { SessionRevocationService } from './session-revocation.service';
+import { OtpService } from '../otp/otp.service';
+import { OTP_PURPOSE } from '../otp/otp.constants';
+import { normalizeIndianMobile } from '../otp/otp.helper';
 
 type AuthUser = {
   id: string;
@@ -73,6 +78,8 @@ export class AuthService implements OnModuleInit {
     private readonly userSecurityModel: Model<UserSecurityDocument>,
     @InjectModel(UserActivityLog.name)
     private readonly userActivityLogModel: Model<UserActivityLogDocument>,
+    private readonly sessionRevocationService: SessionRevocationService,
+    private readonly otpService: OtpService,
   ) {}
 
   async onModuleInit() {
@@ -139,7 +146,13 @@ export class AuthService implements OnModuleInit {
             adminUser as { onboardingUserStatus?: string }
           ).onboardingUserStatus;
           if (onboardingStatus === 'PENDING_PAYMENT') {
-            // Allow login — dashboard blocked by frontend guard; payment pending page
+            throw new UnauthorizedException({
+              success: false,
+              message:
+                'Complete your trial payment of ₹499 + GST to activate your account.',
+              errorCode: 'ONBOARDING_PAYMENT_PENDING',
+              sellerId: adminUser._id.toString(),
+            });
           } else if (onboardingStatus === 'BLOCKED') {
             throw new UnauthorizedException({
               success: false,
@@ -954,6 +967,7 @@ export class AuthService implements OnModuleInit {
           },
         },
       );
+      await this.sessionRevocationService.revokeForUser(user);
       return { success: true, data: { role: user.role, identifier } };
     }
 
@@ -970,6 +984,7 @@ export class AuthService implements OnModuleInit {
           },
         },
       );
+      await this.sessionRevocationService.revokeForSeller(seller);
       return { success: true, data: { role: 'seller', identifier } };
     }
 
@@ -986,15 +1001,6 @@ export class AuthService implements OnModuleInit {
       return;
     }
 
-    const existingSuperAdmin = await this.userModel
-      .findOne({ role: 'super_admin' })
-      .select('_id email')
-      .lean()
-      .exec();
-    if (existingSuperAdmin) {
-      return;
-    }
-
     const email = (
       this.configService.get<string>('DEV_SUPER_ADMIN_EMAIL') ??
       'superadmin@example.com'
@@ -1008,6 +1014,43 @@ export class AuthService implements OnModuleInit {
       this.configService.get<string>('DEV_SUPER_ADMIN_NAME') ?? 'Super Admin';
     const mobile = this.configService.get<string>('DEV_SUPER_ADMIN_MOBILE');
     const hashedPassword = await bcrypt.hash(password, 10);
+
+    const existingByEmail = await this.userModel
+      .findOne({ email })
+      .select('_id email role password')
+      .exec();
+
+    if (existingByEmail) {
+      const passwordMatches = await this.verifyPassword(
+        existingByEmail.password,
+        password,
+      );
+      const updates: Record<string, unknown> = {};
+      if (!passwordMatches) {
+        updates.password = hashedPassword;
+      }
+      if (existingByEmail.role !== 'super_admin') {
+        updates.role = 'super_admin';
+        updates.status = 'approved';
+        updates.profileCompleted = true;
+      }
+      if (Object.keys(updates).length > 0) {
+        await this.userModel.updateOne({ _id: existingByEmail._id }, { $set: updates });
+        this.logger.log(
+          `Synced ${nodeEnv} dev super admin credentials for ${email}`,
+        );
+      }
+      return;
+    }
+
+    const existingSuperAdmin = await this.userModel
+      .findOne({ role: 'super_admin' })
+      .select('_id email')
+      .lean()
+      .exec();
+    if (existingSuperAdmin) {
+      return;
+    }
 
     await this.userModel.create({
       publicId: generatePublicId('super_admin', email),
@@ -1085,6 +1128,59 @@ export class AuthService implements OnModuleInit {
 
   private escapeRegex(value: string) {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  async resetPasswordWithOtp(input: {
+    mobile: string;
+    newPassword: string;
+    confirmPassword: string;
+  }) {
+    if (input.newPassword !== input.confirmPassword) {
+      throw new BadRequestException('Password and confirm password do not match.');
+    }
+
+    const mobile = normalizeIndianMobile(input.mobile);
+    await this.otpService.assertMobileVerified(
+      mobile,
+      OTP_PURPOSE.FORGOT_PASSWORD,
+    );
+
+    const hashed = await bcrypt.hash(input.newPassword, 10);
+    const user = await this.userModel.findOne({ mobile }).exec();
+    const seller = await this.sellerModel.findOne({ contactNumber: mobile }).exec();
+
+    if (!user && !seller) {
+      throw new BadRequestException('No account found for this mobile number.');
+    }
+
+    if (user) {
+      user.password = hashed;
+      await user.save();
+    }
+    if (seller) {
+      seller.password = hashed;
+      await seller.save();
+    }
+
+    await this.otpService.consumeVerification(
+      mobile,
+      OTP_PURPOSE.FORGOT_PASSWORD,
+    );
+
+    return {
+      success: true,
+      message: 'Password updated successfully. You can sign in with your new password.',
+    };
+  }
+
+  async findAccountByMobile(mobileInput: string) {
+    const mobile = normalizeIndianMobile(mobileInput);
+    const user = await this.userModel.findOne({ mobile }).lean().exec();
+    const seller = await this.sellerModel
+      .findOne({ contactNumber: mobile })
+      .lean()
+      .exec();
+    return { user, seller };
   }
 
   private assertSetupToken(params: { setupToken?: string }) {

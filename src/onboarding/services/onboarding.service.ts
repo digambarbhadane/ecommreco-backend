@@ -41,6 +41,20 @@ export class OnboardingService {
     return this.registration.resumePayment(userId);
   }
 
+  async resumePaymentByEmail(email: string) {
+    const normalized = email.trim().toLowerCase();
+    if (!normalized) {
+      throw new UnauthorizedException('Email is required');
+    }
+    const user = await this.userModel
+      .findOne({ email: normalized })
+      .exec();
+    if (!user || user.onboardingUserStatus !== 'PENDING_PAYMENT') {
+      throw new UnauthorizedException('No pending payment found for this email');
+    }
+    return this.registration.resumePayment(String(user._id));
+  }
+
   async verifyAndActivate(userId: string, orderId: string) {
     await this.registration.confirmPayment(userId, orderId);
     return this.activation.activateFromPayment(orderId, userId);

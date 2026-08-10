@@ -201,7 +201,7 @@ export class PaymentsService {
     const checkoutType = metadata.checkoutType as string | undefined;
     const returnPath =
       checkoutType === 'trial_registration'
-        ? `/trial/payment/${sellerId}?order_id=${orderId}`
+        ? `/seller/register?mode=trial&order_id=${orderId}&seller_id=${sellerId}`
         : `/payment/success?order_id=${orderId}`;
 
     const gatewayResult = await this.gateway.createOrder({

@@ -66,6 +66,9 @@ import {
 import { GstsService } from '../gsts/gsts.service';
 import { MarketplacesService } from '../marketplaces/marketplaces.service';
 import { PaymentsService } from '../payments/payments.service';
+import { TrialOtpService } from './trial-otp.service';
+import { OtpService } from '../otp/otp.service';
+import { OTP_PURPOSE } from '../otp/otp.constants';
 
 @Injectable()
 export class TrialService {
@@ -96,6 +99,8 @@ export class TrialService {
     private readonly gstsService: GstsService,
     @Inject(forwardRef(() => MarketplacesService))
     private readonly marketplacesService: MarketplacesService,
+    private readonly trialOtpService: TrialOtpService,
+    private readonly otpService: OtpService,
   ) {}
 
   getPricing() {
@@ -114,6 +119,48 @@ export class TrialService {
         'Custom',
         'Financial Year',
       ],
+    };
+  }
+
+  async verifyGstForRegistration(dto: {
+    gstNumber: string;
+    panNumber?: string;
+  }) {
+    const gstNumber = dto.gstNumber.trim().toUpperCase();
+    const panNumber = dto.panNumber?.trim().toUpperCase();
+    const panFromGst =
+      gstNumber.length >= 12 ? gstNumber.slice(2, 12) : '';
+
+    if (panNumber && panFromGst && panNumber !== panFromGst) {
+      throw new BadRequestException(
+        'PAN must match the PAN embedded in GSTIN.',
+      );
+    }
+
+    return this.gstsService.verifyGst({ gstNumber });
+  }
+
+  private async assertVerifiedTrialGst(input: {
+    gstNumber: string;
+    verificationId: string;
+  }) {
+    const gstNumber = input.gstNumber.trim().toUpperCase();
+    const verificationId = input.verificationId.trim();
+
+    const profile = await this.gstsService.getVerificationBusinessProfile(
+      verificationId,
+      gstNumber,
+    );
+
+    return {
+      gstNumber: profile.gstNumber,
+      panNumber: profile.panNumber,
+      verificationId,
+      businessName: profile.businessName,
+      tradeName: profile.tradeName,
+      state: profile.state,
+      address: profile.address,
+      businessType: profile.businessType,
     };
   }
 
@@ -291,6 +338,44 @@ export class TrialService {
       .exec();
   }
 
+  async enrichTrialRegisterForOnboarding(dto: RegisterTrialDto) {
+    await this.otpService.assertMobileVerified(
+      dto.mobile.trim(),
+      OTP_PURPOSE.REGISTER,
+    );
+
+    const verifiedGst = await this.assertVerifiedTrialGst({
+      gstNumber: dto.gstNumber.trim().toUpperCase(),
+      verificationId: dto.verificationId.trim(),
+    });
+
+    return {
+      companyName:
+        dto.companyName?.trim() ||
+        verifiedGst.tradeName ||
+        verifiedGst.businessName ||
+        dto.ownerName.trim(),
+      ownerName: dto.ownerName.trim(),
+      mobile: dto.mobile.trim(),
+      email: dto.email.trim().toLowerCase(),
+      panNumber: verifiedGst.panNumber,
+      gstNumber: verifiedGst.gstNumber,
+      businessType: dto.businessType?.trim() || verifiedGst.businessType || undefined,
+      state: verifiedGst.state || dto.state?.trim() || undefined,
+      city: dto.city?.trim() || undefined,
+      password: dto.password,
+      confirmPassword: dto.confirmPassword,
+      acceptTerms: dto.acceptTerms,
+    };
+  }
+
+  async consumeRegistrationOtp(mobile: string) {
+    await this.otpService.consumeVerification(
+      mobile.trim(),
+      OTP_PURPOSE.REGISTER,
+    );
+  }
+
   async register(dto: RegisterTrialDto) {
     if (!dto.acceptTerms) {
       throw new BadRequestException('You must accept the Terms to continue.');
@@ -301,8 +386,20 @@ export class TrialService {
 
     const email = dto.email.trim().toLowerCase();
     const mobile = dto.mobile.trim();
-    const panNumber = dto.panNumber.trim().toUpperCase();
     const gstNumber = dto.gstNumber.trim().toUpperCase();
+    const verificationId = dto.verificationId.trim();
+
+    await this.otpService.assertMobileVerified(mobile, OTP_PURPOSE.REGISTER);
+
+    const verifiedGst = await this.assertVerifiedTrialGst({
+      gstNumber,
+      verificationId,
+    });
+    const panNumber = verifiedGst.panNumber;
+    const companyName =
+      dto.companyName?.trim() ||
+      verifiedGst.tradeName ||
+      verifiedGst.businessName;
 
     await this.validation.assertEligibleForTrial({
       email,
@@ -325,14 +422,17 @@ export class TrialService {
           {
             publicId: generatePublicId('seller', email),
             fullName: dto.ownerName.trim(),
-            firmName: dto.companyName.trim(),
+            firmName: companyName,
             contactNumber: mobile,
             email,
             gstNumber,
             panNumber,
-            businessType: dto.businessType?.trim(),
-            state: dto.state?.trim(),
+            gstVerificationId: verificationId,
+            businessType:
+              dto.businessType?.trim() || verifiedGst.businessType || undefined,
+            state: verifiedGst.state || dto.state?.trim(),
             city: dto.city?.trim(),
+            address: verifiedGst.address || undefined,
             password: hashedPassword,
             username: email,
             isTrial: true,
@@ -365,7 +465,7 @@ export class TrialService {
             gstNumber,
             email,
             mobile,
-            companyName: dto.companyName.trim(),
+            companyName: companyName,
             ownerName: dto.ownerName.trim(),
             status: 'pending_payment',
             basePrice: pricing.basePrice,
@@ -428,6 +528,8 @@ export class TrialService {
         message: `New trial registration: ${dto.companyName} (${email})`,
       })
       .catch(() => undefined);
+
+    await this.otpService.consumeVerification(mobile, OTP_PURPOSE.REGISTER);
 
     return {
       success: true,
@@ -737,6 +839,7 @@ export class TrialService {
       allowedImportMonths,
       trialCoveredMonthsForPurchase,
       trialGstNumber: trialCoverage?.trialGstNumber ?? null,
+      trialGstVerificationId: seller.gstVerificationId ?? null,
       trialMarketplacePlatformIds:
         trialCoverage?.trialMarketplacePlatformIds ?? [],
       trialMarketplaces: trialCoverage?.trialMarketplaces ?? [],
@@ -1351,12 +1454,17 @@ export class TrialService {
     seller.trialStatus = 'converted';
     seller.convertedToPaid = true;
     seller.convertedAt = now;
-    seller.gstSlots = quote.gstSlots;
-    seller.gstSlotsPurchased = quote.gstSlots;
+    const gstProfilesInPlan = Number(quote.gstCount ?? quote.gstSlots ?? 1);
+    seller.gstSlots = gstProfilesInPlan;
+    seller.gstSlotsPurchased = gstProfilesInPlan;
     seller.allocatedPanSlots = quote.panSlots;
     seller.totalPanSlots = quote.panSlots;
     seller.marketplaceSlotsPurchased = Number(quote.marketplaceSlots ?? 0);
     seller.subscriptionPlanType = quote.planType ?? quote.billingMode;
+    seller.subscriptionPlanLabel = quote.planLabel ?? undefined;
+    seller.subscriptionPanBreakdown = Array.isArray(quote.panBreakdown)
+      ? quote.panBreakdown
+      : undefined;
     seller.reconciliationMonths = quote.selectedMonths;
     if (quote.billingMode === 'multi_gst_pan' && quote.panNumber) {
       if (Number(quote.panSlots ?? 1) <= 1) {
@@ -1501,11 +1609,18 @@ export class TrialService {
     const endsAt = addDays(renewalBase, quote.durationDays);
 
     seller.reconciliationMonths = mergedMonths;
-    seller.gstSlots = Math.max(Number(seller.gstSlots ?? 0), quote.gstSlots);
+    const renewalGstInPlan = Number(quote.gstCount ?? quote.gstSlots ?? 0);
+    seller.gstSlots = Math.max(Number(seller.gstSlots ?? 0), renewalGstInPlan);
     seller.gstSlotsPurchased = Math.max(
       Number(seller.gstSlotsPurchased ?? 0),
-      quote.gstSlots,
+      renewalGstInPlan,
     );
+    if (quote.planLabel) {
+      seller.subscriptionPlanLabel = quote.planLabel;
+    }
+    if (Array.isArray(quote.panBreakdown) && quote.panBreakdown.length) {
+      seller.subscriptionPanBreakdown = quote.panBreakdown;
+    }
     seller.allocatedPanSlots = Math.max(
       Number(seller.allocatedPanSlots ?? 0),
       quote.panSlots,
@@ -2090,6 +2205,39 @@ export class TrialService {
     if (existing) {
       await this.syncTrialSlotUsage(seller, gstNumber);
       return;
+    }
+
+    const verificationId = String(seller.gstVerificationId ?? '').trim();
+    if (verificationId) {
+      try {
+        await this.gstsService.create(
+          {
+            sellerId,
+            verificationId,
+            gstNumber,
+          },
+          { actorRole: 'super_admin' },
+        );
+        await this.syncTrialSlotUsage(seller, gstNumber);
+        return;
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : String(error ?? '');
+        if (!message.toLowerCase().includes('already added')) {
+          this.logger.warn(
+            `Verified trial GST provision failed for seller ${sellerId}: ${message}`,
+          );
+        }
+        const dup = await this.gstModel
+          .findOne({ sellerId, gstNumber })
+          .select('_id')
+          .lean()
+          .exec();
+        if (dup) {
+          await this.syncTrialSlotUsage(seller, gstNumber);
+          return;
+        }
+      }
     }
 
     const panFromGst =
