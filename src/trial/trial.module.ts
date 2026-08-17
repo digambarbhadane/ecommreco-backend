@@ -5,6 +5,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { EmailModule } from '../email/email.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { Seller, SellerSchema } from '../sellers/schemas/seller.schema';
+import { User, UserSchema } from '../users/schemas/user.schema';
 import {
   SubscriptionPackage,
   SubscriptionPackageSchema,
@@ -53,6 +54,7 @@ import { TrialOtpService } from './trial-otp.service';
       { name: TrialHistory.name, schema: TrialHistorySchema },
       { name: TrialCleanupLog.name, schema: TrialCleanupLogSchema },
       { name: Seller.name, schema: SellerSchema },
+      { name: User.name, schema: UserSchema },
       { name: SubscriptionPackage.name, schema: SubscriptionPackageSchema },
       { name: Gst.name, schema: GstSchema },
       { name: SellerSubscription.name, schema: SellerSubscriptionSchema },

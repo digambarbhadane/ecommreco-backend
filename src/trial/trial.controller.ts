@@ -34,6 +34,16 @@ import { TrialOtpService } from './trial-otp.service';
 import { OnboardingRegistrationService } from '../onboarding/services/onboarding-registration.service';
 import { isOnboardingV2Enabled } from '../onboarding/constants/onboarding-status';
 
+function actorSellerId(user?: {
+  sellerId?: unknown;
+  sub?: string;
+  id?: string;
+}): string {
+  const raw = user?.sellerId ?? user?.sub ?? user?.id;
+  if (raw == null) return '';
+  return String(raw).trim();
+}
+
 @ApiTags('Trial')
 @Controller('trial')
 export class TrialController {
@@ -137,7 +147,7 @@ export class TrialController {
   myStatus(
     @Req() req: { user?: { sellerId?: string; sub?: string; id?: string } },
   ) {
-    const sellerId = req.user?.sellerId || req.user?.sub || req.user?.id;
+    const sellerId = actorSellerId(req.user);
     return this.trialService.getSellerTrialStatus(String(sellerId));
   }
 
@@ -149,7 +159,7 @@ export class TrialController {
     @Req() req: { user?: { sellerId?: string; sub?: string; id?: string } },
     @Body() dto: PurchaseTrialSubscriptionDto,
   ) {
-    const sellerId = req.user?.sellerId || req.user?.sub || req.user?.id;
+    const sellerId = actorSellerId(req.user);
     return this.trialService.quotePurchase(String(sellerId), dto);
   }
 
@@ -164,7 +174,7 @@ export class TrialController {
     @Req() req: { user?: { sellerId?: string; sub?: string; id?: string } },
     @Body() dto: PurchaseTrialSubscriptionDto,
   ) {
-    const sellerId = req.user?.sellerId || req.user?.sub || req.user?.id;
+    const sellerId = actorSellerId(req.user);
     return this.trialService.initPurchaseSubscription(String(sellerId), dto);
   }
 
@@ -179,7 +189,7 @@ export class TrialController {
     @Req() req: { user?: { sellerId?: string; sub?: string; id?: string } },
     @Body() dto: ConfirmSubscriptionPurchaseDto,
   ) {
-    const sellerId = req.user?.sellerId || req.user?.sub || req.user?.id;
+    const sellerId = actorSellerId(req.user);
     return this.trialService.confirmPurchaseSubscription(String(sellerId), dto);
   }
 
@@ -194,7 +204,7 @@ export class TrialController {
     @Req() req: { user?: { sellerId?: string; sub?: string; id?: string } },
     @Body() dto: PurchaseTrialSubscriptionDto,
   ) {
-    const sellerId = req.user?.sellerId || req.user?.sub || req.user?.id;
+    const sellerId = actorSellerId(req.user);
     return this.trialService.purchaseSubscription(String(sellerId), dto);
   }
 

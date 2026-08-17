@@ -88,6 +88,14 @@ export class OtpService {
     return this.msg91WidgetService.getWidgetConfig();
   }
 
+  private canDeliverLocalSms(): boolean {
+    const authKey = this.msg91WidgetService.getAuthKey();
+    const flowId =
+      this.configService.get<string>('MSG91_FLOW_ID')?.trim() ||
+      this.configService.get<string>('MSG91_OTP_TEMPLATE_ID')?.trim();
+    return Boolean(authKey && flowId);
+  }
+
   private async sendOtpViaMsg91Widget(
     record: OtpVerificationDocument,
     mobile: string,
@@ -95,8 +103,24 @@ export class OtpService {
     otpHash: string,
     captchaToken?: string,
   ): Promise<void> {
+    const widgetConfig = await this.msg91WidgetService.getWidgetConfig();
+
+    if (widgetConfig.captchaRequired && !captchaToken?.trim()) {
+      throw new BadRequestException(
+        'Captcha verification is required before sending OTP.',
+      );
+    }
+
     const fallbackToLocalOtp = async (reason: string) => {
-      this.logger.warn(`${reason}; using app-generated OTP mobile=${mobile}`);
+      if (!this.canDeliverLocalSms()) {
+        this.logger.error(
+          `${reason}; MSG91 widget failed and SMS fallback is not configured mobile=${mobile}`,
+        );
+        throw new BadRequestException(
+          'Unable to send OTP via MSG91. Ensure captcha is enabled or configure MSG91 SMS credentials.',
+        );
+      }
+      this.logger.warn(`${reason}; using MSG91 flow SMS fallback mobile=${mobile}`);
       await this.repository.setLocalOtpHash(record, otpHash);
       await this.deliverLocalOtp(mobile, otp);
     };
@@ -111,6 +135,9 @@ export class OtpService {
         return;
       }
       await this.repository.setMsg91Session(record, widgetSend.reqId);
+      this.logger.log(
+        `MSG91 widget OTP session created mobile=${mobile} reqId=${widgetSend.reqId}`,
+      );
     } catch (error: unknown) {
       if (
         error instanceof HttpException &&
@@ -124,6 +151,13 @@ export class OtpService {
           : error instanceof Error
             ? error.message
             : 'MSG91 widget send failed';
+
+      if (this.msg91WidgetService.isCaptchaError(reason)) {
+        throw new BadRequestException(
+          'MSG91 captcha verification failed. Refresh the page and try again.',
+        );
+      }
+
       await fallbackToLocalOtp(reason);
     }
   }

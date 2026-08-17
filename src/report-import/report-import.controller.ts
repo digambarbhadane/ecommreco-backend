@@ -35,6 +35,7 @@ import { ListImportedRowsDto } from './dto/list-imported-rows.dto';
 import { ListAnalyticsOrdersDto } from './dto/list-analytics-orders.dto';
 import { ListAnalyticsPaymentsDto } from './dto/list-analytics-payments.dto';
 import { ListAnalyticsPayoutsDto } from './dto/list-analytics-payouts.dto';
+import { GetAnalyticsPayoutDetailsDto } from './dto/get-analytics-payout-details.dto';
 import { UpsertPayoutReceiptDto } from './dto/upsert-payout-receipt.dto';
 import { ResetPayoutReceiptDto } from './dto/reset-payout-receipt.dto';
 import { UploadReportDto } from './dto/upload-report.dto';
@@ -601,6 +602,23 @@ export class ReportImportController {
       throw new BadRequestException('sellerId is required');
     }
     return this.reportImportService.listAnalyticsPayouts(query);
+  }
+
+  @Get('analytics/payouts/details')
+  @ApiOperation({
+    summary: 'Load payout expand line items for one NEFT',
+    description:
+      'Returns sheet line items for a single marketplace NEFT. Used when a payout row is expanded.',
+  })
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  getAnalyticsPayoutDetails(@Query() query: GetAnalyticsPayoutDetailsDto) {
+    if (!query.sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
+    if (!query.marketplace?.trim() || !query.neftId?.trim()) {
+      throw new BadRequestException('marketplace and neftId are required');
+    }
+    return this.reportImportService.getAnalyticsPayoutDetails(query);
   }
 
   @Put('analytics/payouts/receipt')

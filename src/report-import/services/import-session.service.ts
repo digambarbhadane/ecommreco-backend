@@ -17,6 +17,7 @@ import { UploadReportDto } from '../dto/upload-report.dto';
 import { UploadService } from './upload.service';
 import { ValidationService } from './validation.service';
 import { ImportWorkflowService } from './import-workflow.service';
+import { isPaymentUploadSlot } from '../utils/payment-upload-slot.util';
 
 type SessionFile = { buffer: Buffer; originalname: string };
 
@@ -123,7 +124,7 @@ export class ImportSessionService {
     };
   }
 
-  addFile(
+  async addFile(
     sessionId: string,
     sellerId: string,
     slot: string,
@@ -161,6 +162,13 @@ export class ImportSessionService {
       );
     }
 
+    if (isPaymentUploadSlot(slot) || isPaymentUploadSlot(slotKey)) {
+      await this.validation.assertMainGstForPaymentUpload(
+        session.gstId,
+        session.sellerId,
+      );
+    }
+
     session.files.set(slotKey, {
       buffer: Buffer.from(file.buffer),
       originalname: file.originalname,
@@ -189,6 +197,16 @@ export class ImportSessionService {
 
     if (!dto.reportMonth) {
       throw new BadRequestException('reportMonth is required for marketplace imports');
+    }
+
+    const hasPaymentFile = [...session.files.keys()].some((key) =>
+      isPaymentUploadSlot(key),
+    );
+    if (hasPaymentFile) {
+      await this.validation.assertMainGstForPaymentUpload(
+        session.gstId,
+        session.sellerId,
+      );
     }
 
     const required = REQUIRED_SLOTS[session.marketplaceType];

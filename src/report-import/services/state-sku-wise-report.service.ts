@@ -692,17 +692,19 @@ export class StateSkuWiseReportService {
       const group = byMaster.get(masterSku) ?? {
         masterSku,
         status: masterSku === 'UNMAPPED' ? 'UNMAPPED' : 'MAPPED',
-        productName: item.productName,
-        category: item.category,
-        brand: item.brand,
+        productName: item.productName ?? undefined,
+        category: item.category ?? undefined,
+        brand: item.brand ?? undefined,
         rates: new Set<number>(),
         marketplaceSkus: [],
       };
       if (!group.productName && item.productName) {
         group.productName = item.productName;
       }
-      if (!group.category && item.category) group.category = item.category;
-      if (!group.brand && item.brand) group.brand = item.brand;
+      if (!group.category && item.category) {
+        group.category = item.category ?? undefined;
+      }
+      if (!group.brand && item.brand) group.brand = item.brand ?? undefined;
       if (typeof item.rate === 'number') group.rates.add(item.rate);
       group.marketplaceSkus.push({
         marketplace: String(item.marketplace ?? ''),

@@ -61,6 +61,10 @@ export async function findSellerByIdentifier(
 
   const user = await findSellerUserByIdentifier(userModel, value);
   if (!user) return null;
+  if (user.sellerId) {
+    const byLink = await sellerModel.findById(user.sellerId).exec();
+    if (byLink) return byLink;
+  }
   const email = String(user.email ?? '').trim().toLowerCase();
   if (!email) return null;
   return sellerModel

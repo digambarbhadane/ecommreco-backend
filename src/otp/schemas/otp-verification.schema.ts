@@ -1,6 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document } from 'mongoose';
-import type { OtpPurpose } from '../otp.constants';
+import { OTP_PURPOSE_VALUES, type OtpPurpose } from '../otp.constants';
 
 export type OtpVerificationDocument = OtpVerification & Document;
 
@@ -9,7 +9,12 @@ export class OtpVerification {
   @Prop({ required: true, index: true })
   mobile!: string;
 
-  @Prop({ required: true, index: true })
+  @Prop({
+    required: true,
+    index: true,
+    type: String,
+    enum: OTP_PURPOSE_VALUES,
+  })
   purpose!: OtpPurpose;
 
   @Prop()

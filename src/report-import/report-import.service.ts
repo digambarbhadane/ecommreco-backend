@@ -35,6 +35,7 @@ import {
 import { AnalyticsPaymentsService } from './payments/analytics-payments.service';
 import { AnalyticsPayoutsService } from './payments/analytics-payouts.service';
 import type { ListAnalyticsPayoutsDto } from './dto/list-analytics-payouts.dto';
+import type { GetAnalyticsPayoutDetailsDto } from './dto/get-analytics-payout-details.dto';
 import type { UpsertPayoutReceiptDto } from './dto/upsert-payout-receipt.dto';
 import {
   repairImportRowDates,
@@ -106,6 +107,7 @@ export class ReportImportService {
       | 'gstin'
       | 'marketplace'
       | 'documentType'
+      | 'documentTypes'
       | 'fromDate'
       | 'toDate'
       | 'search'
@@ -119,7 +121,19 @@ export class ReportImportService {
     await this.applySellerIdToFilter(filter, query.sellerId);
     if (query.gstin) filter.gstin = query.gstin.trim().toUpperCase();
     if (query.marketplace) filter.marketplace = query.marketplace;
-    if (query.documentType) filter.documentType = query.documentType;
+    if (query.documentTypes) {
+      const types = String(query.documentTypes)
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+      if (types.length === 1) {
+        filter.documentType = types[0];
+      } else if (types.length > 1) {
+        filter.documentType = { $in: types };
+      }
+    } else if (query.documentType) {
+      filter.documentType = query.documentType;
+    }
     if (query.fromDate || query.toDate) {
       filter.invoiceDate = {};
       if (query.fromDate) {
@@ -260,6 +274,10 @@ export class ReportImportService {
 
   async listAnalyticsPayouts(query: ListAnalyticsPayoutsDto) {
     return this.analyticsPayoutsService.listPayouts(query);
+  }
+
+  async getAnalyticsPayoutDetails(query: GetAnalyticsPayoutDetailsDto) {
+    return this.analyticsPayoutsService.getPayoutExpandedDetails(query);
   }
 
   async upsertPayoutReceipt(dto: UpsertPayoutReceiptDto, updatedBy?: string) {

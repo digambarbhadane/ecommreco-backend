@@ -31,6 +31,8 @@ export type FlipkartPaymentListQuery = {
   limit?: number;
   sortBy?: string;
   sortOrder?: 'asc' | 'desc';
+  /** Skip countDocuments — used when callers only need the page of rows. */
+  skipTotal?: boolean;
 };
 
 /** High enough for full CSV export of filtered analytics payment sets. */
@@ -198,17 +200,41 @@ export class FlipkartPaymentRepository implements OnModuleInit {
       sort.orderId = 1;
     }
 
+    const dataPromise = this.model
+      .find(filter)
+      .sort(sort)
+      .skip(skip)
+      .limit(limit)
+      .lean()
+      .exec();
+
+    if (query.skipTotal) {
+      const data = await dataPromise;
+      return { data, total: data.length, skip, limit };
+    }
+
     const [data, total] = await Promise.all([
-      this.model
-        .find(filter)
-        .sort(sort)
-        .skip(skip)
-        .limit(limit)
-        .lean()
-        .exec(),
+      dataPromise,
       this.model.countDocuments(filter).exec(),
     ]);
     return { data, total, skip, limit };
+  }
+
+  async existsByFilter(
+    query: Pick<
+      FlipkartPaymentListQuery,
+      | 'sellerId'
+      | 'sellerIds'
+      | 'gstin'
+      | 'marketplace'
+      | 'reportMonth'
+      | 'paymentDateFrom'
+      | 'paymentDateTo'
+      | 'search'
+    >,
+  ): Promise<boolean> {
+    const doc = await this.model.exists(this.buildFilter(query));
+    return Boolean(doc);
   }
 
   async countByFilter(
@@ -417,6 +443,9 @@ export class FlipkartPaymentRepository implements OnModuleInit {
       orderCount: number;
       salesCount: number;
       returnsCount: number;
+      netSales: number;
+      commissionExpense: number;
+      customerReturnCharges: number;
     }>
   > {
     const match = this.buildFilter(query);
@@ -433,6 +462,18 @@ export class FlipkartPaymentRepository implements OnModuleInit {
             bankSettlementTotal: { $sum: { $ifNull: ['$bankSettlementValue', 0] } },
             orderCount: { $sum: 1 },
             paymentDate: { $max: { $ifNull: ['$paymentDate', ''] } },
+            netSales: { $sum: { $ifNull: ['$saleAmount', 0] } },
+            commissionExpense: {
+              $sum: { $abs: { $ifNull: ['$commission', 0] } },
+            },
+            customerReturnCharges: {
+              $sum: {
+                $add: [
+                  { $abs: { $ifNull: ['$refund', 0] } },
+                  { $abs: { $ifNull: ['$reverseShippingFee', 0] } },
+                ],
+              },
+            },
             salesCount: {
               $sum: {
                 $cond: [
@@ -480,9 +521,13 @@ export class FlipkartPaymentRepository implements OnModuleInit {
             orderCount: 1,
             salesCount: 1,
             returnsCount: 1,
+            netSales: 1,
+            commissionExpense: 1,
+            customerReturnCharges: 1,
           },
         },
       ])
+      .option({ allowDiskUse: true, maxTimeMS: 30_000 })
       .exec();
   }
 

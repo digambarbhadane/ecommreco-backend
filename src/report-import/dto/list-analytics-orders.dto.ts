@@ -19,6 +19,10 @@ export class ListAnalyticsOrdersDto {
 
   @IsOptional()
   @IsString()
+  documentTypes?: string;
+
+  @IsOptional()
+  @IsString()
   fromDate?: string;
 
   @IsOptional()
@@ -36,6 +40,13 @@ export class ListAnalyticsOrdersDto {
     'invoiceAmount',
     'taxableAmount',
     'orderID',
+    'stateName',
+    'skuID',
+    'quantity',
+    'igstAmount',
+    'cgstAmount',
+    'sgstAmount',
+    'marketplace',
   ])
   sortBy?:
     | 'documentType'
@@ -45,7 +56,14 @@ export class ListAnalyticsOrdersDto {
     | 'gstin'
     | 'invoiceAmount'
     | 'taxableAmount'
-    | 'orderID';
+    | 'orderID'
+    | 'stateName'
+    | 'skuID'
+    | 'quantity'
+    | 'igstAmount'
+    | 'cgstAmount'
+    | 'sgstAmount'
+    | 'marketplace';
 
   @IsOptional()
   @IsString()

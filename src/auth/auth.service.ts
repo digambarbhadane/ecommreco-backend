@@ -250,30 +250,24 @@ export class AuthService implements OnModuleInit {
         ? existingSecurity.tokenVersion
         : 0;
 
-    const accessToken = await this.jwtService.signAsync(
-      {
-        sub: user.id,
-        role: user.role,
-        email: user.email,
-        tokenVersion,
-        sessionId,
-        typ: 'access',
-      } satisfies TokenPairPayload,
-      { expiresIn: ACCESS_TOKEN_TTL },
-    );
+    const accessToken = await this.signAccessToken({
+      sub: user.id,
+      role: user.role,
+      email: user.email,
+      tokenVersion,
+      sessionId,
+      typ: 'access',
+    });
 
-    const refreshToken = await this.jwtService.signAsync(
-      {
-        sub: user.id,
-        role: user.role,
-        email: user.email,
-        tokenVersion,
-        sessionId,
-        typ: 'refresh',
-        jti: refreshJti,
-      } satisfies TokenPairPayload,
-      { expiresIn: REFRESH_TOKEN_TTL },
-    );
+    const refreshToken = await this.signRefreshToken({
+      sub: user.id,
+      role: user.role,
+      email: user.email,
+      tokenVersion,
+      sessionId,
+      typ: 'refresh',
+      jti: refreshJti,
+    });
 
     const tokenHash = this.hashToken(refreshToken);
 
@@ -353,7 +347,7 @@ export class AuthService implements OnModuleInit {
 
     let payload: TokenPairPayload;
     try {
-      payload = await this.jwtService.verifyAsync<TokenPairPayload>(token);
+      payload = await this.verifyToken<TokenPairPayload>(token);
     } catch {
       throw new UnauthorizedException({
         success: false,
@@ -491,17 +485,14 @@ export class AuthService implements OnModuleInit {
       );
     }
 
-    const accessToken = await this.jwtService.signAsync(
-      {
-        sub: account.id,
-        role: account.role,
-        email: account.email,
-        tokenVersion: currentVersion,
-        sessionId: payload.sessionId,
-        typ: 'access',
-      } satisfies TokenPairPayload,
-      { expiresIn: ACCESS_TOKEN_TTL },
-    );
+    const accessToken = await this.signAccessToken({
+      sub: account.id,
+      role: account.role,
+      email: account.email,
+      tokenVersion: currentVersion,
+      sessionId: payload.sessionId,
+      typ: 'access',
+    });
 
     return {
       success: true,
@@ -534,10 +525,9 @@ export class AuthService implements OnModuleInit {
     }
     if (refreshToken) {
       try {
-        const payload = await this.jwtService.verifyAsync<TokenPairPayload>(
-          refreshToken,
-          { ignoreExpiration: true },
-        );
+        const payload = await this.verifyToken<TokenPairPayload>(refreshToken, {
+          ignoreExpiration: true,
+        });
         if (payload.jti) {
           pull.refreshTokens = { jti: payload.jti };
         }
@@ -555,13 +545,56 @@ export class AuthService implements OnModuleInit {
     return { success: true, message: 'Logged out' };
   }
 
+  stripRefreshTokenFromResult<T extends { data?: { refreshToken?: string } }>(
+    result: T,
+  ): T {
+    if (!result?.data || !('refreshToken' in result.data)) {
+      return result;
+    }
+    const data = { ...result.data };
+    delete data.refreshToken;
+    return { ...result, data };
+  }
+
+  private jwtSecret() {
+    const secret = this.configService.get<string>('JWT_SECRET');
+    if (!secret) {
+      throw new Error('JWT_SECRET environment variable is required');
+    }
+    return secret;
+  }
+
+  private signAccessToken(payload: TokenPairPayload) {
+    return this.jwtService.signAsync(payload, {
+      secret: this.jwtSecret(),
+      expiresIn: ACCESS_TOKEN_TTL,
+    });
+  }
+
+  private signRefreshToken(payload: TokenPairPayload) {
+    return this.jwtService.signAsync(payload, {
+      secret: this.jwtSecret(),
+      expiresIn: REFRESH_TOKEN_TTL,
+    });
+  }
+
+  private verifyToken<T extends object>(
+    token: string,
+    options?: { ignoreExpiration?: boolean },
+  ) {
+    return this.jwtService.verifyAsync<T>(token, {
+      secret: this.jwtSecret(),
+      ignoreExpiration: options?.ignoreExpiration,
+    });
+  }
+
   private hashToken(token: string) {
     return createHash('sha256').update(token).digest('hex');
   }
 
   /** Best-effort decode for logout when access token may already be expired. */
   async decodeAccessToken(token: string) {
-    const payload = await this.jwtService.verifyAsync<TokenPairPayload>(token, {
+    const payload = await this.verifyToken<TokenPairPayload>(token, {
       ignoreExpiration: true,
     });
     return {
@@ -592,6 +625,7 @@ export class AuthService implements OnModuleInit {
         }
         return {
           id: String(seller._id),
+          sellerId: String(seller._id),
           name: String(
             (seller as { fullName?: string }).fullName ??
               (seller as { email?: string }).email ??
@@ -629,11 +663,21 @@ export class AuthService implements OnModuleInit {
           errorCode: 'ACCOUNT_DISABLED',
         });
       }
-      const linkedSeller = await this.sellerModel
-        .findOne({ email: sellerUser.email })
-        .select('-password')
-        .lean()
-        .exec();
+      let linkedSeller = sellerUser.sellerId
+        ? await this.sellerModel
+            .findById(sellerUser.sellerId)
+            .select('-password')
+            .lean()
+            .exec()
+        : null;
+      if (!linkedSeller && sellerUser.email) {
+        const email = String(sellerUser.email).trim().toLowerCase();
+        linkedSeller = await this.sellerModel
+          .findOne({ $or: [{ email }, { username: email }] })
+          .select('-password')
+          .lean()
+          .exec();
+      }
       if (linkedSeller) {
         const loginCheck = this.evaluateSellerLogin(linkedSeller);
         if (!loginCheck.allowed) {
@@ -642,6 +686,12 @@ export class AuthService implements OnModuleInit {
       }
       return {
         id: String(sellerUser._id),
+        sellerId:
+          linkedSeller?._id != null
+            ? String(linkedSeller._id)
+            : sellerUser.sellerId
+              ? String(sellerUser.sellerId)
+              : undefined,
         name: String(sellerUser.fullName ?? sellerUser.email ?? ''),
         email: String(sellerUser.email ?? ''),
         role: 'seller',
