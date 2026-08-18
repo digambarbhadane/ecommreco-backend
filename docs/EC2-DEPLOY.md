@@ -72,18 +72,20 @@ node scripts/test-mongodb-connection.js
 
 ## EC2 `.env` checklist
 
-Update values that still point at localhost:
+Public URLs (no per-deploy edits after the first setup):
 
 ```env
-PORT=5000
-FRONTEND_URL=https://your-frontend-domain.com
-FRONTEND_URLS=https://your-frontend-domain.com,http://ec2-xx-xx-xx-xx.compute.amazonaws.com:8080
-CORS_ALLOW_ALL=false
-# or true only for temporary debugging
+# api-dev  (NODE_ENV=development → .env.development)
+FRONTEND_URL=https://dev.ecommreco.com
+API_PUBLIC_URL=https://api-dev.ecommreco.com
 
-MONGODB_URI=...ecommreco_dev...   # or ecommreco_prod on production
-MONGODB_DB_NAME=ecommreco_dev
-JWT_SECRET=<long-random-string>
+# api-test (NODE_ENV=test → .env.test)
+FRONTEND_URL=https://test.ecommreco.com
+API_PUBLIC_URL=https://api-test.ecommreco.com
+
+# api-prod (NODE_ENV=production → .env.production)
+FRONTEND_URL=https://ecommreco.com
+API_PUBLIC_URL=https://api.ecommreco.com
 ```
 
 ## Health check

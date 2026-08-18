@@ -12,6 +12,8 @@ process.env.SUPER_ADMIN_SETUP_TOKEN =
   process.env.SUPER_ADMIN_SETUP_TOKEN ?? 'test-setup-token';
 process.env.CORS_ALLOW_ALL = 'true';
 process.env.FRONTEND_URL = 'http://localhost:8080';
+process.env.API_PUBLIC_URL = 'http://localhost:5000';
+process.env.PAYMENT_RETURN_BASE_URL = 'http://localhost:8080';
 process.env.DEV_SUPER_ADMIN_EMAIL = 'superadmin@test.com';
 process.env.DEV_SUPER_ADMIN_PASSWORD = 'password123';
 process.env.DEV_SUPER_ADMIN_NAME = 'Test Super Admin';
