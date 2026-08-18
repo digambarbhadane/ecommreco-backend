@@ -4,8 +4,9 @@ export class StateWiseExportDto {
   @IsString()
   sellerId!: string;
 
+  @IsOptional()
   @IsString()
-  gstin!: string;
+  gstin?: string;
 
   /** Single seller-marketplace link id (Mongo _id). */
   @IsOptional()

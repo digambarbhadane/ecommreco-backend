@@ -154,9 +154,9 @@ export class Msg91WidgetService {
       );
       return {
         configured: true,
-        captchaRequired: true,
-        captchaType: 1,
-        recaptchaSiteKey: this.getDefaultRecaptchaSiteKey(),
+        captchaRequired: false,
+        captchaType: null,
+        recaptchaSiteKey: null,
       };
     }
   }

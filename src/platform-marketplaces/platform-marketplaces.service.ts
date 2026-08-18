@@ -195,63 +195,54 @@ export class PlatformMarketplacesService implements OnModuleInit {
     const defaults: Array<{
       name: string;
       slug: string;
-      logoUrl: string;
       description: string;
       status: 'active' | 'inactive';
     }> = [
       {
         name: 'Amazon',
         slug: 'amazon',
-        logoUrl: 'https://cdn.worldvectorlogo.com/logos/amazon-icon-1.svg',
         description: 'Amazon Marketplace',
         status: 'active',
       },
       {
         name: 'Flipkart',
         slug: 'flipkart',
-        logoUrl: 'https://cdn.worldvectorlogo.com/logos/flipkart.svg',
         description: 'Flipkart Marketplace',
         status: 'active',
       },
       {
         name: 'Meesho',
         slug: 'meesho',
-        logoUrl: 'https://cdn.worldvectorlogo.com/logos/meesho-1.svg',
         description: 'Meesho Marketplace',
         status: 'active',
       },
       {
         name: 'Nykaa',
         slug: 'nykaa',
-        logoUrl: 'https://cdn.worldvectorlogo.com/logos/nykaa-1.svg',
         description: 'Nykaa Marketplace',
         status: 'active',
       },
       {
         name: 'Myntra',
         slug: 'myntra',
-        logoUrl: 'https://cdn.worldvectorlogo.com/logos/myntra-1.svg',
         description: 'Myntra Marketplace',
         status: 'active',
       },
       {
         name: 'Ajio',
         slug: 'ajio',
-        logoUrl: 'https://cdn.worldvectorlogo.com/logos/ajio-1.svg',
         description: 'Ajio Marketplace',
         status: 'active',
       },
       {
         name: 'Shopify',
         slug: 'shopify',
-        logoUrl: 'https://cdn.worldvectorlogo.com/logos/shopify.svg',
         description: 'Shopify Store',
         status: 'active',
       },
       {
         name: 'WooCommerce',
         slug: 'woocommerce',
-        logoUrl: 'https://cdn.worldvectorlogo.com/logos/woocommerce.svg',
         description: 'WooCommerce Store',
         status: 'active',
       },

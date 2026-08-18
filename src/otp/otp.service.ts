@@ -84,11 +84,42 @@ export class OtpService {
     }
   }
 
-  getMsg91WidgetConfig() {
-    return this.msg91WidgetService.getWidgetConfig();
+  private isNonProduction(): boolean {
+    const env =
+      this.configService.get<string>('NODE_ENV') ?? process.env.NODE_ENV;
+    return env !== 'production';
+  }
+
+  private isCaptchaSkipped(): boolean {
+    const explicit = this.configService
+      .get<string>('MSG91_SKIP_CAPTCHA')
+      ?.trim()
+      .toLowerCase();
+    if (explicit === '1' || explicit === 'true' || explicit === 'yes') {
+      return true;
+    }
+    if (explicit === '0' || explicit === 'false' || explicit === 'no') {
+      return false;
+    }
+    return this.isNonProduction();
+  }
+
+  async getMsg91WidgetConfig() {
+    const config = await this.msg91WidgetService.getWidgetConfig();
+    if (this.isCaptchaSkipped()) {
+      return {
+        ...config,
+        captchaRequired: false,
+        recaptchaSiteKey: null,
+      };
+    }
+    return config;
   }
 
   private canDeliverLocalSms(): boolean {
+    if (this.isNonProduction()) {
+      return true;
+    }
     const authKey = this.msg91WidgetService.getAuthKey();
     const flowId =
       this.configService.get<string>('MSG91_FLOW_ID')?.trim() ||
@@ -103,9 +134,16 @@ export class OtpService {
     otpHash: string,
     captchaToken?: string,
   ): Promise<void> {
-    const widgetConfig = await this.msg91WidgetService.getWidgetConfig();
+    const skipCaptcha = this.isCaptchaSkipped();
+    const widgetConfig = skipCaptcha
+      ? { captchaRequired: false }
+      : await this.msg91WidgetService.getWidgetConfig();
 
-    if (widgetConfig.captchaRequired && !captchaToken?.trim()) {
+    if (
+      widgetConfig.captchaRequired &&
+      !captchaToken?.trim() &&
+      !this.canDeliverLocalSms()
+    ) {
       throw new BadRequestException(
         'Captcha verification is required before sending OTP.',
       );
@@ -120,10 +158,20 @@ export class OtpService {
           'Unable to send OTP via MSG91. Ensure captcha is enabled or configure MSG91 SMS credentials.',
         );
       }
-      this.logger.warn(`${reason}; using MSG91 flow SMS fallback mobile=${mobile}`);
+      this.logger.warn(`${reason}; using local OTP fallback mobile=${mobile}`);
       await this.repository.setLocalOtpHash(record, otpHash);
       await this.deliverLocalOtp(mobile, otp);
     };
+
+    if (skipCaptcha) {
+      await fallbackToLocalOtp('MSG91 captcha skipped for this environment');
+      return;
+    }
+
+    if (widgetConfig.captchaRequired && !captchaToken?.trim()) {
+      await fallbackToLocalOtp('MSG91 captcha token was not provided');
+      return;
+    }
 
     try {
       const widgetSend = await this.msg91WidgetService.sendOtp(
@@ -152,7 +200,10 @@ export class OtpService {
             ? error.message
             : 'MSG91 widget send failed';
 
-      if (this.msg91WidgetService.isCaptchaError(reason)) {
+      if (
+        this.msg91WidgetService.isCaptchaError(reason) &&
+        !this.canDeliverLocalSms()
+      ) {
         throw new BadRequestException(
           'MSG91 captcha verification failed. Refresh the page and try again.',
         );
@@ -163,6 +214,9 @@ export class OtpService {
   }
 
   private async deliverLocalOtp(mobile: string, otp: string): Promise<void> {
+    if (this.isNonProduction()) {
+      this.logger.log(`DEV OTP for ${mobile}: ${otp}`);
+    }
     try {
       await this.smsService.sendOtp(mobile, otp);
     } catch (error: unknown) {
@@ -171,9 +225,6 @@ export class OtpService {
       this.logger.warn(
         `SMS OTP delivery failed mobile=${mobile}: ${message}`,
       );
-      if (process.env.NODE_ENV === 'development') {
-        this.logger.log(`DEV OTP for ${mobile}: ${otp}`);
-      }
     }
   }
 

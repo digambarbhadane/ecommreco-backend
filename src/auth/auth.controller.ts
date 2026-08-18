@@ -10,6 +10,7 @@ import {
   Controller,
   Get,
   BadRequestException,
+  ForbiddenException,
   Headers,
   Post,
   Query,
@@ -51,6 +52,40 @@ export class AuthController {
       ip: req.ip || req.socket?.remoteAddress,
       userAgent: req.headers['user-agent'],
     };
+  }
+
+  private normalizeOrigin(value: string) {
+    return value.trim().replace(/\/+$/, '').toLowerCase();
+  }
+
+  private assertTrustedOrigin(req: Request) {
+    const origin = String(req.headers.origin ?? '').trim();
+    if (!origin) return;
+    const allowed = new Set(
+      [
+        String(process.env.FRONTEND_URL ?? ''),
+        String(process.env.API_PUBLIC_URL ?? ''),
+        ...String(process.env.FRONTEND_URLS ?? '')
+          .split(',')
+          .map((item) => item.trim()),
+        'https://ecommreco.com',
+        'https://www.ecommreco.com',
+        'https://uat.ecommreco.com',
+        'https://dev.ecommreco.com',
+        'http://localhost:8080',
+        'http://127.0.0.1:8080',
+      ]
+        .filter(Boolean)
+        .map((item) => this.normalizeOrigin(item)),
+    );
+    const normalized = this.normalizeOrigin(origin);
+    if (!allowed.has(normalized)) {
+      throw new ForbiddenException({
+        success: false,
+        message: 'Request origin is not allowed.',
+        errorCode: 'ORIGIN_NOT_ALLOWED',
+      });
+    }
   }
 
   @Post('send-otp')
@@ -194,6 +229,7 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
+    this.assertTrustedOrigin(req);
     const result = await this.authService.login(dto, req);
     const refreshToken = String(result?.data?.refreshToken ?? '').trim();
     if (refreshToken) {
@@ -215,13 +251,15 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
+    this.assertTrustedOrigin(req);
     const refreshToken =
       String(dto.refreshToken ?? '').trim() || readRefreshCookie(req);
     const result = await this.authService.refreshAccessToken(refreshToken, req);
-    if (refreshToken) {
-      setRefreshCookie(res, refreshToken);
+    const rotatedRefresh = String(result?.data?.refreshToken ?? '').trim();
+    if (rotatedRefresh) {
+      setRefreshCookie(res, rotatedRefresh);
     }
-    return result;
+    return this.authService.stripRefreshTokenFromResult(result);
   }
 
   @Post('logout')
@@ -237,6 +275,7 @@ export class AuthController {
     @Body() body: { refreshToken?: string },
     @Headers('authorization') authorization?: string,
   ) {
+    this.assertTrustedOrigin(req);
     let userId = req.user?.id;
     let sessionId = req.user?.sessionId;
     const bearer = String(authorization ?? '').replace(/^Bearer\s+/i, '').trim();
