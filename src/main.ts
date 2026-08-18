@@ -104,6 +104,25 @@ async function bootstrap() {
   app.use(compression());
   app.use(express.json({ limit: '10mb' }));
   app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+  const expressApp = app.getHttpAdapter().getInstance() as {
+    set?: (key: string, value: unknown) => void;
+  };
+  expressApp.set?.('etag', false);
+  app.use(
+    (
+      _req: express.Request,
+      res: express.Response,
+      next: express.NextFunction,
+    ) => {
+      res.setHeader(
+        'Cache-Control',
+        'no-store, no-cache, must-revalidate, private',
+      );
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      next();
+    },
+  );
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -193,6 +212,8 @@ async function bootstrap() {
       'Access-Control-Request-Method',
       'Access-Control-Request-Headers',
       'x-setup-token',
+      'Cache-Control',
+      'Pragma',
     ],
     exposedHeaders: ['Content-Disposition', 'Content-Type'],
     optionsSuccessStatus: 204,

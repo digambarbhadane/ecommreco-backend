@@ -60,6 +60,39 @@ describe('Auth API (e2e)', () => {
     });
   });
 
+  describe('POST /api/v1/auth/refresh-token', () => {
+    it('rotates refresh cookie and rejects old cookie reuse', async () => {
+      const login = await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({
+          email: process.env.DEV_SUPER_ADMIN_EMAIL ?? 'superadmin@test.com',
+          password: process.env.DEV_SUPER_ADMIN_PASSWORD ?? 'password123',
+        })
+        .expect(200);
+
+      const initialCookie = login.headers['set-cookie']?.[0];
+      expect(initialCookie).toContain('ecommreco_rt=');
+
+      const refreshed = await request(app.getHttpServer())
+        .post('/api/v1/auth/refresh-token')
+        .set('Cookie', initialCookie)
+        .send({})
+        .expect(201);
+
+      expect(refreshed.body?.data?.accessToken).toBeTruthy();
+      expect(refreshed.body?.data?.refreshToken).toBeUndefined();
+      const rotatedCookie = refreshed.headers['set-cookie']?.[0];
+      expect(rotatedCookie).toContain('ecommreco_rt=');
+      expect(rotatedCookie).not.toBe(initialCookie);
+
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/refresh-token')
+        .set('Cookie', initialCookie)
+        .send({})
+        .expect(401);
+    });
+  });
+
   describe('GET /api/v1/auth/debug-db', () => {
     it('debug-db is restricted in production only (open in test/development)', async () => {
       const res = await request(app.getHttpServer()).get('/api/v1/auth/debug-db');

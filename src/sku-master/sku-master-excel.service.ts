@@ -7,6 +7,7 @@ import ExcelJS from 'exceljs';
 import * as XLSX from 'xlsx';
 import { ExportSkuMasterQueryDto } from './dto/export-sku-master.query.dto';
 import { SkuMasterService } from './sku-master.service';
+import { parseSkuRate } from './sku-rate.util';
 import { resolveGstDisplayName } from '../gsts/utils/gst-display.util';
 
 type RequestActor = {
@@ -17,9 +18,11 @@ type RequestActor = {
 
 type ParsedImportRow = {
   rowNumber: number;
+  gstin: string;
   marketplace: string;
   marketplaceSku: string;
   masterSku: string;
+  category: string;
   rate: string;
 };
 
@@ -29,6 +32,7 @@ const EXPORT_COLUMNS = [
   { header: 'Marketplace', key: 'marketplace', width: 14 },
   { header: 'Marketplace SKU', key: 'marketplaceSku', width: 28 },
   { header: 'Master SKU', key: 'masterSku', width: 22 },
+  { header: 'Category', key: 'category', width: 22 },
   { header: 'Rate', key: 'rate', width: 12 },
 ] as const;
 
@@ -41,16 +45,17 @@ export class SkuMasterExcelService {
   async exportWorkbook(query: ExportSkuMasterQueryDto, actor: RequestActor) {
     const { filtered, gst } = await this.skuMasterService.getFilteredItems(
       {
-        ...query,
-        // Excel download is only for rows that still need mapping.
-        status: 'UNMAPPED',
+        gstId: query.gstId,
+        marketplace: query.marketplace ?? 'ALL',
+        search: query.search,
+        status: query.status ?? 'ALL',
       },
       actor,
     );
 
     if (!filtered.length) {
       throw new BadRequestException(
-        'No unmapped SKUs found to export for the selected GST and filters.',
+        'No SKUs found to export for the selected GST.',
       );
     }
 
@@ -75,18 +80,20 @@ export class SkuMasterExcelService {
     headerRow.alignment = { vertical: 'middle', horizontal: 'center' };
     headerRow.height = 22;
 
-    const gstin = String(gst.gstNumber ?? '').trim().toUpperCase();
-    const businessName = resolveGstDisplayName(gst);
+    const gstin = String(gst?.gstNumber ?? '').trim().toUpperCase();
+    const businessName = gst ? resolveGstDisplayName(gst) : '';
 
     for (const item of filtered) {
-      sheet.addRow({
+      const row = sheet.addRow({
         gstin: item.gstin || gstin,
         businessName: item.businessName || businessName,
         marketplace: this.formatMarketplaceLabel(item.marketplace),
         marketplaceSku: item.marketplaceSku,
         masterSku: item.masterSku ?? '',
+        category: item.category ?? '',
         rate: item.rate ?? '',
       });
+      row.getCell('rate').numFmt = '0.##';
     }
 
     sheet.views = [{ state: 'frozen', ySplit: 1 }];
@@ -100,32 +107,68 @@ export class SkuMasterExcelService {
     instructions.addRow(['SKU Master bulk mapping guide']);
     instructions.addRow([]);
     instructions.addRow([
-      '1. This file contains only UNMAPPED SKUs for the selected GST.',
+      '1. This file contains SKUs for the selected GST scope (mapped and unmapped).',
     ]);
     instructions.addRow([
-      '2. Fill both "Master SKU" and "Rate" for every row you want to map.',
+      '2. Change Master SKU, Category, and/or Rate, then re-upload. Existing mappings are overwritten with the new values.',
     ]);
     instructions.addRow([
-      '3. Mapping is completed only when both Master SKU and Rate are provided.',
+      '3. Rate is stored exactly as entered (for example 500 stays 500). Leave Rate or Category blank to keep the current value.',
     ]);
     instructions.addRow([
-      '4. Do not change GST No, Business Name, Marketplace, or Marketplace SKU.',
+      '4. Mapping status becomes Mapped when both Master SKU and Rate are provided. Category is optional.',
     ]);
     instructions.addRow([
-      '5. Leave Master SKU / Rate blank for rows you do not want to update yet.',
+      '5. Do not change GST No, Business Name, Marketplace, or Marketplace SKU.',
     ]);
-    instructions.addRow(['6. Save the file and upload it back on the SKU Master page.']);
+    instructions.addRow([
+      '6. Leave Master SKU blank for rows you do not want to update yet.',
+    ]);
+    instructions.addRow(['7. Save the file and upload it back on the SKU Master page.']);
 
     const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
-    const gstSlug = gstin.replace(/[^a-zA-Z0-9]/g, '').slice(0, 15);
-    const filename = `sku-master-unmapped-${gstSlug || 'export'}-${Date.now()}.xlsx`;
+    const gstSlug = query.gstId
+      ? gstin.replace(/[^a-zA-Z0-9]/g, '').slice(0, 15)
+      : 'all-gst';
+    const filename = `sku-master-${gstSlug || 'export'}-${Date.now()}.xlsx`;
 
     return { buffer, filename, rowCount: filtered.length };
   }
 
   async importWorkbook(
     buffer: Buffer,
-    gstId: string,
+    gstId: string | undefined,
+    actor: RequestActor,
+  ) {
+    const prepared = await this.prepareImport(buffer, gstId, actor);
+
+    if (!prepared.updates.length && prepared.errors.length) {
+      throw new BadRequestException({
+        message: 'No valid rows to import',
+        errors: prepared.errors.slice(0, 25),
+      });
+    }
+
+    let updatedCount = 0;
+    if (prepared.updates.length) {
+      const result = await this.commitUpdates(prepared.updates, actor);
+      updatedCount = result.updatedCount;
+    }
+
+    return {
+      success: true,
+      updatedCount,
+      skippedCount: prepared.skippedCount,
+      failedCount: prepared.errors.length,
+      errors: prepared.errors.slice(0, 50),
+      totalRows: prepared.totalRows,
+      pendingCount: 0,
+    };
+  }
+
+  async prepareImport(
+    buffer: Buffer,
+    gstId: string | undefined,
     actor: RequestActor,
   ) {
     if (!buffer?.length) {
@@ -137,12 +180,21 @@ export class SkuMasterExcelService {
       actor,
     );
 
-    const knownKeys = new Map(
+    const knownByGstin = new Map(
       allItems.map((item) => [
-        `${item.marketplace}:${item.marketplaceSku}`,
+        `${item.gstin}:${item.marketplace}:${item.marketplaceSku.toLowerCase()}`,
         item,
       ]),
     );
+    const knownBySku = new Map(
+      allItems.map((item) => [
+        `${item.marketplace}:${item.marketplaceSku.toLowerCase()}`,
+        item,
+      ]),
+    );
+    const selectedGstin = gstId
+      ? allItems.find((item) => item.gstId === gstId)?.gstin
+      : undefined;
 
     const parsedRows = this.parseWorkbook(buffer);
     if (!parsedRows.length) {
@@ -161,24 +213,25 @@ export class SkuMasterExcelService {
       marketplace: string;
       marketplaceSku: string;
       masterSku: string;
-      rate: number;
+      rate?: number | null;
+      category?: string;
     }> = [];
 
     let skippedCount = 0;
 
     for (const row of parsedRows) {
-      const masterSku = row.masterSku.trim();
-      const rateRaw = row.rate.trim();
-      if (!masterSku && !rateRaw) {
-        skippedCount += 1;
-        continue;
-      }
-
       const marketplace = this.normalizeMarketplace(row.marketplace);
       const marketplaceSku = row.marketplaceSku.trim();
-      const rate = this.parseRate(rateRaw);
+      const masterSkuFromFile = row.masterSku.trim();
+      const categoryFromFile = row.category.trim();
+      const rateRaw = row.rate.trim();
+      const rate = rateRaw ? parseSkuRate(rateRaw) : null;
 
       if (!marketplace || !marketplaceSku) {
+        if (!masterSkuFromFile && !rateRaw && !categoryFromFile) {
+          skippedCount += 1;
+          continue;
+        }
         errors.push({
           row: row.rowNumber,
           marketplaceSku: marketplaceSku || '—',
@@ -187,17 +240,17 @@ export class SkuMasterExcelService {
         continue;
       }
 
-      if (!masterSku || rate === null) {
-        errors.push({
-          row: row.rowNumber,
-          marketplaceSku,
-          message: 'Both Master SKU and Rate are required to complete mapping',
-        });
-        continue;
-      }
+      const gstin = String(row.gstin ?? selectedGstin ?? '')
+        .trim()
+        .toUpperCase();
+      const skuKey = marketplaceSku.toLowerCase();
+      const matched =
+        (gstin
+          ? knownByGstin.get(`${gstin}:${marketplace}:${skuKey}`)
+          : undefined) ??
+        knownBySku.get(`${marketplace}:${skuKey}`);
 
-      const key = `${marketplace}:${marketplaceSku}`;
-      if (!knownKeys.has(key)) {
+      if (!matched) {
         errors.push({
           row: row.rowNumber,
           marketplaceSku,
@@ -206,38 +259,70 @@ export class SkuMasterExcelService {
         continue;
       }
 
+      const masterSku = masterSkuFromFile || String(matched.masterSku ?? '').trim();
+      if (!masterSku) {
+        errors.push({
+          row: row.rowNumber,
+          marketplaceSku,
+          message: 'Master SKU is required to update this row',
+        });
+        continue;
+      }
+
+      const existingMaster = String(matched.masterSku ?? '').trim();
+      const existingCategory = String(matched.category ?? '').trim();
+      const existingRate =
+        matched.rate === null || matched.rate === undefined
+          ? null
+          : Number(matched.rate);
+      const masterChanged = masterSku !== existingMaster;
+      const categoryChanged =
+        Boolean(categoryFromFile) && categoryFromFile !== existingCategory;
+      const rateChanged = rate !== null && rate !== existingRate;
+      if (!masterChanged && !rateChanged && !categoryChanged) {
+        skippedCount += 1;
+        continue;
+      }
+
       updates.push({
-        gstId,
+        gstId: matched.gstId,
         marketplace,
         marketplaceSku,
         masterSku,
-        rate,
+        ...(rate !== null ? { rate } : {}),
+        ...(categoryFromFile ? { category: categoryFromFile.slice(0, 120) } : {}),
       });
     }
-
-    if (!updates.length && errors.length) {
-      throw new BadRequestException({
-        message: 'No valid rows to import',
-        errors: errors.slice(0, 25),
-      });
-    }
-
-    let updatedCount = 0;
-    if (updates.length) {
-      const result = await this.skuMasterService.bulkUpdate(updates, actor);
-      updatedCount = result.updatedCount;
-    }
-
-    this.logger.log(
-      `SKU master Excel import for GST ${gstId}: updated=${updatedCount}, skipped=${skippedCount}, failed=${errors.length}`,
-    );
 
     return {
-      success: true,
-      updatedCount,
+      success: true as const,
+      totalRows: parsedRows.length,
+      updateCount: updates.length,
       skippedCount,
       failedCount: errors.length,
       errors: errors.slice(0, 50),
+      updates,
+    };
+  }
+
+  async commitUpdates(
+    items: Array<{
+      gstId: string;
+      marketplace: string;
+      marketplaceSku: string;
+      masterSku: string;
+      rate?: number | null;
+      category?: string | null;
+    }>,
+    actor: RequestActor,
+  ) {
+    if (!items.length) {
+      return { success: true as const, updatedCount: 0 };
+    }
+    const result = await this.skuMasterService.bulkUpdate(items, actor);
+    return {
+      success: true as const,
+      updatedCount: result.updatedCount,
     };
   }
 
@@ -264,7 +349,7 @@ export class SkuMasterExcelService {
     );
     if (headerRowIndex < 0) {
       throw new BadRequestException(
-        'Invalid template. Expected columns: Marketplace, Marketplace SKU, Master SKU, Rate.',
+        'Invalid template. Expected columns: Marketplace, Marketplace SKU, Master SKU, Rate. Category is optional.',
       );
     }
 
@@ -277,15 +362,20 @@ export class SkuMasterExcelService {
       const marketplace = this.cellValue(row, columnIndex.marketplace);
       const marketplaceSku = this.cellValue(row, columnIndex.marketplaceSku);
       const masterSku = this.cellValue(row, columnIndex.masterSku);
+      const category = this.cellValue(row, columnIndex.category);
       const rate = this.cellValue(row, columnIndex.rate);
 
-      if (!marketplace && !marketplaceSku && !masterSku && !rate) continue;
+      if (!marketplace && !marketplaceSku && !masterSku && !category && !rate) {
+        continue;
+      }
 
       parsed.push({
         rowNumber: index + 1,
+        gstin: this.cellValue(row, columnIndex.gstin).toUpperCase(),
         marketplace,
         marketplaceSku,
         masterSku,
+        category,
         rate,
       });
     }
@@ -320,16 +410,9 @@ export class SkuMasterExcelService {
         'sku',
       ),
       masterSku: find('master sku', 'master sku id'),
+      category: find('category', 'product category'),
       rate: find('rate', 'gst rate', 'tax rate'),
     };
-  }
-
-  private parseRate(value: string): number | null {
-    if (!value) return null;
-    const cleaned = value.replace(/%/g, '').trim();
-    const rate = Number(cleaned);
-    if (!Number.isFinite(rate) || rate < 0 || rate > 100) return null;
-    return Math.round(rate * 100) / 100;
   }
 
   private cellValue(row: (string | number | null)[], index: number) {

@@ -260,3 +260,7 @@ FlipkartPaymentReportSchema.index(
   { sellerId: 1, invoiceId: 1 },
   { name: 'flipkart_payment_seller_invoice_idx' },
 );
+FlipkartPaymentReportSchema.index(
+  { sellerId: 1, marketplace: 1, neftId: 1 },
+  { name: 'flipkart_payment_neft_idx' },
+);

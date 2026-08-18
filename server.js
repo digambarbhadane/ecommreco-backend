@@ -1,7 +1,14 @@
 const fs = require('fs');
 const path = require('path');
+const dns = require('dns');
 const dotenv = require('dotenv');
 const { resolveEnvFile, usesTsNodeRuntime } = require('./config/env-file');
+
+// Prefer IPv4 on Windows — Atlas AAAA lookups often time out and mongoose
+// then reports a generic IP-whitelist server-selection error.
+if (typeof dns.setDefaultResultOrder === 'function') {
+  dns.setDefaultResultOrder('ipv4first');
+}
 
 // Determine current environment
 const env = process.env.NODE_ENV || 'development';

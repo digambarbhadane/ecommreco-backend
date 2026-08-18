@@ -154,9 +154,9 @@ export class Msg91WidgetService {
       );
       return {
         configured: true,
-        captchaRequired: true,
-        captchaType: 1,
-        recaptchaSiteKey: this.getDefaultRecaptchaSiteKey(),
+        captchaRequired: false,
+        captchaType: null,
+        recaptchaSiteKey: null,
       };
     }
   }
@@ -188,17 +188,24 @@ export class Msg91WidgetService {
     const data = await this.postWidgetJson(`${this.widgetApiBase}/sendOtp`, payload);
     if (!this.isSuccessResponse(data)) {
       const message = this.extractErrorMessage(data);
-      this.logger.warn(`MSG91 sendOtp rejected body=${JSON.stringify(data).slice(0, 300)}`);
+      this.logger.warn(
+        `MSG91 sendOtp rejected identifier=${normalizedIdentifier} body=${JSON.stringify(data).slice(0, 300)}`,
+      );
       if (message?.toLowerCase().includes('captcha')) {
         throw new BadRequestException(
-          'MSG91 captcha verification failed. Retrying with alternate delivery.',
+          message || 'MSG91 captcha verification failed.',
         );
       }
       throw new BadRequestException(message || 'Failed to send OTP.');
     }
 
+    const reqId = this.extractReqId(data);
+    this.logger.log(
+      `MSG91 sendOtp accepted identifier=${normalizedIdentifier} reqId=${reqId ?? 'missing'}`,
+    );
+
     return {
-      reqId: this.extractReqId(data),
+      reqId,
       raw: data,
     };
   }

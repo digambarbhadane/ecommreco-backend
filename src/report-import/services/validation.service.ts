@@ -48,6 +48,7 @@ import {
 } from '../utils/myntra-import.validation';
 import { cacheKey, sellerAliasCache } from '../../common/ttl-cache';
 import { TrialValidationService } from '../../trial/trial-validation.service';
+import { isPrincipalGst } from '../../gsts/gst-principal.util';
 
 @Injectable()
 export class ValidationService {
@@ -134,6 +135,50 @@ export class ValidationService {
       canonicalSellerId: this.getSellerObjectIdString(seller),
       sellerIdAliases,
     };
+  }
+
+  async assertMainGstForPaymentUpload(gstId: string, sellerId: string) {
+    const seller = await this.findSellerByIdentifier(sellerId);
+    const sellerIdAliases = seller
+      ? this.getSellerIdAliases(seller, sellerId)
+      : [String(sellerId ?? '').trim()].filter(Boolean);
+    const gst = await this.findGstForSeller(String(gstId ?? '').trim(), sellerIdAliases);
+    if (!gst) {
+      throw new NotFoundException('Selected GST profile not found');
+    }
+    const pan =
+      String(gst.panNumber ?? '')
+        .trim()
+        .toUpperCase() ||
+      String(gst.gstNumber ?? '')
+        .trim()
+        .toUpperCase()
+        .slice(2, 12);
+    const siblings = await this.gstModel
+      .find({
+        sellerId: { $in: sellerIdAliases },
+      })
+      .sort({ createdAt: 1 })
+      .lean()
+      .exec();
+    const pool = pan
+      ? siblings.filter((item) => {
+          const itemPan =
+            String(item.panNumber ?? '')
+              .trim()
+              .toUpperCase() ||
+            String(item.gstNumber ?? '')
+              .trim()
+              .toUpperCase()
+              .slice(2, 12);
+          return itemPan === pan;
+        })
+      : siblings;
+    if (!isPrincipalGst(gst, pool.length ? pool : [gst])) {
+      throw new BadRequestException(
+        'Payment reports can only be uploaded for the main GST of this PAN. APOB GST numbers cannot upload payment files.',
+      );
+    }
   }
 
   async resolveSellerIdAliases(identifier: string): Promise<string[]> {

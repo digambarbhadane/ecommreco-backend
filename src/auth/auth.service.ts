@@ -250,30 +250,24 @@ export class AuthService implements OnModuleInit {
         ? existingSecurity.tokenVersion
         : 0;
 
-    const accessToken = await this.jwtService.signAsync(
-      {
-        sub: user.id,
-        role: user.role,
-        email: user.email,
-        tokenVersion,
-        sessionId,
-        typ: 'access',
-      } satisfies TokenPairPayload,
-      { expiresIn: ACCESS_TOKEN_TTL },
-    );
+    const accessToken = await this.signAccessToken({
+      sub: user.id,
+      role: user.role,
+      email: user.email,
+      tokenVersion,
+      sessionId,
+      typ: 'access',
+    });
 
-    const refreshToken = await this.jwtService.signAsync(
-      {
-        sub: user.id,
-        role: user.role,
-        email: user.email,
-        tokenVersion,
-        sessionId,
-        typ: 'refresh',
-        jti: refreshJti,
-      } satisfies TokenPairPayload,
-      { expiresIn: REFRESH_TOKEN_TTL },
-    );
+    const refreshToken = await this.signRefreshToken({
+      sub: user.id,
+      role: user.role,
+      email: user.email,
+      tokenVersion,
+      sessionId,
+      typ: 'refresh',
+      jti: refreshJti,
+    });
 
     const tokenHash = this.hashToken(refreshToken);
 
@@ -353,7 +347,7 @@ export class AuthService implements OnModuleInit {
 
     let payload: TokenPairPayload;
     try {
-      payload = await this.jwtService.verifyAsync<TokenPairPayload>(token);
+      payload = await this.verifyToken<TokenPairPayload>(token);
     } catch {
       throw new UnauthorizedException({
         success: false,
@@ -396,24 +390,30 @@ export class AuthService implements OnModuleInit {
     const stored = (security.refreshTokens ?? []).find(
       (entry) => entry.jti === payload.jti,
     );
-    const jwtExpiryMs = this.getJwtExpiryMs(payload);
-
-    if (stored) {
-      if (stored.tokenHash !== tokenHash) {
-        throw new UnauthorizedException({
-          success: false,
-          message: 'Your session has expired. Please login again.',
-          errorCode: 'REFRESH_TOKEN_REVOKED',
-        });
-      }
-      if (new Date(stored.expiresAt).getTime() <= Date.now()) {
-        throw new UnauthorizedException({
-          success: false,
-          message: 'Your session has expired. Please login again.',
-          errorCode: 'REFRESH_TOKEN_EXPIRED',
-        });
-      }
-    } else if (jwtExpiryMs !== null && jwtExpiryMs <= Date.now()) {
+    if (!stored) {
+      this.logger.warn(
+        `Refresh replay suspected: userId=${payload.sub} sessionId=${payload.sessionId} jti not found`,
+      );
+      await this.revokeSessionCredentials(payload.sub, payload.sessionId);
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Your session has expired. Please login again.',
+        errorCode: 'REFRESH_TOKEN_REUSED',
+      });
+    }
+    if (stored.tokenHash !== tokenHash) {
+      this.logger.warn(
+        `Refresh hash mismatch: userId=${payload.sub} sessionId=${payload.sessionId}`,
+      );
+      await this.revokeSessionCredentials(payload.sub, payload.sessionId);
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Your session has expired. Please login again.',
+        errorCode: 'REFRESH_TOKEN_REUSED',
+      });
+    }
+    if (new Date(stored.expiresAt).getTime() <= Date.now()) {
+      await this.revokeSessionCredentials(payload.sub, payload.sessionId);
       throw new UnauthorizedException({
         success: false,
         message: 'Your session has expired. Please login again.',
@@ -425,57 +425,63 @@ export class AuthService implements OnModuleInit {
       (session) => session.sessionId === payload.sessionId,
     );
     const now = new Date();
-    const reconcileUpdate: Record<string, unknown> = {};
+    const refreshJti = randomUUID();
+    const rotatedRefreshToken = await this.signRefreshToken({
+      sub: payload.sub,
+      role: payload.role,
+      email: payload.email,
+      tokenVersion: currentVersion,
+      sessionId: payload.sessionId,
+      typ: 'refresh',
+      jti: refreshJti,
+    });
+    const refreshHash = this.hashToken(rotatedRefreshToken);
+    const refreshExpiresAt = new Date(now.getTime() + REFRESH_TOKEN_TTL_MS);
 
-    if (!sessionActive) {
-      reconcileUpdate.$push = {
-        activeSessions: {
-          $each: [
-            {
-              sessionId: payload.sessionId,
-              ipAddress: req ? this.getIp(req) : 'unknown',
-              device: req ? this.getDevice(req) : 'unknown',
-              createdAt: now,
-              lastSeenAt: now,
-            },
-          ],
-          $slice: -10,
-        },
-      };
-    }
+    // $pull and $push on the same array field is not allowed in a single
+    // MongoDB update, so we remove the old token first, then push the new one.
+    await this.userSecurityModel
+      .updateOne(
+        { userId: payload.sub },
+        { $pull: { refreshTokens: { jti: payload.jti } } },
+      )
+      .exec();
 
-    if (!stored) {
-      const expiresAt =
-        jwtExpiryMs !== null
-          ? new Date(jwtExpiryMs)
-          : new Date(now.getTime() + REFRESH_TOKEN_TTL_MS);
-      const refreshPush = {
+    const pushUpdate: Record<string, unknown> = {
+      refreshTokens: {
         $each: [
           {
-            jti: payload.jti,
+            jti: refreshJti,
             sessionId: payload.sessionId,
-            tokenHash,
-            expiresAt,
+            tokenHash: refreshHash,
+            expiresAt: refreshExpiresAt,
             createdAt: now,
           },
         ],
         $slice: -20,
+      },
+    };
+    if (!sessionActive) {
+      pushUpdate.activeSessions = {
+        $each: [
+          {
+            sessionId: payload.sessionId,
+            ipAddress: req ? this.getIp(req) : 'unknown',
+            device: req ? this.getDevice(req) : 'unknown',
+            createdAt: now,
+            lastSeenAt: now,
+          },
+        ],
+        $slice: -10,
       };
-      if (reconcileUpdate.$push) {
-        (reconcileUpdate.$push as Record<string, unknown>).refreshTokens =
-          refreshPush;
-      } else {
-        reconcileUpdate.$push = { refreshTokens: refreshPush };
-      }
     }
+    await this.userSecurityModel
+      .updateOne({ userId: payload.sub }, { $push: pushUpdate })
+      .exec();
 
-    if (Object.keys(reconcileUpdate).length > 0) {
-      await this.userSecurityModel
-        .updateOne({ userId: payload.sub }, reconcileUpdate)
-        .exec();
-    }
-
-    const account = await this.loadActiveAuthAccount(payload.sub, payload.role);
+    const account = await this.loadActiveAuthAccount(payload.sub, payload.role, {
+      enforceLoginPolicy: false,
+    });
 
     if (sessionActive && req) {
       await this.userSecurityModel.updateOne(
@@ -491,23 +497,21 @@ export class AuthService implements OnModuleInit {
       );
     }
 
-    const accessToken = await this.jwtService.signAsync(
-      {
-        sub: account.id,
-        role: account.role,
-        email: account.email,
-        tokenVersion: currentVersion,
-        sessionId: payload.sessionId,
-        typ: 'access',
-      } satisfies TokenPairPayload,
-      { expiresIn: ACCESS_TOKEN_TTL },
-    );
+    const accessToken = await this.signAccessToken({
+      sub: account.id,
+      role: account.role,
+      email: account.email,
+      tokenVersion: currentVersion,
+      sessionId: payload.sessionId,
+      typ: 'access',
+    });
 
     return {
       success: true,
       message: 'Token refreshed',
       data: {
         accessToken,
+        refreshToken: rotatedRefreshToken,
         expiresAt: new Date(now.getTime() + ACCESS_TOKEN_TTL_MS).toISOString(),
         expiresIn: Math.floor(ACCESS_TOKEN_TTL_MS / 1000),
         user: account,
@@ -534,10 +538,9 @@ export class AuthService implements OnModuleInit {
     }
     if (refreshToken) {
       try {
-        const payload = await this.jwtService.verifyAsync<TokenPairPayload>(
-          refreshToken,
-          { ignoreExpiration: true },
-        );
+        const payload = await this.verifyToken<TokenPairPayload>(refreshToken, {
+          ignoreExpiration: true,
+        });
         if (payload.jti) {
           pull.refreshTokens = { jti: payload.jti };
         }
@@ -555,13 +558,70 @@ export class AuthService implements OnModuleInit {
     return { success: true, message: 'Logged out' };
   }
 
+  stripRefreshTokenFromResult<T extends { data?: { refreshToken?: string } }>(
+    result: T,
+  ): T {
+    if (!result?.data || !('refreshToken' in result.data)) {
+      return result;
+    }
+    const data = { ...result.data };
+    delete data.refreshToken;
+    return { ...result, data };
+  }
+
+  private jwtSecret() {
+    const secret = this.configService.get<string>('JWT_SECRET');
+    if (!secret) {
+      throw new Error('JWT_SECRET environment variable is required');
+    }
+    return secret;
+  }
+
+  private signAccessToken(payload: TokenPairPayload) {
+    return this.jwtService.signAsync(payload, {
+      secret: this.jwtSecret(),
+      expiresIn: ACCESS_TOKEN_TTL,
+    });
+  }
+
+  private signRefreshToken(payload: TokenPairPayload) {
+    return this.jwtService.signAsync(payload, {
+      secret: this.jwtSecret(),
+      expiresIn: REFRESH_TOKEN_TTL,
+    });
+  }
+
+  private verifyToken<T extends object>(
+    token: string,
+    options?: { ignoreExpiration?: boolean },
+  ) {
+    return this.jwtService.verifyAsync<T>(token, {
+      secret: this.jwtSecret(),
+      ignoreExpiration: options?.ignoreExpiration,
+    });
+  }
+
   private hashToken(token: string) {
     return createHash('sha256').update(token).digest('hex');
   }
 
+  private async revokeSessionCredentials(userId: string, sessionId: string) {
+    await this.userSecurityModel
+      .updateOne(
+        { userId },
+        {
+          $pull: {
+            refreshTokens: { sessionId },
+            activeSessions: { sessionId },
+          },
+        },
+      )
+      .exec();
+  }
+
   /** Best-effort decode for logout when access token may already be expired. */
   async decodeAccessToken(token: string) {
-    const payload = await this.jwtService.verifyAsync<TokenPairPayload>(token, {
+    const payload = await this.verifyToken<TokenPairPayload>(token, {
       ignoreExpiration: true,
     });
     return {
@@ -578,7 +638,12 @@ export class AuthService implements OnModuleInit {
     return null;
   }
 
-  private async loadActiveAuthAccount(userId: string, role?: string) {
+  private async loadActiveAuthAccount(
+    userId: string,
+    role?: string,
+    options?: { enforceLoginPolicy?: boolean },
+  ) {
+    const enforceLoginPolicy = options?.enforceLoginPolicy ?? true;
     if (role === 'seller') {
       const seller = await this.sellerModel
         .findById(userId)
@@ -586,12 +651,15 @@ export class AuthService implements OnModuleInit {
         .lean()
         .exec();
       if (seller) {
-        const loginCheck = this.evaluateSellerLogin(seller);
-        if (!loginCheck.allowed) {
-          this.throwLoginDenied(loginCheck);
+        if (enforceLoginPolicy) {
+          const loginCheck = this.evaluateSellerLogin(seller);
+          if (!loginCheck.allowed) {
+            this.throwLoginDenied(loginCheck);
+          }
         }
         return {
           id: String(seller._id),
+          sellerId: String(seller._id),
           name: String(
             (seller as { fullName?: string }).fullName ??
               (seller as { email?: string }).email ??
@@ -629,19 +697,37 @@ export class AuthService implements OnModuleInit {
           errorCode: 'ACCOUNT_DISABLED',
         });
       }
-      const linkedSeller = await this.sellerModel
-        .findOne({ email: sellerUser.email })
-        .select('-password')
-        .lean()
-        .exec();
+      let linkedSeller = sellerUser.sellerId
+        ? await this.sellerModel
+            .findById(sellerUser.sellerId)
+            .select('-password')
+            .lean()
+            .exec()
+        : null;
+      if (!linkedSeller && sellerUser.email) {
+        const email = String(sellerUser.email).trim().toLowerCase();
+        linkedSeller = await this.sellerModel
+          .findOne({ $or: [{ email }, { username: email }] })
+          .select('-password')
+          .lean()
+          .exec();
+      }
       if (linkedSeller) {
-        const loginCheck = this.evaluateSellerLogin(linkedSeller);
-        if (!loginCheck.allowed) {
-          this.throwLoginDenied(loginCheck);
+        if (enforceLoginPolicy) {
+          const loginCheck = this.evaluateSellerLogin(linkedSeller);
+          if (!loginCheck.allowed) {
+            this.throwLoginDenied(loginCheck);
+          }
         }
       }
       return {
         id: String(sellerUser._id),
+        sellerId:
+          linkedSeller?._id != null
+            ? String(linkedSeller._id)
+            : sellerUser.sellerId
+              ? String(sellerUser.sellerId)
+              : undefined,
         name: String(sellerUser.fullName ?? sellerUser.email ?? ''),
         email: String(sellerUser.email ?? ''),
         role: 'seller',

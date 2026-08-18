@@ -11,6 +11,12 @@ import {
   mapMeeshoOrderPaymentToAnalyticsRow,
   type PaymentAnalyticsRow,
 } from './payment-analytics.types';
+import {
+  getNetSales,
+  getPaymentDifference,
+  matchesPaymentStatus,
+  summarizePaymentRecords,
+} from './payment-reconciliation.util';
 import { applyPaymentFiltersToMongoFilter } from '../utils/payment-filter.util';
 import {
   MeeshoOrderPayments,
@@ -76,9 +82,14 @@ export class AnalyticsPaymentsService {
       return this.listLegacyImportRowPayments(query, sellerAliases, limit, skip);
     }
 
-    const sortBy = FLIPKART_SORT_FIELDS.has(String(query.sortBy ?? ''))
-      ? (query.sortBy as string)
-      : 'paymentDate';
+    const requestedSort = String(query.sortBy ?? '');
+    const sortBy =
+      FLIPKART_SORT_FIELDS.has(requestedSort) ||
+      requestedSort === 'netSales' ||
+      requestedSort === 'difference' ||
+      requestedSort === 'refund'
+        ? requestedSort
+        : 'paymentDate';
     const sortOrder = query.sortOrder === 'asc' ? 'asc' : 'desc';
 
     const [flipkartResult, meeshoRows] = await Promise.all([
@@ -116,8 +127,9 @@ export class AnalyticsPaymentsService {
     ];
 
     const sorted = this.sortPaymentRows(mapped, sortBy, sortOrder);
-    const total = sorted.length;
-    const page = sorted.slice(skip, skip + limit);
+    const filtered = this.filterByPaymentStatus(sorted, query.paymentStatus);
+    const total = filtered.length;
+    const page = filtered.slice(skip, skip + limit);
 
     return {
       success: true,
@@ -154,6 +166,13 @@ export class AnalyticsPaymentsService {
           uniqueNeftCount: 0,
           rowsWithPaymentMode: 0,
           byPaymentMode: [],
+          salesRecords: 0,
+          returnRecords: 0,
+          totalOrderRecords: 0,
+          dueCount: 0,
+          overdueCount: 0,
+          settledCount: 0,
+          disputeCount: 0,
         },
       };
     }
@@ -161,6 +180,7 @@ export class AnalyticsPaymentsService {
     const list = await this.listPayments({
       ...query,
       sellerId,
+      paymentStatus: undefined,
       limit: '100000',
       skip: '0',
     });
@@ -184,6 +204,8 @@ export class AnalyticsPaymentsService {
       }
     }
 
+    const reconciliation = summarizePaymentRecords(rows);
+
     return {
       success: true,
       data: {
@@ -196,6 +218,7 @@ export class AnalyticsPaymentsService {
           count: v.count,
           settlement: v.settlement,
         })),
+        ...reconciliation,
       },
     };
   }
@@ -281,16 +304,30 @@ export class AnalyticsPaymentsService {
     };
   }
 
+  private filterByPaymentStatus(
+    rows: PaymentAnalyticsRow[],
+    status?: string,
+  ) {
+    const key = String(status ?? '').trim().toLowerCase();
+    if (!key) return rows;
+    return rows.filter((row) => matchesPaymentStatus(row, key));
+  }
+
   private sortPaymentRows(
     rows: PaymentAnalyticsRow[],
     sortBy: string,
     sortOrder: 'asc' | 'desc',
   ) {
     const dir = sortOrder === 'asc' ? 1 : -1;
-    const key = sortBy as keyof PaymentAnalyticsRow;
     return [...rows].sort((a, b) => {
-      const av = a[key];
-      const bv = b[key];
+      const pick = (row: PaymentAnalyticsRow): string | number | undefined => {
+        if (sortBy === 'netSales') return getNetSales(row);
+        if (sortBy === 'difference') return getPaymentDifference(row);
+        if (sortBy === 'refund') return Number(row.refund ?? 0);
+        return row[sortBy as keyof PaymentAnalyticsRow] as string | number | undefined;
+      };
+      const av = pick(a);
+      const bv = pick(b);
       if (av == null && bv == null) return 0;
       if (av == null) return 1;
       if (bv == null) return -1;
@@ -467,6 +504,26 @@ export class AnalyticsPaymentsService {
     const filter = await this.buildLegacyFilter(query, sellerAliases);
     const sortBy = query.sortBy ?? 'paymentDate';
     const sortOrder = query.sortOrder === 'desc' ? -1 : 1;
+    const status = String(query.paymentStatus ?? '').trim().toLowerCase();
+
+    if (status) {
+      const docs = await this.rowModel
+        .find(filter)
+        .sort({ [sortBy]: sortOrder })
+        .limit(100_000)
+        .lean()
+        .exec();
+      const mapped = docs.map((row) => mapImportRowToPaymentAnalyticsRow(row));
+      const filtered = this.filterByPaymentStatus(mapped, status);
+      return {
+        success: true,
+        data: filtered.slice(skip, skip + limit),
+        total: filtered.length,
+        limit,
+        skip,
+        source: 'import_rows' as const,
+      };
+    }
 
     const facetResult = await this.rowModel
       .aggregate<{

@@ -28,7 +28,7 @@ import { MULTER_UPLOAD_LIMITS } from '../config/upload-limits';
 import { ListSkuMasterQueryDto } from './dto/list-sku-master.query.dto';
 import { ExportSkuMasterQueryDto } from './dto/export-sku-master.query.dto';
 import { UpsertSkuMasterDto } from './dto/upsert-sku-master.dto';
-import { BulkUpdateSkuMasterItemDto } from './dto/bulk-update-sku-master.dto';
+import { BulkUpdateSkuMasterDto, BulkUpdateSkuMasterItemDto } from './dto/bulk-update-sku-master.dto';
 import { SkuMasterService } from './sku-master.service';
 import { SkuMasterExcelService } from './sku-master-excel.service';
 
@@ -72,6 +72,50 @@ export class SkuMasterController {
     });
   }
 
+  @Post('import/prepare')
+  @ApiOperation({ summary: 'Parse SKU master Excel and return rows to update' })
+  @ApiConsumes('multipart/form-data')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: MULTER_UPLOAD_LIMITS,
+    }),
+  )
+  async prepareImport(
+    @Query('gstId') gstId: string,
+    @UploadedFile() file?: { buffer: Buffer; originalname: string },
+    @Req() req?: RequestWithUser,
+  ) {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('Excel file is required');
+    }
+    const prepared = await this.skuMasterExcelService.prepareImport(
+      file.buffer,
+      gstId?.trim() || undefined,
+      req?.user ?? {},
+    );
+    return {
+      success: true,
+      totalRows: prepared.totalRows,
+      updateCount: prepared.updateCount,
+      skippedCount: prepared.skippedCount,
+      failedCount: prepared.failedCount,
+      errors: prepared.errors,
+      updates: prepared.updates,
+    };
+  }
+
+  @Post('import/commit')
+  @ApiOperation({ summary: 'Save a batch of SKU master Excel rows' })
+  commitImport(
+    @Body() body: BulkUpdateSkuMasterDto,
+    @Req() req: RequestWithUser,
+  ) {
+    return this.skuMasterExcelService.commitUpdates(
+      body.items,
+      req.user ?? {},
+    );
+  }
+
   @Post('import')
   @ApiOperation({ summary: 'Upload updated SKU master Excel file' })
   @ApiConsumes('multipart/form-data')
@@ -85,15 +129,12 @@ export class SkuMasterController {
     @UploadedFile() file?: { buffer: Buffer; originalname: string },
     @Req() req?: RequestWithUser,
   ) {
-    if (!gstId?.trim()) {
-      throw new BadRequestException('gstId is required');
-    }
     if (!file?.buffer?.length) {
       throw new BadRequestException('Excel file is required');
     }
     return this.skuMasterExcelService.importWorkbook(
       file.buffer,
-      gstId.trim(),
+      gstId?.trim() || undefined,
       req?.user ?? {},
     );
   }

@@ -50,7 +50,9 @@ import {
   TrialSubscription,
   TrialSubscriptionDocument,
 } from './schemas/trial-subscription.schema';
+import { findSellerByIdentifier } from '../common/utils/seller-id.util';
 import { Gst, GstDocument } from '../gsts/schemas/gst.schema';
+import { User, UserDocument } from '../users/schemas/user.schema';
 import { TrialHistoryService } from './trial-history.service';
 import { TrialValidationService } from './trial-validation.service';
 import {
@@ -77,6 +79,8 @@ export class TrialService {
   constructor(
     @InjectModel(Seller.name)
     private readonly sellerModel: Model<SellerDocument>,
+    @InjectModel(User.name)
+    private readonly userModel: Model<UserDocument>,
     @InjectModel(TrialSubscription.name)
     private readonly trialModel: Model<TrialSubscriptionDocument>,
     @InjectModel(TrialCleanupLog.name)
@@ -2323,7 +2327,11 @@ export class TrialService {
   }
 
   private async requireSeller(sellerId: string) {
-    const seller = await this.sellerModel.findById(sellerId).exec();
+    const seller = await findSellerByIdentifier(
+      this.sellerModel,
+      this.userModel,
+      sellerId,
+    );
     if (!seller) throw new NotFoundException('Seller not found');
     return seller;
   }

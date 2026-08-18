@@ -31,7 +31,7 @@ export class SkuMasterMapping {
   @Prop()
   productName?: string;
 
-  @Prop()
+  @Prop({ type: String, default: null })
   category?: string;
 
   @Prop()
@@ -59,3 +59,15 @@ SkuMasterMappingSchema.index(
   { sellerId: 1, gstId: 1, marketplace: 1, marketplaceSku: 1 },
   { unique: true },
 );
+SkuMasterMappingSchema.index({
+  sellerId: 1,
+  gstId: 1,
+  status: 1,
+  marketplace: 1,
+  marketplaceSku: 1,
+});
+SkuMasterMappingSchema.index({
+  sellerId: 1,
+  status: 1,
+  marketplaceSku: 1,
+});

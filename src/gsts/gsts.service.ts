@@ -1,8 +1,10 @@
 import {
   BadRequestException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
+  forwardRef,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { InjectConnection } from '@nestjs/mongoose';
@@ -65,6 +67,7 @@ export class GstsService {
     private readonly perioneVerification: PerioneGstVerificationService,
     private readonly notificationsService: NotificationsService,
     private readonly trialValidation: TrialValidationService,
+    @Inject(forwardRef(() => TrialService))
     private readonly trialService: TrialService,
   ) {}
 

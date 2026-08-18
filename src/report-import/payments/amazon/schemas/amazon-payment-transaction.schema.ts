@@ -72,4 +72,8 @@ AmazonPaymentTransactionSchema.index(
   { sellerId: 1, marketplace: 1, gstin: 1, depositDate: -1 },
   { name: 'amazon_payment_transaction_filter_idx' },
 );
+AmazonPaymentTransactionSchema.index(
+  { sellerId: 1, marketplace: 1, settlementId: 1 },
+  { name: 'amazon_payment_settlement_idx' },
+);
 

@@ -5,7 +5,7 @@ import {
 } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import * as bcrypt from 'bcrypt';
-import { Connection, Model } from 'mongoose';
+import { Connection, Model, Types } from 'mongoose';
 import { Lead, LeadDocument } from '../../leads/schemas/lead.schema';
 import { User, UserDocument } from '../../users/schemas/user.schema';
 import { Seller, SellerDocument } from '../../sellers/schemas/seller.schema';
@@ -336,7 +336,40 @@ export class OnboardingRegistrationService {
   }
 
   async getStatus(userId: string) {
-    const user = await this.userModel.findById(userId).lean().exec();
+    const id = String(userId ?? '').trim();
+    let user =
+      id && Types.ObjectId.isValid(id)
+        ? await this.userModel.findById(id).lean().exec()
+        : null;
+    if (!user && id && Types.ObjectId.isValid(id)) {
+      user = await this.userModel
+        .findOne({ sellerId: id, role: 'seller' })
+        .lean()
+        .exec();
+    }
+    if (!user && id) {
+      const seller = Types.ObjectId.isValid(id)
+        ? await this.sellerModel.findById(id).lean().exec()
+        : null;
+      if (seller?.email) {
+        const email = String(seller.email).trim().toLowerCase();
+        user = await this.userModel
+          .findOne({ email, role: 'seller' })
+          .lean()
+          .exec();
+      }
+      if (!user && seller) {
+        return {
+          userId: id,
+          sellerId: String(seller._id),
+          onboardingUserStatus: 'ACTIVE' as const,
+          leadStatus: undefined,
+          leadNumber: undefined,
+          canAccessDashboard: true,
+          needsPayment: false,
+        };
+      }
+    }
     if (!user) {
       throw new BadRequestException('User not found');
     }

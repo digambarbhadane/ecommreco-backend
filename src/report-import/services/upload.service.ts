@@ -234,6 +234,15 @@ export class UploadService {
       dto.reportMonth,
     );
 
+    const hasPaymentFile =
+      Boolean(files.paymentReportFile) ||
+      Boolean(files.paymentReportFiles?.length) ||
+      Boolean(files.pgForwardSettledFile) ||
+      Boolean(files.pgReverseSettledFile);
+    if (hasPaymentFile) {
+      await this.validation.assertMainGstForPaymentUpload(dto.gstId, dto.sellerId);
+    }
+
     return this.importOrchestrator.enqueueMarketplaceImport(
       expectedMarketplace,
       files,

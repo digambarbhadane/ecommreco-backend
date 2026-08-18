@@ -43,7 +43,11 @@ const mongoLogger = new Logger('MongoDB');
 const maskMongoUri = (uri: string) =>
   uri.replace(/\/\/([^:@/]+)(:([^@/]*))?@/g, '//***:***@');
 
-const DEFAULT_LOCAL_MONGODB_URI = 'mongodb://127.0.0.1:27017/sellerspl';
+const ATLAS_CONNECT_OPTIONS = {
+  serverSelectionTimeoutMS: 25000,
+  connectTimeoutMS: 25000,
+  family: 4 as const,
+};
 
 @Module({
   imports: [
@@ -82,12 +86,10 @@ const DEFAULT_LOCAL_MONGODB_URI = 'mongodb://127.0.0.1:27017/sellerspl';
         const buildOptions = (uri: string) => {
           const base = {
             uri,
-            serverSelectionTimeoutMS: 10000,
-            connectTimeoutMS: 10000,
+            ...ATLAS_CONNECT_OPTIONS,
             socketTimeoutMS: 120000,
             maxPoolSize: 50,
             minPoolSize: 2,
-            bufferCommands: false,
             connectionFactory,
           };
           if (typeof dbName === 'string' && dbName.trim().length > 0) {
@@ -101,11 +103,13 @@ const DEFAULT_LOCAL_MONGODB_URI = 'mongodb://127.0.0.1:27017/sellerspl';
         ): Promise<{ ok: true } | { ok: false; message: string }> => {
           const trimmed = uri.trim();
           if (!trimmed) return { ok: false, message: 'empty URI' };
+          const probeTimeoutMs = nodeEnv === 'development' ? 8000 : 25000;
           try {
             const connection = await mongoose
               .createConnection(trimmed, {
-                serverSelectionTimeoutMS: 15000,
-                connectTimeoutMS: 15000,
+                family: 4,
+                serverSelectionTimeoutMS: probeTimeoutMs,
+                connectTimeoutMS: probeTimeoutMs,
                 dbName:
                   typeof dbName === 'string' && dbName.trim().length > 0
                     ? dbName.trim()
@@ -138,7 +142,7 @@ const DEFAULT_LOCAL_MONGODB_URI = 'mongodb://127.0.0.1:27017/sellerspl';
         const fallbackUri =
           typeof fallbackEnv === 'string' && fallbackEnv.trim().length > 0
             ? fallbackEnv.trim()
-            : DEFAULT_LOCAL_MONGODB_URI;
+            : '';
 
         const forceMemory = config.get<string>('USE_MEMORY_DB') === 'true';
         const shouldUseMemory = forceMemory;
@@ -157,6 +161,21 @@ const DEFAULT_LOCAL_MONGODB_URI = 'mongodb://127.0.0.1:27017/sellerspl';
           if (uriCandidates.length === 0 && typeof uri === 'string' && uri.trim()) {
             uriCandidates.push(uri.trim());
           }
+
+          // Local restarts: skip the throwaway probe (it doubled Atlas connect
+          // time and left the API down for 25–50s, which the UI reports as 500).
+          if (nodeEnv === 'development' && uriCandidates.length > 0) {
+            const candidate = uriCandidates[0];
+            const isLocalMongo = /mongodb:\/\/(127\.0\.0\.1|localhost)/.test(
+              candidate,
+            );
+            setMongoStorageMode(isLocalMongo ? 'fallback' : 'atlas');
+            mongoLogger.log(
+              `Using MongoDB uri=${maskMongoUri(candidate)} dbName=${String(dbName ?? '')}`,
+            );
+            return buildOptions(candidate);
+          }
+
           const errors: string[] = [];
 
           for (let i = 0; i < uriCandidates.length; i++) {
