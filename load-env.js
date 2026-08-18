@@ -22,5 +22,7 @@ dotenv.config({
 console.log(`Loaded environment file: ${envFile}`);
 console.log(`NODE_ENV: ${env}`);
 console.log(`PORT: ${process.env.PORT ?? '(not set)'}`);
+console.log(`FRONTEND_URL: ${process.env.FRONTEND_URL ?? '(not set)'}`);
+console.log(`API_PUBLIC_URL: ${process.env.API_PUBLIC_URL ?? '(not set)'}`);
 
 module.exports = { env, envFile };
