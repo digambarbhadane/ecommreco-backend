@@ -5,6 +5,7 @@ import {
   type PanPricingBreakdown,
 } from '../../trial/subscription-checkout.pricing';
 import type { Seller } from '../../sellers/schemas/seller.schema';
+import { resolveMarketplaceSlotsInPlan } from './reconciliation-subscription.util';
 
 export type SubscriptionDisplaySnapshot = {
   planLabel: string;
@@ -47,7 +48,9 @@ export function buildSubscriptionInvoiceDescription(input: {
     );
   }
   if (input.totalMonthlyRate && input.totalMonthlyRate > 0) {
-    parts.push(`₹${input.totalMonthlyRate.toLocaleString('en-IN')}/mo plan rate`);
+    parts.push(
+      `₹${input.totalMonthlyRate.toLocaleString('en-IN')}/mo plan rate`,
+    );
   }
   return parts.join(' · ');
 }
@@ -100,7 +103,11 @@ export function resolveSubscriptionDisplaySnapshot(
 
   let panBreakdown = resolveStoredPanBreakdown(seller);
   const hasStoredBreakdown = panBreakdown.length > 0;
-  if (!hasStoredBreakdown && checkoutSelections?.length && reconciliationMonths.length) {
+  if (
+    !hasStoredBreakdown &&
+    checkoutSelections?.length &&
+    reconciliationMonths.length
+  ) {
     panBreakdown = buildPanBreakdownFromSelections(
       checkoutSelections,
       reconciliationMonths,
@@ -116,10 +123,7 @@ export function resolveSubscriptionDisplaySnapshot(
 
   const gstProfilesInPlan = hasStoredBreakdown
     ? panBreakdown.reduce((sum, row) => sum + row.gstCount, 0)
-    : Math.max(
-        0,
-        Number(seller.gstSlotsPurchased ?? seller.gstSlots ?? 0),
-      );
+    : Math.max(0, Number(seller.gstSlotsPurchased ?? seller.gstSlots ?? 0));
   const panProfilesInPlan = hasStoredBreakdown
     ? panBreakdown.length
     : Math.max(
@@ -128,12 +132,17 @@ export function resolveSubscriptionDisplaySnapshot(
       );
   const marketplaceLinksPurchased = hasStoredBreakdown
     ? panBreakdown.reduce((sum, row) => sum + row.marketplaceCount, 0)
-    : Math.max(0, Number(seller.marketplaceSlotsPurchased ?? 0));
+    : resolveMarketplaceSlotsInPlan({
+        marketplaceSlotsPurchased: seller.marketplaceSlotsPurchased,
+        subscriptionPlanType: seller.subscriptionPlanType,
+        gstSlots: seller.gstSlots,
+        gstSlotsPurchased: seller.gstSlotsPurchased,
+      });
 
   const planLabel =
     seller.subscriptionPlanLabel?.trim() ||
     (panBreakdown.length ? buildPlanLabel(panBreakdown) : '') ||
-  formatLegacyPlanLabel(seller);
+    formatLegacyPlanLabel(seller);
 
   return {
     planLabel,

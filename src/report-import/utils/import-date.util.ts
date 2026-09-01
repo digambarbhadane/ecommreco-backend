@@ -76,7 +76,13 @@ export function parseImportDate(value: unknown): Date | undefined {
     if (y < 100 && !isReasonableYear(inferredYear)) {
       inferredYear = 1900 + y;
     }
-    if (d >= 1 && d <= 31 && m >= 1 && m <= 12 && isReasonableYear(inferredYear)) {
+    if (
+      d >= 1 &&
+      d <= 31 &&
+      m >= 1 &&
+      m <= 12 &&
+      isReasonableYear(inferredYear)
+    ) {
       const byDmy = new Date(Date.UTC(inferredYear, m - 1, d));
       if (
         byDmy.getUTCFullYear() === inferredYear &&
@@ -101,7 +107,11 @@ function parseYyyymmddString(token: string): Date | undefined {
   const year = Number(token.slice(0, 4));
   const month = Number(token.slice(4, 6));
   const day = Number(token.slice(6, 8));
-  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+  if (
+    !Number.isFinite(year) ||
+    !Number.isFinite(month) ||
+    !Number.isFinite(day)
+  ) {
     return undefined;
   }
   if (month < 1 || month > 12 || day < 1 || day > 31) return undefined;

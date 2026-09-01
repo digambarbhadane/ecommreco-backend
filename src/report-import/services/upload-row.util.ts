@@ -119,10 +119,7 @@ export async function insertImportRowsInBatches(
 
     const now = Date.now();
     const isLastBatch = i + INSERT_BATCH_SIZE >= rows.length;
-    if (
-      onBatchSaved &&
-      (isLastBatch || now - lastProgressAt >= throttleMs)
-    ) {
+    if (onBatchSaved && (isLastBatch || now - lastProgressAt >= throttleMs)) {
       lastProgressAt = now;
       await onBatchSaved(saved);
     }

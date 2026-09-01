@@ -3,7 +3,10 @@ import { HydratedDocument, SchemaTypes, Types } from 'mongoose';
 
 export type OnboardingTimelineDocument = HydratedDocument<OnboardingTimeline>;
 
-@Schema({ timestamps: { createdAt: true, updatedAt: false }, collection: 'onboarding_timeline' })
+@Schema({
+  timestamps: { createdAt: true, updatedAt: false },
+  collection: 'onboarding_timeline',
+})
 export class OnboardingTimeline {
   @Prop({ type: SchemaTypes.ObjectId, ref: 'Lead', index: true })
   leadId?: Types.ObjectId;

@@ -43,7 +43,12 @@ const ACTIVE_STATUSES: PanSlotRequestStatus[] = [
 const GST_PERCENTAGE = 18;
 
 const DEFAULT_PRICING = [
-  { durationType: 'monthly', label: 'Monthly', durationMonths: 1, pricePerSlot: 1000 },
+  {
+    durationType: 'monthly',
+    label: 'Monthly',
+    durationMonths: 1,
+    pricePerSlot: 1000,
+  },
   {
     durationType: 'quarterly',
     label: 'Quarterly',
@@ -56,7 +61,12 @@ const DEFAULT_PRICING = [
     durationMonths: 6,
     pricePerSlot: 6000,
   },
-  { durationType: 'annual', label: 'Annual', durationMonths: 12, pricePerSlot: 12000 },
+  {
+    durationType: 'annual',
+    label: 'Annual',
+    durationMonths: 12,
+    pricePerSlot: 12000,
+  },
 ] as const;
 
 @Injectable()
@@ -86,7 +96,11 @@ export class PanSlotRequestsService {
 
   async listPricing() {
     await this.ensureDefaultPricing();
-    const data = await this.pricingModel.find().sort({ durationMonths: 1 }).lean().exec();
+    const data = await this.pricingModel
+      .find()
+      .sort({ durationMonths: 1 })
+      .lean()
+      .exec();
     return { success: true, data };
   }
 
@@ -151,7 +165,9 @@ export class PanSlotRequestsService {
 
   private async findSellerByUser(user: RequestUser) {
     const userId = String(user.id ?? '').trim();
-    const email = String(user.email ?? '').trim().toLowerCase();
+    const email = String(user.email ?? '')
+      .trim()
+      .toLowerCase();
     if (Types.ObjectId.isValid(userId)) {
       const byId = await this.sellerModel.findById(userId).exec();
       if (byId) return byId;
@@ -196,8 +212,14 @@ export class PanSlotRequestsService {
           : legacyTotal,
       ),
     );
-    const purchasedPanSlots = Math.max(0, Number(seller.purchasedPanSlots ?? 0));
-    const totalPanSlots = Math.max(planPanSlots + purchasedPanSlots, legacyTotal);
+    const purchasedPanSlots = Math.max(
+      0,
+      Number(seller.purchasedPanSlots ?? 0),
+    );
+    const totalPanSlots = Math.max(
+      planPanSlots + purchasedPanSlots,
+      legacyTotal,
+    );
     const usedPanSlots = Math.max(
       0,
       Number(seller.usedPanSlots ?? seller.gstSlotsUsed ?? 0),
@@ -309,7 +331,11 @@ export class PanSlotRequestsService {
     return `${base}?${params.toString()}`;
   }
 
-  private async notifyRole(event: string, recipientRole: string, message: string) {
+  private async notifyRole(
+    event: string,
+    recipientRole: string,
+    message: string,
+  ) {
     await this.notificationsService.createNotification({
       event,
       recipientRole,
@@ -433,7 +459,9 @@ export class PanSlotRequestsService {
       throw new NotFoundException('Request not found');
     }
     if (!['PAYMENT_PENDING', 'PAYMENT_RECEIVED'].includes(request.status)) {
-      throw new BadRequestException('Payment proof can only be uploaded after payment link is generated');
+      throw new BadRequestException(
+        'Payment proof can only be uploaded after payment link is generated',
+      );
     }
     if (body.paymentProof) request.paymentProof = body.paymentProof;
     if (body.paymentReference) request.paymentReference = body.paymentReference;
@@ -447,7 +475,11 @@ export class PanSlotRequestsService {
     return { success: true, data: request };
   }
 
-  async markPaymentCompleted(user: RequestUser, id: string, paymentReference?: string) {
+  async markPaymentCompleted(
+    user: RequestUser,
+    id: string,
+    paymentReference?: string,
+  ) {
     const seller = await this.findSellerByUser(user);
     if (!seller) {
       throw new NotFoundException('Seller profile not found');
@@ -457,7 +489,9 @@ export class PanSlotRequestsService {
       throw new NotFoundException('Request not found');
     }
     if (request.status !== 'PAYMENT_PENDING') {
-      throw new BadRequestException('Payment can only be marked when status is PAYMENT_PENDING');
+      throw new BadRequestException(
+        'Payment can only be marked when status is PAYMENT_PENDING',
+      );
     }
     request.paymentStatus = 'completed_by_seller';
     if (paymentReference) request.paymentReference = paymentReference;
@@ -510,7 +544,13 @@ export class PanSlotRequestsService {
     const limit = Math.max(0, params.limit ?? 50);
     const skip = Math.max(0, params.skip ?? 0);
     const [data, total] = await Promise.all([
-      this.requestModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean().exec(),
+      this.requestModel
+        .find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean()
+        .exec(),
       this.requestModel.countDocuments(filter),
     ]);
     return { success: true, data, total, limit, skip };
@@ -526,7 +566,9 @@ export class PanSlotRequestsService {
     const request = await this.requestModel.findById(id).exec();
     if (!request) throw new NotFoundException('Request not found');
     if (request.status !== 'PENDING') {
-      throw new BadRequestException('Only pending requests can be approved for payment');
+      throw new BadRequestException(
+        'Only pending requests can be approved for payment',
+      );
     }
     request.approvedBy = user.email ?? user.id;
     request.approvedAt = new Date();
@@ -576,7 +618,8 @@ export class PanSlotRequestsService {
         request.sellerEmail,
         `PAN slot request ${request.requestNumber} rejected`,
         {
-          message: adminRemarks ?? 'Your request was rejected by the admin team.',
+          message:
+            adminRemarks ?? 'Your request was rejected by the admin team.',
           requestNumber: request.requestNumber,
         },
       );
@@ -592,10 +635,14 @@ export class PanSlotRequestsService {
     const request = await this.requestModel.findById(id).exec();
     if (!request) throw new NotFoundException('Request not found');
     if (!['PENDING', 'PAYMENT_PENDING'].includes(request.status)) {
-      throw new BadRequestException('Payment link cannot be generated for this request');
+      throw new BadRequestException(
+        'Payment link cannot be generated for this request',
+      );
     }
     if (request.status === 'PENDING' && !request.approvedAt) {
-      throw new BadRequestException('Approve the request before generating a payment link');
+      throw new BadRequestException(
+        'Approve the request before generating a payment link',
+      );
     }
     const totalPayable =
       dto.amount > 0 ? dto.amount : (request.paymentAmount ?? 0);
@@ -637,7 +684,9 @@ export class PanSlotRequestsService {
     const request = await this.requestModel.findById(id).exec();
     if (!request) throw new NotFoundException('Request not found');
     if (request.status !== 'PAYMENT_PENDING') {
-      throw new BadRequestException('Payment can only be verified when status is PAYMENT_PENDING');
+      throw new BadRequestException(
+        'Payment can only be verified when status is PAYMENT_PENDING',
+      );
     }
     request.status = 'PAYMENT_RECEIVED';
     request.paymentStatus = 'verified';
@@ -656,7 +705,8 @@ export class PanSlotRequestsService {
         request.sellerEmail,
         `Payment verified — ${request.requestNumber}`,
         {
-          message: 'Your payment has been verified. PAN slots will be assigned shortly.',
+          message:
+            'Your payment has been verified. PAN slots will be assigned shortly.',
           requestNumber: request.requestNumber,
         },
       );
@@ -668,10 +718,14 @@ export class PanSlotRequestsService {
     const request = await this.requestModel.findById(id).exec();
     if (!request) throw new NotFoundException('Request not found');
     if (request.slotsAssigned) {
-      throw new BadRequestException('Slots have already been assigned for this request');
+      throw new BadRequestException(
+        'Slots have already been assigned for this request',
+      );
     }
     if (request.status !== 'PAYMENT_RECEIVED') {
-      throw new BadRequestException('Assign slots only after payment is verified');
+      throw new BadRequestException(
+        'Assign slots only after payment is verified',
+      );
     }
 
     const existingTxn = await this.transactionModel
@@ -679,7 +733,9 @@ export class PanSlotRequestsService {
       .lean()
       .exec();
     if (existingTxn) {
-      throw new BadRequestException('Transaction already exists for this request');
+      throw new BadRequestException(
+        'Transaction already exists for this request',
+      );
     }
 
     const seller = await this.sellerModel.findById(request.sellerId).exec();
@@ -770,19 +826,31 @@ export class PanSlotRequestsService {
     const limit = Math.max(0, params.limit ?? 50);
     const skip = Math.max(0, params.skip ?? 0);
     const [data, total] = await Promise.all([
-      this.transactionModel.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean().exec(),
+      this.transactionModel
+        .find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean()
+        .exec(),
       this.transactionModel.countDocuments(filter),
     ]);
     return { success: true, data, total, limit, skip };
   }
 
-  async revenueReport(params: { from?: string; to?: string; sellerId?: string }) {
+  async revenueReport(params: {
+    from?: string;
+    to?: string;
+    sellerId?: string;
+  }) {
     const filter: Record<string, unknown> = { status: 'completed' };
     if (params.sellerId) filter.sellerId = params.sellerId;
     if (params.from || params.to) {
       filter.paymentDate = {};
       if (params.from) {
-        (filter.paymentDate as Record<string, Date>).$gte = new Date(params.from);
+        (filter.paymentDate as Record<string, Date>).$gte = new Date(
+          params.from,
+        );
       }
       if (params.to) {
         (filter.paymentDate as Record<string, Date>).$lte = new Date(params.to);

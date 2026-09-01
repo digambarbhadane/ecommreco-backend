@@ -93,11 +93,11 @@ API_PUBLIC_URL=https://api.ecommreco.com
 After start:
 
 ```bash
-curl http://127.0.0.1:5000/api/v1/health
-curl http://127.0.0.1:5000/
+curl http://127.0.0.1:5001/api/v1/health
+curl http://127.0.0.1:5001/
 ```
 
-Open **security group** port `5000` (or proxy via Nginx on 80/443).
+Open **security group** port `5001` (or proxy via Nginx on 80/443).
 
 ## Nginx — fix `413 Request Entity Too Large` on large report uploads
 
@@ -147,7 +147,7 @@ npm run build
 pm2 delete all             # stop api-prod if it was started by mistake
 pm2 start ecosystem.config.js --only api-dev
 pm2 logs api-dev
-curl http://127.0.0.1:5000/api/v1/health
+curl http://127.0.0.1:5001/api/v1/health
 pm2 save
 ```
 

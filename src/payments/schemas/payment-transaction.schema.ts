@@ -7,7 +7,12 @@ export type PaymentTransactionDocument = HydratedDocument<PaymentTransaction>;
 
 @Schema({ timestamps: true, collection: 'payment_transactions' })
 export class PaymentTransaction {
-  @Prop({ required: true, type: Types.ObjectId, ref: 'PaymentOrder', index: true })
+  @Prop({
+    required: true,
+    type: Types.ObjectId,
+    ref: 'PaymentOrder',
+    index: true,
+  })
   paymentOrderId: Types.ObjectId;
 
   @Prop({ required: true, unique: true, index: true })

@@ -4,7 +4,7 @@ import { UserDocument } from '../../users/schemas/user.schema';
 
 export function getSellerObjectIdString(seller: SellerDocument): string {
   const id = seller?._id as Types.ObjectId | string | undefined;
-  return typeof id === 'string' ? id : id?.toString?.() ?? '';
+  return typeof id === 'string' ? id : (id?.toString?.() ?? '');
 }
 
 export function getSellerIdAliases(
@@ -56,7 +56,9 @@ export async function findSellerByIdentifier(
     const sellerById = await sellerModel.findById(value).exec();
     if (sellerById) return sellerById;
   }
-  const sellerByPublicId = await sellerModel.findOne({ publicId: value }).exec();
+  const sellerByPublicId = await sellerModel
+    .findOne({ publicId: value })
+    .exec();
   if (sellerByPublicId) return sellerByPublicId;
 
   const user = await findSellerUserByIdentifier(userModel, value);
@@ -65,7 +67,9 @@ export async function findSellerByIdentifier(
     const byLink = await sellerModel.findById(user.sellerId).exec();
     if (byLink) return byLink;
   }
-  const email = String(user.email ?? '').trim().toLowerCase();
+  const email = String(user.email ?? '')
+    .trim()
+    .toLowerCase();
   if (!email) return null;
   return sellerModel
     .findOne({
@@ -96,7 +100,9 @@ export function buildGstIdFilter(gstId: string): { gstId: { $in: string[] } } {
   return { gstId: { $in: Array.from(values) } };
 }
 
-export function buildGstIdsFilter(gstIds: string[]): { gstId: { $in: string[] } } {
+export function buildGstIdsFilter(gstIds: string[]): {
+  gstId: { $in: string[] };
+} {
   const values = new Set<string>();
   for (const gstId of gstIds) {
     const trimmed = String(gstId ?? '').trim();

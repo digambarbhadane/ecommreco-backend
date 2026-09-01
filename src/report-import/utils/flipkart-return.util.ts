@@ -19,7 +19,11 @@ export function flipkartOrderIdLookupKey(value: unknown): string {
 export function isFlipkartReturnVoucherType(
   voucherType?: string | null,
 ): boolean {
-  return String(voucherType ?? '').trim().toLowerCase() === 'return';
+  return (
+    String(voucherType ?? '')
+      .trim()
+      .toLowerCase() === 'return'
+  );
 }
 
 export function buildFlipkartReturnDetailsByOrderId(

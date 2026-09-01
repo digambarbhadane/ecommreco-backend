@@ -81,9 +81,13 @@ export class StateWiseReportService {
     return ref ? String(ref) : '';
   }
 
-  private async resolveContext(query: StateWiseExportDto): Promise<ReportContext> {
+  private async resolveContext(
+    query: StateWiseExportDto,
+  ): Promise<ReportContext> {
     const sellerId = String(query.sellerId ?? '').trim();
-    const gstin = String(query.gstin ?? '').trim().toUpperCase();
+    const gstin = String(query.gstin ?? '')
+      .trim()
+      .toUpperCase();
     if (!sellerId || !gstin) {
       throw new BadRequestException('sellerId and gstin are required');
     }
@@ -97,7 +101,9 @@ export class StateWiseReportService {
     gstin: string,
     sellerAliases: string[],
   ): Promise<string[]> {
-    const normalizedGstin = String(gstin ?? '').trim().toUpperCase();
+    const normalizedGstin = String(gstin ?? '')
+      .trim()
+      .toUpperCase();
     const scope = new Set<string>([normalizedGstin]);
     const gstRecord = await this.gstModel
       .findOne({
@@ -113,7 +119,9 @@ export class StateWiseReportService {
     return Array.from(scope);
   }
 
-  private async buildSalesFilter(ctx: ReportContext): Promise<Record<string, unknown>> {
+  private async buildSalesFilter(
+    ctx: ReportContext,
+  ): Promise<Record<string, unknown>> {
     return buildStateWiseSalesMatch({
       sellerId: { $in: ctx.sellerAliases },
       gstin: ctx.gstin,
@@ -243,9 +251,9 @@ export class StateWiseReportService {
     const id =
       preferredId && matchKeys.includes(preferredId)
         ? preferredId
-        : group.registeredLinkIds[0] ??
+        : (group.registeredLinkIds[0] ??
           group.rowMarketplaceIds[0] ??
-          group.platformId;
+          group.platformId);
     return { id, name: group.name, matchKeys };
   }
 
@@ -309,7 +317,10 @@ export class StateWiseReportService {
 
     if (idsFromQuery.length) {
       const selectedDocs = await this.marketplaceModel
-        .find({ _id: { $in: idsFromQuery }, sellerId: { $in: ctx.sellerAliases } })
+        .find({
+          _id: { $in: idsFromQuery },
+          sellerId: { $in: ctx.sellerAliases },
+        })
         .lean()
         .exec();
       const platformIds = new Set(

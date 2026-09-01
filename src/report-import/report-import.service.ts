@@ -24,6 +24,10 @@ import {
   PlatformMarketplace,
   PlatformMarketplaceDocument,
 } from '../platform-marketplaces/schemas/platform-marketplace.schema';
+import {
+  Marketplace,
+  MarketplaceDocument,
+} from '../marketplaces/schemas/marketplace.schema';
 import { ValidationService } from './services/validation.service';
 import type { MarketplaceUploadKey } from './marketplace-upload.routes';
 import {
@@ -37,16 +41,56 @@ import { AnalyticsPayoutsService } from './payments/analytics-payouts.service';
 import type { ListAnalyticsPayoutsDto } from './dto/list-analytics-payouts.dto';
 import type { GetAnalyticsPayoutDetailsDto } from './dto/get-analytics-payout-details.dto';
 import type { UpsertPayoutReceiptDto } from './dto/upsert-payout-receipt.dto';
+import { repairImportRowDates } from '../common/utils/repair-legacy-date.util';
 import {
-  repairImportRowDates,
-} from '../common/utils/repair-legacy-date.util';
+  applyImportRowMarketplaceFilter,
+  readSellerAliasesFromFilter,
+} from './utils/marketplace-import-filter.util';
+import {
+  buildMyntraSaleOrderLookupKey,
+  enrichMyntraReturnRowsFromSaleMaps,
+  myntraReturnNeedsSaleDisplayEnrichment,
+  pickPreferredMyntraSaleDisplay,
+  type MyntraSaleDisplayFields,
+} from './utils/myntra-return-sale-display.util';
+import ExcelJS from 'exceljs';
+
+function resolveOrderExportSheetName(marketplace?: string): string {
+  const slug = String(marketplace ?? '')
+    .trim()
+    .toLowerCase();
+  if (!slug) return 'All Marketplaces';
+  if (slug === 'amazon') return 'Amazon';
+  if (slug === 'flipkart') return 'Flipkart';
+  if (slug === 'myntra') return 'Myntra';
+  if (slug === 'meesho') return 'Meesho';
+  return slug.charAt(0).toUpperCase() + slug.slice(1);
+}
+
+/** Same Order Report type buckets as the table TYPE column. */
+function resolveOrderReportTypeLabel(documentType: unknown): string {
+  const key = String(documentType ?? '')
+    .trim()
+    .toLowerCase();
+  if (key.includes('debit')) return 'DEBIT NOTE';
+  if (key.includes('credit')) return 'CREDIT NOTE';
+  if (key.includes('return') || key.includes('rto') || key.includes('refund')) {
+    return 'RETURN';
+  }
+  return 'SALES';
+}
 
 @Injectable()
 export class ReportImportService {
   // Cache expensive read-only analytics aggregations for 60s.
   private readonly dashboardCache = new TtlCache<string, unknown>(60_000);
   private readonly profitLossCache = new TtlCache<string, unknown>(60_000);
-  private readonly platformAnalyticsCache = new TtlCache<string, unknown>(60_000);
+  private readonly platformAnalyticsCache = new TtlCache<string, unknown>(
+    60_000,
+  );
+  private readonly marketplaceDocSummaryCache = new TtlCache<string, unknown>(
+    60_000,
+  );
 
   constructor(
     @InjectModel(ImportUpload.name)
@@ -61,6 +105,8 @@ export class ReportImportService {
     private readonly gstModel: Model<GstDocument>,
     @InjectModel(PlatformMarketplace.name)
     private readonly platformMarketplaceModel: Model<PlatformMarketplaceDocument>,
+    @InjectModel(Marketplace.name)
+    private readonly marketplaceModel: Model<MarketplaceDocument>,
     private readonly validationService: ValidationService,
     private readonly analyticsPaymentsService: AnalyticsPaymentsService,
     private readonly analyticsPayoutsService: AnalyticsPayoutsService,
@@ -120,7 +166,14 @@ export class ReportImportService {
     const filter: Record<string, unknown> = {};
     await this.applySellerIdToFilter(filter, query.sellerId);
     if (query.gstin) filter.gstin = query.gstin.trim().toUpperCase();
-    if (query.marketplace) filter.marketplace = query.marketplace;
+    if (query.marketplace) {
+      await applyImportRowMarketplaceFilter(
+        filter,
+        this.marketplaceModel,
+        readSellerAliasesFromFilter(filter),
+        query.marketplace,
+      );
+    }
     if (query.documentTypes) {
       const types = String(query.documentTypes)
         .split(',')
@@ -173,31 +226,205 @@ export class ReportImportService {
     const sortBy = query.sortBy ?? 'documentType';
     const sortOrder = query.sortOrder === 'desc' ? -1 : 1;
 
+    // Date-range / sort must use the effective invoice date:
+    // Myntra RTO → orderCancelDate; Customer Return → frRefundedDate;
+    // else prefer order_packed_date (Myntra SALE) then stored invoiceDate.
+    const invoiceDateFilter = filter.invoiceDate;
+    if (invoiceDateFilter !== undefined) {
+      delete filter.invoiceDate;
+    }
+
+    const mongoParseDateFieldToIso = (dateStringExpr: string) => ({
+      $let: {
+        vars: {
+          dmy: {
+            $dateFromString: {
+              dateString: dateStringExpr,
+              format: '%d-%m-%Y',
+              onError: null,
+              onNull: null,
+            },
+          },
+          iso: {
+            $dateFromString: {
+              dateString: dateStringExpr,
+              format: '%Y-%m-%d',
+              onError: null,
+              onNull: null,
+            },
+          },
+        },
+        in: {
+          $cond: [
+            { $ne: ['$$dmy', null] },
+            { $dateToString: { format: '%Y-%m-%d', date: '$$dmy' } },
+            {
+              $cond: [
+                { $ne: ['$$iso', null] },
+                { $dateToString: { format: '%Y-%m-%d', date: '$$iso' } },
+                null,
+              ],
+            },
+          ],
+        },
+      },
+    });
+
+    const normalizeInvoiceDateStage: PipelineStage = {
+      $addFields: {
+        invoiceDate: {
+          $let: {
+            vars: {
+              fromCancel: mongoParseDateFieldToIso('$orderCancelDate'),
+              fromRefunded: mongoParseDateFieldToIso('$frRefundedDate'),
+              fromPacked: mongoParseDateFieldToIso('$order_packed_date'),
+            },
+            in: {
+              $switch: {
+                branches: [
+                  {
+                    case: { $eq: ['$documentType', 'RTO Return'] },
+                    then: {
+                      $ifNull: ['$$fromCancel', '$invoiceDate'],
+                    },
+                  },
+                  {
+                    case: { $eq: ['$documentType', 'Customer Return'] },
+                    then: {
+                      $ifNull: ['$$fromRefunded', '$invoiceDate'],
+                    },
+                  },
+                ],
+                default: {
+                  $ifNull: ['$$fromPacked', '$invoiceDate'],
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+
+    const pipeline: PipelineStage[] = [
+      { $match: filter },
+      normalizeInvoiceDateStage,
+    ];
+    if (invoiceDateFilter !== undefined) {
+      pipeline.push({ $match: { invoiceDate: invoiceDateFilter } });
+    }
+    pipeline.push({
+      $facet: {
+        data: [
+          { $sort: { [sortBy]: sortOrder } },
+          { $skip: skip },
+          { $limit: limit },
+        ],
+        total: [{ $count: 'count' }],
+        columnTotals: [
+          {
+            $group: {
+              _id: null,
+              quantity: {
+                $sum: {
+                  $convert: {
+                    input: '$quantity',
+                    to: 'double',
+                    onError: 0,
+                    onNull: 0,
+                  },
+                },
+              },
+              igstAmount: {
+                $sum: {
+                  $convert: {
+                    input: '$igstAmount',
+                    to: 'double',
+                    onError: 0,
+                    onNull: 0,
+                  },
+                },
+              },
+              cgstAmount: {
+                $sum: {
+                  $convert: {
+                    input: '$cgstAmount',
+                    to: 'double',
+                    onError: 0,
+                    onNull: 0,
+                  },
+                },
+              },
+              sgstAmount: {
+                $sum: {
+                  $convert: {
+                    input: '$sgstAmount',
+                    to: 'double',
+                    onError: 0,
+                    onNull: 0,
+                  },
+                },
+              },
+              taxableAmount: {
+                $sum: {
+                  $convert: {
+                    input: '$taxableAmount',
+                    to: 'double',
+                    onError: 0,
+                    onNull: 0,
+                  },
+                },
+              },
+              invoiceAmount: {
+                $sum: {
+                  $convert: {
+                    input: '$invoiceAmount',
+                    to: 'double',
+                    onError: 0,
+                    onNull: 0,
+                  },
+                },
+              },
+            },
+          },
+        ],
+      },
+    });
+
     const facetResult = await this.rowModel
       .aggregate<{
         data: ImportRowDocument[];
         total: { count: number }[];
-      }>([
-        { $match: filter },
-        {
-          $facet: {
-            data: [
-              { $sort: { [sortBy]: sortOrder } },
-              { $skip: skip },
-              { $limit: limit },
-            ],
-            total: [{ $count: 'count' }],
-          },
-        },
-      ])
+        columnTotals: Array<{
+          quantity?: number;
+          igstAmount?: number;
+          cgstAmount?: number;
+          sgstAmount?: number;
+          taxableAmount?: number;
+          invoiceAmount?: number;
+        }>;
+      }>(pipeline)
       .option({ maxTimeMS: 30_000, allowDiskUse: true })
       .exec();
 
-    const bucket = facetResult[0] ?? { data: [], total: [] };
-    const data = (bucket.data ?? []).map((row) =>
+    const bucket = facetResult[0] ?? {
+      data: [],
+      total: [],
+      columnTotals: [],
+    };
+    const repaired = (bucket.data ?? []).map((row) =>
       repairImportRowDates(row as unknown as Record<string, unknown>),
     );
+    const data = await this.enrichMyntraReturnInvoiceAndSku(repaired);
     const total = bucket.total[0]?.count ?? 0;
+    const totalsRow = bucket.columnTotals?.[0];
+    const columnTotals = {
+      quantity: Number(totalsRow?.quantity ?? 0) || 0,
+      igstAmount: Number(totalsRow?.igstAmount ?? 0) || 0,
+      cgstAmount: Number(totalsRow?.cgstAmount ?? 0) || 0,
+      sgstAmount: Number(totalsRow?.sgstAmount ?? 0) || 0,
+      taxableAmount: Number(totalsRow?.taxableAmount ?? 0) || 0,
+      invoiceAmount: Number(totalsRow?.invoiceAmount ?? 0) || 0,
+    };
 
     return {
       success: true,
@@ -205,7 +432,128 @@ export class ReportImportService {
       total,
       limit,
       skip,
+      columnTotals,
     };
+  }
+
+  /**
+   * Order Report only: for Myntra RTO / Customer Return rows missing Invoice No
+   * or SKU, copy those display fields from the related SALE (linkedSaleRowId or
+   * same seller/gstin/marketplace/orderID). Does not write back to Mongo.
+   */
+  private async enrichMyntraReturnInvoiceAndSku<
+    T extends Record<string, unknown>,
+  >(rows: T[]): Promise<T[]> {
+    const needing = rows.filter((row) =>
+      myntraReturnNeedsSaleDisplayEnrichment(row),
+    );
+    if (!needing.length) return rows;
+
+    const linkedIds: Types.ObjectId[] = [];
+    const orderIds = new Set<string>();
+    const sellerIds = new Set<string>();
+    const gstins = new Set<string>();
+    const marketplaces = new Set<string>();
+
+    for (const row of needing) {
+      const linked = String(row.linkedSaleRowId ?? '').trim();
+      if (linked && Types.ObjectId.isValid(linked)) {
+        linkedIds.push(new Types.ObjectId(linked));
+      }
+      const orderID = String(row.orderID ?? '').trim();
+      if (orderID) orderIds.add(orderID);
+      const sellerId = String(row.sellerId ?? '').trim();
+      if (sellerId) sellerIds.add(sellerId);
+      const gstin = String(row.gstin ?? '').trim();
+      if (gstin) gstins.add(gstin);
+      const marketplace = String(row.marketplace ?? '').trim();
+      if (marketplace) marketplaces.add(marketplace);
+    }
+
+    const salesById = new Map<string, MyntraSaleDisplayFields>();
+    const salesByOrderKey = new Map<string, MyntraSaleDisplayFields[]>();
+
+    const select = {
+      orderID: 1,
+      invoiceNo: 1,
+      skuID: 1,
+      sellerId: 1,
+      gstin: 1,
+      marketplace: 1,
+      reportMonth: 1,
+    } as const;
+
+    const registerSale = (doc: {
+      _id?: { toString(): string } | string;
+      orderID?: string;
+      invoiceNo?: string;
+      skuID?: string;
+      sellerId?: string;
+      gstin?: string;
+      marketplace?: string;
+      reportMonth?: string;
+    }) => {
+      const entry: MyntraSaleDisplayFields = {
+        _id: doc._id != null ? String(doc._id) : undefined,
+        orderID: doc.orderID,
+        invoiceNo: doc.invoiceNo,
+        skuID: doc.skuID,
+        sellerId: doc.sellerId != null ? String(doc.sellerId) : undefined,
+        gstin: doc.gstin,
+        marketplace:
+          doc.marketplace != null ? String(doc.marketplace) : undefined,
+        reportMonth: doc.reportMonth,
+      };
+      if (entry._id) salesById.set(entry._id, entry);
+      if (!entry.orderID) return;
+      const key = buildMyntraSaleOrderLookupKey({
+        sellerId: entry.sellerId,
+        gstin: entry.gstin,
+        marketplace: entry.marketplace,
+        orderID: entry.orderID,
+      });
+      const bucket = salesByOrderKey.get(key) ?? [];
+      bucket.push(entry);
+      salesByOrderKey.set(key, bucket);
+    };
+
+    if (linkedIds.length) {
+      const linkedSales = await this.rowModel
+        .find({ _id: { $in: linkedIds }, documentType: 'SALE' })
+        .select(select)
+        .lean()
+        .exec();
+      for (const doc of linkedSales) registerSale(doc);
+    }
+
+    if (orderIds.size && sellerIds.size) {
+      const orderSales = await this.rowModel
+        .find({
+          documentType: 'SALE',
+          orderID: { $in: [...orderIds] },
+          sellerId: { $in: [...sellerIds] },
+          ...(gstins.size ? { gstin: { $in: [...gstins] } } : {}),
+          ...(marketplaces.size
+            ? { marketplace: { $in: [...marketplaces] } }
+            : {}),
+        })
+        .select(select)
+        .lean()
+        .exec();
+      for (const doc of orderSales) registerSale(doc);
+    }
+
+    const preferredByOrderKey = new Map<string, MyntraSaleDisplayFields>();
+    for (const [key, list] of salesByOrderKey) {
+      const preferred = pickPreferredMyntraSaleDisplay(list);
+      if (preferred) preferredByOrderKey.set(key, preferred);
+    }
+
+    return enrichMyntraReturnRowsFromSaleMaps(
+      rows,
+      salesById,
+      preferredByOrderKey,
+    );
   }
 
   async listAnalyticsOrders(query: ListAnalyticsOrdersDto) {
@@ -285,7 +633,12 @@ export class ReportImportService {
   }
 
   async resetPayoutReceipt(
-    dto: { sellerId: string; marketplace: string; neftId: string; gstin?: string },
+    dto: {
+      sellerId: string;
+      marketplace: string;
+      neftId: string;
+      gstin?: string;
+    },
     updatedBy?: string,
   ) {
     return this.analyticsPayoutsService.resetReceipt(dto, updatedBy);
@@ -312,57 +665,60 @@ export class ReportImportService {
       .lean()
       .exec();
 
-    const headers = [
-      'GSTIN',
-      'Document Type',
-      'Order ID',
-      'Invoice Date',
-      'Invoice No',
-      'Invoice Amount',
-      'Taxable Amount',
+    const sheetName = resolveOrderExportSheetName(query.marketplace);
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet(sheetName);
+
+    // Match Order Report table column order, with GSTIN NO appended.
+    sheet.addRow([
+      'INVOICE DATE',
+      'INVOICE NO',
+      'ORDER ID',
+      'TYPE',
+      'STATE NAME',
+      'SKU',
+      'NET PCS',
       'IGST',
       'CGST',
       'SGST',
-      'Quantity',
-      'SKU',
-      'Marketplace',
-      'State',
-    ];
+      'TAXABLE AMOUNT',
+      'INVOICE AMOUNT',
+      'GSTIN NO',
+    ]);
 
-    const escapeCsv = (value: unknown) => {
-      const text = value === null || value === undefined ? '' : String(value);
-      return `"${text.replace(/"/g, '""')}"`;
-    };
+    const repairedRows = rows.map((row) =>
+      repairImportRowDates(row as unknown as Record<string, unknown>),
+    );
+    const enrichedRows =
+      await this.enrichMyntraReturnInvoiceAndSku(repairedRows);
 
-    const lines = rows.map((row) => {
-      const repaired = repairImportRowDates(
-        row as unknown as Record<string, unknown>,
-      );
-      return [
-        repaired.gstin,
-        repaired.documentType,
-        repaired.orderID,
-        repaired.invoiceDate,
-        repaired.invoiceNo,
-        repaired.invoiceAmount,
-        repaired.taxableAmount,
-        repaired.igstAmount,
-        repaired.cgstAmount,
-        repaired.sgstAmount,
-        repaired.quantity,
-        repaired.skuID,
-        repaired.marketplace,
-        repaired.stateName,
-      ]
-        .map(escapeCsv)
-        .join(',');
-    });
+    for (const repaired of enrichedRows) {
+      const stateName = String(repaired.stateName ?? '')
+        .trim()
+        .toUpperCase();
+      sheet.addRow([
+        repaired.invoiceDate ?? '',
+        repaired.invoiceNo ?? '',
+        repaired.orderID ?? '',
+        resolveOrderReportTypeLabel(repaired.documentType),
+        stateName,
+        repaired.skuID ?? '',
+        repaired.quantity ?? '',
+        repaired.igstAmount ?? '',
+        repaired.cgstAmount ?? '',
+        repaired.sgstAmount ?? '',
+        repaired.taxableAmount ?? '',
+        repaired.invoiceAmount ?? '',
+        repaired.gstin ?? '',
+      ]);
+    }
 
-    const csv = [headers.join(','), ...lines].join('\n');
+    const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
     const stamp = new Date().toISOString().slice(0, 10);
+    const slug = sheetName.replace(/\s+/g, '-').toLowerCase();
     return {
-      buffer: Buffer.from(csv, 'utf-8'),
-      filename: `analytics-orders-${stamp}.csv`,
+      buffer,
+      filename: `order-report-${slug}-${stamp}.xlsx`,
       rowCount: rows.length,
     };
   }
@@ -470,12 +826,12 @@ export class ReportImportService {
       | 'paymentDateFrom'
       | 'paymentDateTo'
       | 'paymentMode'
+      | 'search'
     >,
   ) {
     const filter = await this.buildImportedRowsFilter({
       ...query,
       documentType: undefined,
-      search: undefined,
     });
 
     const facetResult = await this.rowModel
@@ -574,8 +930,12 @@ export class ReportImportService {
         })),
         paymentOverview: {
           rowsWithPaymentData: Number(paymentStats.rowsWithPaymentData ?? 0),
-          rowsMissingPaymentData: Number(paymentStats.rowsMissingPaymentData ?? 0),
-          totalSettlementAmount: Number(paymentStats.totalSettlementAmount ?? 0),
+          rowsMissingPaymentData: Number(
+            paymentStats.rowsMissingPaymentData ?? 0,
+          ),
+          totalSettlementAmount: Number(
+            paymentStats.totalSettlementAmount ?? 0,
+          ),
           rowsWithPaymentMode: Number(paymentStats.rowsWithPaymentMode ?? 0),
         },
       },
@@ -585,69 +945,59 @@ export class ReportImportService {
   async getAnalyticsOrdersSummary(
     query: Pick<
       ListAnalyticsOrdersDto,
-      'sellerId' | 'gstin' | 'marketplace' | 'fromDate' | 'toDate'
+      'sellerId' | 'gstin' | 'marketplace' | 'fromDate' | 'toDate' | 'search'
     >,
   ) {
-    const result = await this.getDocumentTypeSummary({
+    return this.getDocumentTypeSummary({
       ...query,
       hasPaymentData: undefined,
       paymentDateFrom: undefined,
       paymentDateTo: undefined,
       paymentMode: undefined,
     });
-    const data = result.data as {
-      totalSalesCount: number;
-      totalReturnsCount: number;
-      totalCancelledCount: number;
-      byDocumentType: Array<{ documentType: string; count: number }>;
-    };
-    return {
-      success: true,
-      data: {
-        totalSalesCount: data.totalSalesCount,
-        totalReturnsCount: data.totalReturnsCount,
-        totalCancelledCount: data.totalCancelledCount,
-        byDocumentType: data.byDocumentType,
-      },
-    };
   }
 
-  async getAnalyticsPaymentsSummary(
-    query: Pick<
-      ListAnalyticsPaymentsDto,
-      | 'sellerId'
-      | 'gstin'
-      | 'marketplace'
-      | 'fromDate'
-      | 'toDate'
-      | 'paymentDateFrom'
-      | 'paymentDateTo'
-      | 'paymentMode'
-    >,
-  ) {
+  async getAnalyticsPaymentsSummary(query: ListAnalyticsPaymentsDto) {
     return this.analyticsPaymentsService.getSummary(query);
   }
 
   async getMarketplaceDocumentSummary(
     query: Pick<
       ListImportedRowsDto,
-      'sellerId' | 'gstin' | 'fromDate' | 'toDate'
+      'sellerId' | 'gstin' | 'fromDate' | 'toDate' | 'marketplace' | 'search'
     >,
   ) {
-    const filter: Record<string, unknown> = {};
-    await this.applySellerIdToFilter(filter, query.sellerId);
-    if (query.gstin) filter.gstin = query.gstin.trim().toUpperCase();
-    if (query.fromDate || query.toDate) {
-      filter.invoiceDate = {};
-      if (query.fromDate) {
-        (filter.invoiceDate as Record<string, unknown>).$gte = query.fromDate;
-      }
-      if (query.toDate) {
-        (filter.invoiceDate as Record<string, unknown>).$lte = query.toDate;
-      }
+    const ck = [
+      String(query.sellerId ?? ''),
+      String(query.gstin ?? '').toUpperCase(),
+      String(query.fromDate ?? ''),
+      String(query.toDate ?? ''),
+      String(query.search ?? '').trim().toLowerCase(),
+    ].join('|');
+    const cached = this.marketplaceDocSummaryCache.get(ck);
+    if (cached) {
+      return cached as {
+        success: boolean;
+        data: Array<{
+          marketplaceId: string;
+          byDocumentType: { documentType: string; count: number }[];
+          totalCount: number;
+        }>;
+      };
     }
 
-    const groups = await this.rowModel
+    const filter = await this.buildImportedRowsFilter({
+      ...query,
+      marketplace: undefined,
+      documentType: undefined,
+      documentTypes: undefined,
+      hasPaymentData: undefined,
+      paymentDateFrom: undefined,
+      paymentDateTo: undefined,
+      paymentMode: undefined,
+    });
+
+    const docTypeGroups = await this.rowModel
       .aggregate<{
         marketplace: string;
         documentType: string;
@@ -679,7 +1029,7 @@ export class ReportImportService {
       string,
       { documentType: string; count: number }[]
     >();
-    for (const row of groups) {
+    for (const row of docTypeGroups) {
       const mpId = String(row.marketplace ?? '');
       const list = byMarketplace.get(mpId) ?? [];
       list.push({
@@ -689,14 +1039,21 @@ export class ReportImportService {
       byMarketplace.set(mpId, list);
     }
 
-    return {
+    const payload = {
       success: true,
-      data: Array.from(byMarketplace.entries()).map(([marketplaceId, byDocumentType]) => ({
-        marketplaceId,
-        byDocumentType,
-        totalCount: byDocumentType.reduce((sum, item) => sum + item.count, 0),
-      })),
+      data: Array.from(byMarketplace.entries()).map(
+        ([marketplaceId, byDocumentType]) => ({
+          marketplaceId,
+          byDocumentType,
+          totalCount: byDocumentType.reduce(
+            (sum, item) => sum + item.count,
+            0,
+          ),
+        }),
+      ),
     };
+    this.marketplaceDocSummaryCache.set(ck, payload);
+    return payload;
   }
 
   private async buildRowFilter(
@@ -755,7 +1112,10 @@ export class ReportImportService {
     const cachedPl = this.profitLossCache.get(plCk);
 
     if (cachedDash !== undefined && cachedPl !== undefined) {
-      return { success: true, data: { dashboard: cachedDash, profitLoss: cachedPl } };
+      return {
+        success: true,
+        data: { dashboard: cachedDash, profitLoss: cachedPl },
+      };
     }
 
     const filter = await this.buildRowFilter(query);
@@ -838,7 +1198,9 @@ export class ReportImportService {
                     totalInvoiceAmount: { $sum: invoiceAmt },
                     totalSalesCount: { $sum: { $cond: [isSales, 1, 0] } },
                     totalReturnsCount: { $sum: { $cond: [isReturn, 1, 0] } },
-                    totalCancelledCount: { $sum: { $cond: [isCancelled, 1, 0] } },
+                    totalCancelledCount: {
+                      $sum: { $cond: [isCancelled, 1, 0] },
+                    },
                     totalSalesAmount: {
                       $sum: { $cond: [isSales, invoiceAmt, 0] },
                     },
@@ -1014,12 +1376,16 @@ export class ReportImportService {
     };
   }
 
-  private resolveAnalyticsDateRange(query: { fromDate?: string; toDate?: string }) {
+  private resolveAnalyticsDateRange(query: {
+    fromDate?: string;
+    toDate?: string;
+  }) {
     const today = new Date();
     const toDate = query.toDate?.trim() || today.toISOString().slice(0, 10);
     const defaultFrom = new Date(today);
     defaultFrom.setDate(defaultFrom.getDate() - 29);
-    const fromDate = query.fromDate?.trim() || defaultFrom.toISOString().slice(0, 10);
+    const fromDate =
+      query.fromDate?.trim() || defaultFrom.toISOString().slice(0, 10);
     return { fromDate, toDate };
   }
 
@@ -1086,10 +1452,7 @@ export class ReportImportService {
                 $max: [
                   0,
                   {
-                    $subtract: [
-                      { $subtract: ['$inv', '$taxable'] },
-                      '$tax',
-                    ],
+                    $subtract: [{ $subtract: ['$inv', '$taxable'] }, '$tax'],
                   },
                 ],
               },
@@ -1139,7 +1502,9 @@ export class ReportImportService {
 
   private async aggregateProfitLossFacet(
     filter: Record<string, unknown>,
-    branches: Array<'totals' | 'marketplaces' | 'monthly' | 'topSellers' | 'categories'>,
+    branches: Array<
+      'totals' | 'marketplaces' | 'monthly' | 'topSellers' | 'categories'
+    >,
   ) {
     const groupByBranch: Record<
       (typeof branches)[number],
@@ -1470,17 +1835,17 @@ export class ReportImportService {
             recordCount: number;
           }>
         ).map((row) => {
-            const mapped = this.mapPlGroup(row);
-            const marketplaceId = String(row._id ?? '');
-            return {
-              marketplaceId,
-              name: marketplaceNameById.get(marketplaceId) ?? marketplaceId,
-              revenue: mapped.revenue,
-              value: mapped.revenue,
-              recordCount: mapped.recordCount,
-              netProfit: mapped.netProfit,
-            };
-          }),
+          const mapped = this.mapPlGroup(row);
+          const marketplaceId = String(row._id ?? '');
+          return {
+            marketplaceId,
+            name: marketplaceNameById.get(marketplaceId) ?? marketplaceId,
+            revenue: mapped.revenue,
+            value: mapped.revenue,
+            recordCount: mapped.recordCount,
+            netProfit: mapped.netProfit,
+          };
+        }),
         topSellers: (
           topSellerRows as Array<{
             _id: string;
@@ -1530,7 +1895,8 @@ export class ReportImportService {
     const returns = Number(row.returns || 0);
     const fees = Number(row.fees || 0);
     const netProfit = revenue - returns - fees;
-    const margin = revenue > 0 ? Math.round((netProfit / revenue) * 1000) / 10 : 0;
+    const margin =
+      revenue > 0 ? Math.round((netProfit / revenue) * 1000) / 10 : 0;
     return {
       revenue,
       returns,
@@ -1621,7 +1987,11 @@ export class ReportImportService {
     if (query.fromDate && query.toDate && query.sellerId) {
       const from = new Date(query.fromDate);
       const to = new Date(query.toDate);
-      if (!Number.isNaN(from.getTime()) && !Number.isNaN(to.getTime()) && to >= from) {
+      if (
+        !Number.isNaN(from.getTime()) &&
+        !Number.isNaN(to.getTime()) &&
+        to >= from
+      ) {
         const spanMs = to.getTime() - from.getTime() + 86_400_000;
         const prevTo = new Date(from.getTime() - 86_400_000);
         const prevFrom = new Date(prevTo.getTime() - spanMs + 86_400_000);
@@ -1786,11 +2156,11 @@ export class ReportImportService {
 
     const selectedReportMonth = query.reportMonth?.trim();
     const selectedMonth = selectedReportMonth
-      ? months.find((m) => m.reportMonth === selectedReportMonth) ?? {
+      ? (months.find((m) => m.reportMonth === selectedReportMonth) ?? {
           reportMonth: selectedReportMonth,
           uploadedSlots: [] as string[],
           isComplete: false,
-        }
+        })
       : undefined;
 
     return {

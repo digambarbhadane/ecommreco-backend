@@ -12,9 +12,7 @@ export function isMongoDisconnectedError(exception: unknown): boolean {
     name === 'MongoExpiredSessionError' ||
     /Client must be connected/i.test(message) ||
     /buffering timed out/i.test(message) ||
-    /ECONNREFUSED|ENOTFOUND|ETIMEOUT|server selection timed out/i.test(
-      message,
-    )
+    /ECONNREFUSED|ENOTFOUND|ETIMEOUT|server selection timed out/i.test(message)
   );
 }
 

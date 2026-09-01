@@ -14,7 +14,10 @@ import {
   UserSecurity,
   UserSecurityDocument,
 } from '../profile/schemas/user-security.schema';
-import { evaluateSellerLogin, type SellerLoginSnapshot } from '../trial/trial-login.policy';
+import {
+  evaluateSellerLogin,
+  type SellerLoginSnapshot,
+} from '../trial/trial-login.policy';
 
 type JwtPayload = {
   sub: string;
@@ -68,7 +71,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
   async validate(payload: JwtPayload) {
     if (payload.typ === 'refresh') {
-      throw new UnauthorizedException('Refresh token cannot be used as access token');
+      throw new UnauthorizedException(
+        'Refresh token cannot be used as access token',
+      );
     }
 
     const { sub: id, role } = payload;
@@ -82,10 +87,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         .exec();
       const currentVersion =
         typeof security?.tokenVersion === 'number' ? security.tokenVersion : 0;
-      if (
-        typeof tokenVersion === 'number' &&
-        tokenVersion !== currentVersion
-      ) {
+      if (typeof tokenVersion === 'number' && tokenVersion !== currentVersion) {
         throw new UnauthorizedException();
       }
 

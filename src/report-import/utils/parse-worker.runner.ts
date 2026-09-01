@@ -47,20 +47,29 @@ export function runParseInWorkerThread<T>(
 
     const timer = setTimeout(() => {
       void worker.terminate();
-      settle(() => reject(new Error(`Parse worker timed out after ${timeoutMs}ms`)));
+      settle(() =>
+        reject(new Error(`Parse worker timed out after ${timeoutMs}ms`)),
+      );
     }, timeoutMs);
 
-    worker.once('message', (message: { ok: boolean; result?: T; error?: string }) => {
-      if (message.ok && message.result !== undefined) {
-        settle(() => resolve(message.result as T));
-      } else {
-        settle(() => reject(new Error(message.error ?? 'Parse worker failed')));
-      }
-    });
+    worker.once(
+      'message',
+      (message: { ok: boolean; result?: T; error?: string }) => {
+        if (message.ok && message.result !== undefined) {
+          settle(() => resolve(message.result as T));
+        } else {
+          settle(() =>
+            reject(new Error(message.error ?? 'Parse worker failed')),
+          );
+        }
+      },
+    );
     worker.once('error', (err) => settle(() => reject(err)));
     worker.once('exit', (code) => {
       if (code !== 0) {
-        settle(() => reject(new Error(`Parse worker exited with code ${code}`)));
+        settle(() =>
+          reject(new Error(`Parse worker exited with code ${code}`)),
+        );
       }
     });
   });

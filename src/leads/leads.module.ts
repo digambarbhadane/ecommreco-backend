@@ -6,6 +6,7 @@ import { Seller, SellerSchema } from '../sellers/schemas/seller.schema';
 import { Gst, GstSchema } from '../gsts/schemas/gst.schema';
 import { User, UserSchema } from '../users/schemas/user.schema';
 import { LeadsController } from './leads.controller';
+import { LeadConversionModule } from './lead-conversion.module';
 import { LeadsService } from './leads.service';
 import { Lead, LeadSchema } from './schemas/lead.schema';
 import { Counter, CounterSchema } from './schemas/counter.schema';
@@ -21,6 +22,7 @@ import { Counter, CounterSchema } from './schemas/counter.schema';
     ]),
     NotificationsModule,
     EmailModule,
+    LeadConversionModule,
   ],
   controllers: [LeadsController],
   providers: [LeadsService],

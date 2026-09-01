@@ -1,4 +1,10 @@
-import { IsOptional, IsBoolean, IsString, MaxLength, MinLength } from 'class-validator';
+import {
+  IsOptional,
+  IsBoolean,
+  IsString,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
 
 export class GenerateCredentialsDto {
   @IsOptional()

@@ -122,7 +122,7 @@ Background worker (BullMQ if REDIS_URL, else in-process FIFO, concurrency 1)
 | Other APIs during import | Timeouts / 500 errors | **Normal** |
 | User navigation | Blocked perception | **Unrestricted** |
 | Progress visibility | Poll upload status only | **Socket.IO + optional poll fallback** |
-| 50k row insert | ~5000 batch = fewer yields | **1000 batch = more frequent yields** |
+| 50k row insert | ~5001 batch = fewer yields | **1000 batch = more frequent yields** |
 | Import history | `import_uploads` only | **`import_jobs` with timings** |
 
 *Exact timings depend on file size, marketplace, and Atlas tier. Use `[IMPORT_PERF]` logs for per-job measurements.*

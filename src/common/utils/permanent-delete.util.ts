@@ -53,7 +53,9 @@ function toObjectIds(values: string[]): Types.ObjectId[] {
     .map((value) => new Types.ObjectId(value));
 }
 
-function buildSellerFilters(sellerAliases: string[]): Record<string, unknown>[] {
+function buildSellerFilters(
+  sellerAliases: string[],
+): Record<string, unknown>[] {
   const sellerCandidates = Array.from(
     new Set(sellerAliases.map((value) => String(value).trim()).filter(Boolean)),
   );
@@ -68,10 +70,14 @@ function buildSellerFilters(sellerAliases: string[]): Record<string, unknown>[] 
   return filters;
 }
 
-function buildGstOnlyFilters(input: DeletionScopeInput): Record<string, unknown>[] {
+function buildGstOnlyFilters(
+  input: DeletionScopeInput,
+): Record<string, unknown>[] {
   const gstCandidates = [String(input.gstId ?? '').trim()].filter(Boolean);
   const gstObjectIds = toObjectIds(gstCandidates);
-  const gstNumber = String(input.gstNumber ?? '').trim().toUpperCase();
+  const gstNumber = String(input.gstNumber ?? '')
+    .trim()
+    .toUpperCase();
   const filters: Record<string, unknown>[] = [];
   if (gstCandidates.length) {
     filters.push({ gstId: { $in: gstCandidates } });
@@ -96,9 +102,7 @@ function buildMarketplaceLinkFilters(
 ): Record<string, unknown>[] {
   const linkIds = Array.from(
     new Set(
-      tokens
-        .map((token) => String(token.linkId ?? '').trim())
-        .filter(Boolean),
+      tokens.map((token) => String(token.linkId ?? '').trim()).filter(Boolean),
     ),
   );
   if (!linkIds.length) return [];
@@ -118,13 +122,40 @@ function buildMarketplaceLinkFilters(
   return filters;
 }
 
+function buildMarketplaceSlugFilters(
+  tokens: MarketplaceScopeToken[],
+): Record<string, unknown>[] {
+  const slugs = Array.from(
+    new Set(
+      tokens
+        .flatMap((token) => [
+          token.platformSlug
+            ? String(token.platformSlug).trim().toLowerCase()
+            : '',
+          token.platformName
+            ? String(token.platformName).trim().toLowerCase()
+            : '',
+        ])
+        .filter(Boolean),
+    ),
+  );
+  if (!slugs.length) return [];
+  const filters: Record<string, unknown>[] = [];
+  for (const slug of slugs) {
+    const escaped = slug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    filters.push({ marketplace: { $regex: new RegExp(`^${escaped}$`, 'i') } });
+    filters.push({ marketplaceId: { $regex: new RegExp(`^${escaped}$`, 'i') } });
+  }
+  return filters;
+}
+
 /**
  * Build a scoped delete filter.
  *
  * GST mode: seller AND (gstId OR gstin) only.
- * Marketplace mode: seller AND marketplace-link-id only.
+ * Marketplace mode: seller AND (marketplace-link-id OR (gst AND marketplace-slug)).
  *
- * Never match on platform slug/name alone.
+ * Never match on platform slug/name alone without GST scope.
  * Never match on sellerId alone.
  */
 export function buildCascadeDeleteFilter(
@@ -134,16 +165,28 @@ export function buildCascadeDeleteFilter(
   const sellerFilters = buildSellerFilters(input.sellerAliases);
 
   if (mode === 'marketplace') {
-    const marketplaceFilters = buildMarketplaceLinkFilters(
+    const linkFilters = buildMarketplaceLinkFilters(
       input.marketplaceTokens ?? [],
     );
-    if (!marketplaceFilters.length) return null;
+    const slugFilters = buildMarketplaceSlugFilters(
+      input.marketplaceTokens ?? [],
+    );
+    const gstFilters = buildGstOnlyFilters(input);
+
+    const marketplaceClauses: Record<string, unknown>[] = [...linkFilters];
+    if (slugFilters.length && gstFilters.length) {
+      marketplaceClauses.push({
+        $and: [{ $or: gstFilters }, { $or: slugFilters }],
+      });
+    }
+
+    if (!marketplaceClauses.length) return null;
     if (sellerFilters.length) {
       return {
-        $and: [{ $or: sellerFilters }, { $or: marketplaceFilters }],
+        $and: [{ $or: sellerFilters }, { $or: marketplaceClauses }],
       };
     }
-    return { $or: marketplaceFilters };
+    return { $or: marketplaceClauses };
   }
 
   const gstFilters = buildGstOnlyFilters(input);
@@ -181,8 +224,10 @@ export async function cascadeDeleteAcrossCollections(
         !collection.startsWith('system.'),
     );
 
-  const deletedCollections: Array<{ collection: string; deletedCount: number }> =
-    [];
+  const deletedCollections: Array<{
+    collection: string;
+    deletedCount: number;
+  }> = [];
   let totalRecordsDeleted = 0;
 
   const concurrency = 4;
@@ -190,10 +235,9 @@ export async function cascadeDeleteAcrossCollections(
     const batch = collections.slice(i, i + concurrency);
     const results = await Promise.all(
       batch.map(async (collection) => {
-        const result = await db.collection(collection).deleteMany(
-          deleteQuery,
-          session ? { session } : undefined,
-        );
+        const result = await db
+          .collection(collection)
+          .deleteMany(deleteQuery, session ? { session } : undefined);
         return {
           collection,
           deletedCount: Number(result.deletedCount ?? 0),

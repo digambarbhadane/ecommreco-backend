@@ -43,7 +43,9 @@ export class FlipkartImportService {
     }
     const parsed = this.parseReturnFile(file);
     if (!parsed.rows.length) {
-      throw new BadRequestException('Return report does not contain any data rows');
+      throw new BadRequestException(
+        'Return report does not contain any data rows',
+      );
     }
     return parsed;
   }
@@ -83,7 +85,9 @@ export class FlipkartImportService {
     for (const group of FLIPKART_RETURN_REQUIRED_HEADER_GROUPS) {
       const hasColumn = group.some((alias) =>
         headers.some((header) => {
-          const normalized = String(header ?? '').trim().toLowerCase();
+          const normalized = String(header ?? '')
+            .trim()
+            .toLowerCase();
           const target = String(alias).trim().toLowerCase();
           return normalized === target || normalized.includes(target);
         }),

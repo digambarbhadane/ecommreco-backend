@@ -29,7 +29,8 @@ function gstIdentity(gst: { _id?: unknown; id?: string }): string {
 
 function createdAtMs(value?: Date | string): number {
   if (!value) return Number.POSITIVE_INFINITY;
-  const ms = value instanceof Date ? value.getTime() : Date.parse(String(value));
+  const ms =
+    value instanceof Date ? value.getTime() : Date.parse(String(value));
   return Number.isFinite(ms) ? ms : Number.POSITIVE_INFINITY;
 }
 

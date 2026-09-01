@@ -40,7 +40,9 @@ export class OnboardingRegistrationService {
       throw new BadRequestException('You must accept the Terms to continue.');
     }
     if (dto.password !== dto.confirmPassword) {
-      throw new BadRequestException('Password and Confirm Password do not match.');
+      throw new BadRequestException(
+        'Password and Confirm Password do not match.',
+      );
     }
 
     const email = dto.email.trim().toLowerCase();
@@ -172,7 +174,8 @@ export class OnboardingRegistrationService {
         pricing: payment.pricing,
         redirectPath: '/seller/register?mode=trial',
       },
-      message: 'Registration successful. Complete payment to activate your trial.',
+      message:
+        'Registration successful. Complete payment to activate your trial.',
     };
   }
 
@@ -267,7 +270,8 @@ export class OnboardingRegistrationService {
       status: 'pending_payment',
       pricing,
       paymentLink: `/trial/payment/${sellerId}`,
-      message: 'Your trial registration is pending payment. Continue to checkout.',
+      message:
+        'Your trial registration is pending payment. Continue to checkout.',
     };
   }
 

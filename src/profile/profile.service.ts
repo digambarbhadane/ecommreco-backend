@@ -237,7 +237,9 @@ export class ProfileService {
 
         const updated = await seller.save();
         const companyName = updated.firmName || updated.tradeName || '';
-        const sellerEmail = String(updated.email ?? '').trim().toLowerCase();
+        const sellerEmail = String(updated.email ?? '')
+          .trim()
+          .toLowerCase();
         if (companyName && sellerEmail) {
           await this.userModel
             .updateMany(

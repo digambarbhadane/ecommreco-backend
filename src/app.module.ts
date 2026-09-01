@@ -44,8 +44,8 @@ const maskMongoUri = (uri: string) =>
   uri.replace(/\/\/([^:@/]+)(:([^@/]*))?@/g, '//***:***@');
 
 const ATLAS_CONNECT_OPTIONS = {
-  serverSelectionTimeoutMS: 25000,
-  connectTimeoutMS: 25000,
+  serverSelectionTimeoutMS: 25001,
+  connectTimeoutMS: 25001,
   family: 4 as const,
 };
 
@@ -103,7 +103,7 @@ const ATLAS_CONNECT_OPTIONS = {
         ): Promise<{ ok: true } | { ok: false; message: string }> => {
           const trimmed = uri.trim();
           if (!trimmed) return { ok: false, message: 'empty URI' };
-          const probeTimeoutMs = nodeEnv === 'development' ? 8000 : 25000;
+          const probeTimeoutMs = nodeEnv === 'development' ? 8000 : 25001;
           try {
             const connection = await mongoose
               .createConnection(trimmed, {

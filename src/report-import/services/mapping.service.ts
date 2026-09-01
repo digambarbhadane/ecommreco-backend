@@ -14,24 +14,22 @@ import {
   amazonReturnFieldMappings,
   type AmazonReturnFieldKey,
 } from '../config/importMappings/amazon-return.mapping';
-import {
-  resolveAmazonReturnDetails,
-} from '../utils/amazon-return.util';
+import { resolveAmazonReturnDetails } from '../utils/amazon-return.util';
 import {
   meeshoPaymentFieldMappings,
   type MeeshoPaymentFieldKey,
 } from '../config/importMappings/meesho-payment.mapping';
-import {
-  asImportDateDmy,
-  asImportDateIso,
-} from '../utils/import-date.util';
+import { asImportDateDmy, asImportDateIso } from '../utils/import-date.util';
 import { normalizeHeader as normalizeHeaderUtil } from '../utils/header.util';
 import { applyFlipkartInvoiceAmount } from '../utils/flipkart-invoice.util';
 import {
   buildSellerGstContext,
   normalizeImportRowGst,
 } from '../../common/services/gst-calculation.core';
-import { resolveIndianStateKey, resolveIndianStateCode } from '../utils/gst-state.util';
+import {
+  resolveIndianStateKey,
+  resolveIndianStateCode,
+} from '../utils/gst-state.util';
 
 export type ParsedSheetRow = {
   __sheetName: string;
@@ -154,10 +152,8 @@ export const MYNTRA_SALES_ORDER_ID_ALIASES = [
 
 export const MYNTRA_GSTR_ORDER_ID_ALIASES = [
   'order_id',
-  'order_release_id',
-  'sale_order_code',
-  'Sale_Order_Code',
-  'shipment_id',
+  'Order ID',
+  'Order Id',
 ] as const;
 
 export const MYNTRA_MDIRECT_ORDER_ID_ALIASES = [
@@ -177,12 +173,9 @@ export const MYNTRA_GSTR_RTO_ORDER_ID_ALIASES = [
 ] as const;
 
 export const MYNTRA_GSTR_RT_ORDER_ID_ALIASES = [
-  'order_id',
-  'Order ID',
-  'Order Id',
-  'order_release_id',
-  'sale_order_code',
-  'Sale_Order_Code',
+  'shipment_id',
+  'Shipment ID',
+  'Shipment Id',
 ] as const;
 
 export const MYNTRA_MDIRECT_RETURNS_ORDER_ID_ALIASES = [
@@ -463,12 +456,36 @@ const AMAZON_MAPPINGS: MappingConfig[] = [
     target: 'taxableAmount',
     transform: asNumber,
   },
-  { source: ['Igst Rate', 'IGST Rate'], target: 'igstRate', transform: asNumber },
-  { source: ['Igst Tax', 'IGST Amount'], target: 'igstAmount', transform: asNumber },
-  { source: ['Cgst Rate', 'CGST Rate'], target: 'cgstRate', transform: asNumber },
-  { source: ['Cgst Tax', 'CGST Amount'], target: 'cgstAmount', transform: asNumber },
-  { source: ['Sgst Rate', 'SGST Rate'], target: 'sgstRate', transform: asNumber },
-  { source: ['Sgst Tax', 'SGST Amount'], target: 'sgstAmount', transform: asNumber },
+  {
+    source: ['Igst Rate', 'IGST Rate'],
+    target: 'igstRate',
+    transform: asNumber,
+  },
+  {
+    source: ['Igst Tax', 'IGST Amount'],
+    target: 'igstAmount',
+    transform: asNumber,
+  },
+  {
+    source: ['Cgst Rate', 'CGST Rate'],
+    target: 'cgstRate',
+    transform: asNumber,
+  },
+  {
+    source: ['Cgst Tax', 'CGST Amount'],
+    target: 'cgstAmount',
+    transform: asNumber,
+  },
+  {
+    source: ['Sgst Rate', 'SGST Rate'],
+    target: 'sgstRate',
+    transform: asNumber,
+  },
+  {
+    source: ['Sgst Tax', 'SGST Amount'],
+    target: 'sgstAmount',
+    transform: asNumber,
+  },
   {
     source: ['Invoice Number', 'Invoice No'],
     target: 'invoiceNo',
@@ -499,7 +516,12 @@ const AMAZON_MAPPINGS: MappingConfig[] = [
     transform: asString,
   },
   {
-    source: ['Buyer Name', 'Customer Name', 'Bill To Customer Name', 'Bill To Name'],
+    source: [
+      'Buyer Name',
+      'Customer Name',
+      'Bill To Customer Name',
+      'Bill To Name',
+    ],
     target: 'buyerName',
     transform: asString,
   },
@@ -525,7 +547,7 @@ const MYNTRA_GSTR_MAPPINGS: MappingConfig[] = [
     transform: normalizeGstin,
   },
   {
-    source: [...MYNTRA_GSTR_ORDER_ID_ALIASES, ...MYNTRA_SALES_ORDER_ID_ALIASES, 'Order ID'],
+    source: [...MYNTRA_GSTR_ORDER_ID_ALIASES],
     target: 'orderID',
     transform: asString,
   },
@@ -535,7 +557,12 @@ const MYNTRA_GSTR_MAPPINGS: MappingConfig[] = [
     transform: asString,
   },
   {
-    source: ['seller_type', 'Fulfilment Type', 'Fulfillment Type', 'Fulfilment Channel'],
+    source: [
+      'seller_type',
+      'Fulfilment Type',
+      'Fulfillment Type',
+      'Fulfilment Channel',
+    ],
     target: 'fulfilmentType',
     transform: asString,
   },
@@ -550,19 +577,31 @@ const MYNTRA_GSTR_MAPPINGS: MappingConfig[] = [
     target: 'taxableAmount',
     transform: asNumber,
   },
-  { source: ['igst_rate', 'IGST Rate', 'Igst Rate'], target: 'igstRate', transform: asNumber },
+  {
+    source: ['igst_rate', 'IGST Rate', 'Igst Rate'],
+    target: 'igstRate',
+    transform: asNumber,
+  },
   {
     source: ['igst_amt', 'IGST Amount', 'Igst Tax', 'Igst Amount'],
     target: 'igstAmount',
     transform: asNumber,
   },
-  { source: ['cgst_rate', 'CGST Rate', 'Cgst Rate'], target: 'cgstRate', transform: asNumber },
+  {
+    source: ['cgst_rate', 'CGST Rate', 'Cgst Rate'],
+    target: 'cgstRate',
+    transform: asNumber,
+  },
   {
     source: ['cgst_amt', 'CGST Amount', 'Cgst Tax', 'Cgst Amount'],
     target: 'cgstAmount',
     transform: asNumber,
   },
-  { source: ['sgst_rate', 'SGST Rate', 'Sgst Rate'], target: 'sgstRate', transform: asNumber },
+  {
+    source: ['sgst_rate', 'SGST Rate', 'Sgst Rate'],
+    target: 'sgstRate',
+    transform: asNumber,
+  },
   {
     source: ['sgst_amt', 'SGST Amount', 'Sgst Tax', 'Sgst Amount'],
     target: 'sgstAmount',
@@ -608,7 +647,12 @@ const MYNTRA_GSTR_RTO_MAPPINGS: MappingConfig[] = [
     transform: asDate,
   },
   {
-    source: ['invoice_number', 'Invoice_Number', 'Invoice No', 'Invoice Number'],
+    source: [
+      'invoice_number',
+      'Invoice_Number',
+      'Invoice No',
+      'Invoice Number',
+    ],
     target: 'invoiceNo',
     transform: asString,
   },
@@ -618,11 +662,20 @@ const MYNTRA_GSTR_RTO_MAPPINGS: MappingConfig[] = [
     transform: asString,
   },
   {
-    source: ['seller_type', 'Fulfilment Type', 'Fulfillment Type', 'Fulfilment Channel'],
+    source: [
+      'seller_type',
+      'Fulfilment Type',
+      'Fulfillment Type',
+      'Fulfilment Channel',
+    ],
     target: 'fulfilmentType',
     transform: asString,
   },
-  { source: ['quantity', 'Quantity', 'Qty'], target: 'quantity', transform: asNumber },
+  {
+    source: ['quantity', 'Quantity', 'Qty'],
+    target: 'quantity',
+    transform: asNumber,
+  },
   {
     source: ['seller_price', 'Invoice Amount'],
     target: 'invoiceAmount',
@@ -663,34 +716,36 @@ const MYNTRA_GSTR_RTO_MAPPINGS: MappingConfig[] = [
     transform: asNumber,
   },
   {
-    source: ['cgst_rate', 'CGST Rate', 'Cgst Rate', 'Cgst_Rate', 'CGST_Rate', 'CGST %'],
+    source: [
+      'cgst_rate',
+      'CGST Rate',
+      'Cgst Rate',
+      'Cgst_Rate',
+      'CGST_Rate',
+      'CGST %',
+    ],
     target: 'cgstRate',
     transform: asNumber,
   },
   {
-    source: [
-      'cgst_amt',
-      'CGST Amount',
-      'Cgst Tax',
-      'Cgst Amount',
-      'Cgst_Amt',
-    ],
+    source: ['cgst_amt', 'CGST Amount', 'Cgst Tax', 'Cgst Amount', 'Cgst_Amt'],
     target: 'cgstAmount',
     transform: asNumber,
   },
   {
-    source: ['sgst_rate', 'SGST Rate', 'Sgst Rate', 'Sgst_Rate', 'SGST_Rate', 'SGST %'],
+    source: [
+      'sgst_rate',
+      'SGST Rate',
+      'Sgst Rate',
+      'Sgst_Rate',
+      'SGST_Rate',
+      'SGST %',
+    ],
     target: 'sgstRate',
     transform: asNumber,
   },
   {
-    source: [
-      'sgst_amt',
-      'SGST Amount',
-      'Sgst Tax',
-      'Sgst Amount',
-      'Sgst_Amt',
-    ],
+    source: ['sgst_amt', 'SGST Amount', 'Sgst Tax', 'Sgst Amount', 'Sgst_Amt'],
     target: 'sgstAmount',
     transform: asNumber,
   },
@@ -719,7 +774,7 @@ const MYNTRA_GSTR_RT_MAPPINGS: MappingConfig[] = [
     transform: normalizeGstin,
   },
   {
-    source: [...MYNTRA_GSTR_RT_ORDER_ID_ALIASES, 'Order ID'],
+    source: [...MYNTRA_GSTR_RT_ORDER_ID_ALIASES],
     target: 'orderID',
     transform: asString,
   },
@@ -744,11 +799,20 @@ const MYNTRA_GSTR_RT_MAPPINGS: MappingConfig[] = [
     transform: asString,
   },
   {
-    source: ['seller_type', 'Fulfilment Type', 'Fulfillment Type', 'Fulfilment Channel'],
+    source: [
+      'seller_type',
+      'Fulfilment Type',
+      'Fulfillment Type',
+      'Fulfilment Channel',
+    ],
     target: 'fulfilmentType',
     transform: asString,
   },
-  { source: ['quantity', 'Quantity', 'Qty'], target: 'quantity', transform: asNumber },
+  {
+    source: ['quantity', 'Quantity', 'Qty'],
+    target: 'quantity',
+    transform: asNumber,
+  },
   {
     source: ['seller_price', 'Invoice Amount'],
     target: 'invoiceAmount',
@@ -789,34 +853,36 @@ const MYNTRA_GSTR_RT_MAPPINGS: MappingConfig[] = [
     transform: asNumber,
   },
   {
-    source: ['cgst_rate', 'CGST Rate', 'Cgst Rate', 'Cgst_Rate', 'CGST_Rate', 'CGST %'],
+    source: [
+      'cgst_rate',
+      'CGST Rate',
+      'Cgst Rate',
+      'Cgst_Rate',
+      'CGST_Rate',
+      'CGST %',
+    ],
     target: 'cgstRate',
     transform: asNumber,
   },
   {
-    source: [
-      'cgst_amt',
-      'CGST Amount',
-      'Cgst Tax',
-      'Cgst Amount',
-      'Cgst_Amt',
-    ],
+    source: ['cgst_amt', 'CGST Amount', 'Cgst Tax', 'Cgst Amount', 'Cgst_Amt'],
     target: 'cgstAmount',
     transform: asNumber,
   },
   {
-    source: ['sgst_rate', 'SGST Rate', 'Sgst Rate', 'Sgst_Rate', 'SGST_Rate', 'SGST %'],
+    source: [
+      'sgst_rate',
+      'SGST Rate',
+      'Sgst Rate',
+      'Sgst_Rate',
+      'SGST_Rate',
+      'SGST %',
+    ],
     target: 'sgstRate',
     transform: asNumber,
   },
   {
-    source: [
-      'sgst_amt',
-      'SGST Amount',
-      'Sgst Tax',
-      'Sgst Amount',
-      'Sgst_Amt',
-    ],
+    source: ['sgst_amt', 'SGST Amount', 'Sgst Tax', 'Sgst Amount', 'Sgst_Amt'],
     target: 'sgstAmount',
     transform: asNumber,
   },
@@ -892,9 +958,18 @@ const MYNTRA_SALES_REVENUE_MAPPINGS: MappingConfig[] = [
     target: 'orderID',
     transform: asString,
   },
-  { source: ['Hsn', 'HSN', 'hsn', 'HSN Code'], target: 'hsnCode', transform: asString },
   {
-    source: ['Invoice_Number', 'invoice_number', 'Invoice No', 'Invoice Number'],
+    source: ['Hsn', 'HSN', 'hsn', 'HSN Code'],
+    target: 'hsnCode',
+    transform: asString,
+  },
+  {
+    source: [
+      'Invoice_Number',
+      'invoice_number',
+      'Invoice No',
+      'Invoice Number',
+    ],
     target: 'invoiceNo',
     transform: asString,
   },
@@ -911,7 +986,11 @@ const MYNTRA_SALES_REVENUE_MAPPINGS: MappingConfig[] = [
 ];
 
 const MEESHO_TCS_SALES_MAPPINGS: MappingConfig[] = [
-  { source: ['gstin', 'GST NO'], target: 'sellerGSTIN', transform: normalizeGstin },
+  {
+    source: ['gstin', 'GST NO'],
+    target: 'sellerGSTIN',
+    transform: normalizeGstin,
+  },
   {
     source: [...MEESHO_ORDER_ID_ALIASES],
     target: 'orderID',
@@ -929,8 +1008,16 @@ const MEESHO_TCS_SALES_MAPPINGS: MappingConfig[] = [
     target: 'taxableAmount',
     transform: asNumber,
   },
-  { source: ['gst_rate', 'IGST Rate'], target: 'igstRate', transform: asNumber },
-  { source: ['tax_amount', 'IGST Amount'], target: 'igstAmount', transform: asNumber },
+  {
+    source: ['gst_rate', 'IGST Rate'],
+    target: 'igstRate',
+    transform: asNumber,
+  },
+  {
+    source: ['tax_amount', 'IGST Amount'],
+    target: 'igstAmount',
+    transform: asNumber,
+  },
   {
     source: ['order_date', 'Invoice Date'],
     target: 'invoiceDate',
@@ -955,7 +1042,10 @@ export class MappingService {
     sellerGstins?: string | string[],
   ): NormalizedImportRow {
     const sellerContext = buildSellerGstContext(sellerStates, sellerGstins);
-    if (mapped.sellerGSTIN && !sellerContext.gstins.includes(mapped.sellerGSTIN)) {
+    if (
+      mapped.sellerGSTIN &&
+      !sellerContext.gstins.includes(mapped.sellerGSTIN)
+    ) {
       sellerContext.gstins.push(mapped.sellerGSTIN);
       sellerContext.stateKeys = buildSellerGstContext(
         sellerContext.states,
@@ -1005,9 +1095,7 @@ export class MappingService {
     orderRow?: ParsedSheetRow,
   ): NormalizedImportRow {
     if (!orderRow) return mapped;
-    const sku = asString(
-      getRowCell(orderRow, 'SKU', 'SKU ID', 'sku'),
-    );
+    const sku = asString(getRowCell(orderRow, 'SKU', 'SKU ID', 'sku'));
     const orderStatus = asString(
       getRowCell(
         orderRow,
@@ -1095,7 +1183,8 @@ export class MappingService {
     if (subType) mapped.subType = subType;
     if (returnQty !== undefined) mapped.returnQty = returnQty;
     if (returnReason) mapped.returnReason = returnReason;
-    if (detailedReturnReason) mapped.detailedReturnReason = detailedReturnReason;
+    if (detailedReturnReason)
+      mapped.detailedReturnReason = detailedReturnReason;
     return mapped;
   }
 
@@ -1152,7 +1241,9 @@ export class MappingService {
   mapFlipkartPaymentFields(
     paymentRow: ParsedSheetRow,
   ): Pick<NormalizedImportRow, FlipkartPaymentFieldKey> {
-    const numericTargets = new Set<FlipkartPaymentFieldKey>(['finalSettlementAmount']);
+    const numericTargets = new Set<FlipkartPaymentFieldKey>([
+      'finalSettlementAmount',
+    ]);
     const dateTargets = new Set<FlipkartPaymentFieldKey>(['paymentDate']);
     const out = {} as Pick<NormalizedImportRow, FlipkartPaymentFieldKey>;
 
@@ -1176,10 +1267,7 @@ export class MappingService {
 
   mapFlipkartReturnFields(
     returnRow: ParsedSheetRow,
-  ): Pick<
-    NormalizedImportRow,
-    FlipkartReturnFieldKey
-  > {
+  ): Pick<NormalizedImportRow, FlipkartReturnFieldKey> {
     const out = {} as Pick<NormalizedImportRow, FlipkartReturnFieldKey>;
 
     for (const mapping of flipkartReturnFieldMappings) {
@@ -1199,10 +1287,7 @@ export class MappingService {
 
   mapAmazonReturnFields(
     returnRow: ParsedSheetRow,
-  ): Pick<
-    NormalizedImportRow,
-    AmazonReturnFieldKey | 'amazonReturnSubType'
-  > {
+  ): Pick<NormalizedImportRow, AmazonReturnFieldKey | 'amazonReturnSubType'> {
     let returnType = '';
     let returnReason = '';
     for (const mapping of amazonReturnFieldMappings) {
@@ -1213,9 +1298,16 @@ export class MappingService {
       if (mapping.target === 'returnReason') returnReason = value;
     }
 
-    const orderId = asString(
-      getRowCell(returnRow, 'Order Id', 'Order ID', 'order_id', 'Order Number'),
-    ) ?? '';
+    const orderId =
+      asString(
+        getRowCell(
+          returnRow,
+          'Order Id',
+          'Order ID',
+          'order_id',
+          'Order Number',
+        ),
+      ) ?? '';
 
     return {
       ...resolveAmazonReturnDetails(returnType, orderId),
@@ -1254,7 +1346,9 @@ export class MappingService {
   }
 
   mapSalesRow(row: ParsedSheetRow): NormalizedImportRow {
-    return applyFlipkartInvoiceAmount(this.mapRow(row, 'sales', SALES_MAPPINGS));
+    return applyFlipkartInvoiceAmount(
+      this.mapRow(row, 'sales', SALES_MAPPINGS),
+    );
   }
 
   mapCashbackRow(row: ParsedSheetRow): NormalizedImportRow {
@@ -1298,10 +1392,9 @@ export class MappingService {
     return mapped;
   }
 
-  mapMyntraMdirectReturnsRow(row: ParsedSheetRow): Pick<
-    NormalizedImportRow,
-    'returnReason' | 'detailedReturnReason'
-  > {
+  mapMyntraMdirectReturnsRow(
+    row: ParsedSheetRow,
+  ): Pick<NormalizedImportRow, 'returnReason' | 'detailedReturnReason'> {
     return this.mapRow(row, 'sales', MYNTRA_MDIRECT_RETURNS_MAPPINGS);
   }
 
@@ -1338,14 +1431,10 @@ export class MappingService {
     const mappings =
       kind === 'rt' ? MYNTRA_GSTR_RT_MAPPINGS : MYNTRA_GSTR_RTO_MAPPINGS;
     for (const config of mappings) {
-      if (
-        !MYNTRA_GSTR_RETURN_GST_FIELDS.includes(
-          config.target as keyof NormalizedImportRow,
-        )
-      ) {
+      if (!MYNTRA_GSTR_RETURN_GST_FIELDS.includes(config.target)) {
         continue;
       }
-      const target = config.target as keyof NormalizedImportRow;
+      const target = config.target;
       const current = mapped[target];
       if (current !== undefined && current !== null && current !== '') continue;
       const raw = getRowCell(row, ...config.source);
@@ -1365,7 +1454,10 @@ export class MappingService {
    * This replaces the per-row O(headers × aliases × mappings) scan with a one-time
    * O(headers × aliases) setup and per-row O(headers) lookup.
    */
-  buildHeaderMap(headers: string[], mappings: MappingConfig[]): ColumnHeaderMap {
+  buildHeaderMap(
+    headers: string[],
+    mappings: MappingConfig[],
+  ): ColumnHeaderMap {
     const map: ColumnHeaderMap = new Map();
     for (const header of headers) {
       if (header === '__sheetName' || header === '__rowNumber') continue;
@@ -1380,7 +1472,10 @@ export class MappingService {
           }
         }
         if (matched) {
-          map.set(header, { target: config.target, transform: config.transform });
+          map.set(header, {
+            target: config.target,
+            transform: config.transform,
+          });
           break; // first winning config per header
         }
       }
@@ -1398,7 +1493,8 @@ export class MappingService {
     for (const [key, value] of Object.entries(row)) {
       if (key === '__sheetName' || key === '__rowNumber') continue;
       const config = headerMap.get(key);
-      if (!config || value === null || value === undefined || value === '') continue;
+      if (!config || value === null || value === undefined || value === '')
+        continue;
       const xformed = config.transform ? config.transform(value, row) : value;
       if (xformed !== undefined && xformed !== null && xformed !== '') {
         (mapped as Record<string, unknown>)[config.target] = xformed;

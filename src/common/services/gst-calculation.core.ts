@@ -217,8 +217,7 @@ export function calculateGST(input: CalculateGstInput): GstCalculationResult {
     sgst,
     gstAmount: total,
     invoiceAmount: taxableValue + total,
-    transactionType:
-      igst !== 0 && cgst === 0 && sgst === 0 ? 'inter' : 'intra',
+    transactionType: igst !== 0 && cgst === 0 && sgst === 0 ? 'inter' : 'intra',
   };
 }
 
@@ -257,9 +256,7 @@ export function normalizeImportRowGst(
   sellerContext: SellerGstContext,
 ): ImportRowGstInput {
   const customerCode =
-    row.customerStateCode ??
-    resolveIndianStateCode(row.stateName) ??
-    undefined;
+    row.customerStateCode ?? resolveIndianStateCode(row.stateName) ?? undefined;
   if (customerCode && !row.customerStateCode) {
     row.customerStateCode = customerCode;
   }
@@ -350,8 +347,7 @@ export function splitGstForReport(
     row.customerStateCode,
     row.stateName,
   );
-  const sellerGstin =
-    sellerContext.primaryGstin ?? row.gstin ?? undefined;
+  const sellerGstin = sellerContext.primaryGstin ?? row.gstin ?? undefined;
 
   const result = calculateGST({
     taxableValue: Number(row.taxableAmount ?? 0),

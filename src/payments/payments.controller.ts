@@ -10,11 +10,7 @@ import {
   Res,
   UseGuards,
 } from '@nestjs/common';
-import {
-  ApiBearerAuth,
-  ApiOperation,
-  ApiTags,
-} from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
 import type { Request, Response } from 'express';
 import * as fs from 'fs';
@@ -59,10 +55,7 @@ export class PaymentsController {
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('seller', 'super_admin')
   @ApiOperation({ summary: 'Create Cashfree payment order' })
-  createOrder(
-    @Body() dto: CreatePaymentOrderDto,
-    @Req() req: RequestWithUser,
-  ) {
+  createOrder(@Body() dto: CreatePaymentOrderDto, @Req() req: RequestWithUser) {
     return this.paymentsService.createOrder(dto, req.user);
   }
 
@@ -71,10 +64,7 @@ export class PaymentsController {
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('seller', 'super_admin')
   @ApiOperation({ summary: 'Verify payment with Cashfree' })
-  verifyPayment(
-    @Body() dto: VerifyPaymentDto,
-    @Req() req: RequestWithUser,
-  ) {
+  verifyPayment(@Body() dto: VerifyPaymentDto, @Req() req: RequestWithUser) {
     return this.paymentsService.verifyPayment(dto, req.user);
   }
 
@@ -133,10 +123,7 @@ export class PaymentsController {
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   @ApiOperation({ summary: 'Initiate refund (admin only)' })
-  refundPayment(
-    @Body() dto: RefundPaymentDto,
-    @Req() req: RequestWithUser,
-  ) {
+  refundPayment(@Body() dto: RefundPaymentDto, @Req() req: RequestWithUser) {
     return this.paymentsService.refundPayment(dto, req.user);
   }
 
@@ -201,8 +188,7 @@ export class PaymentsController {
     @Headers('x-webhook-timestamp') timestamp?: string,
   ) {
     const rawBody =
-      (req as Request & { rawBody?: string }).rawBody ??
-      JSON.stringify(body);
+      (req as Request & { rawBody?: string }).rawBody ?? JSON.stringify(body);
     return this.webhookService.handleCashfreeWebhook(
       rawBody,
       signature ?? '',

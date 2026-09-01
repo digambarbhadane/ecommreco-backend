@@ -51,8 +51,10 @@ const RETURN_DOC_REGEX = 'RETURN|RTO';
 const DEFINITIONS = {
   dateBasis: 'Order / sales invoice date (invoiceDate on imported sales rows).',
   sales: 'Sum of invoice amount on eligible sales rows.',
-  netSales: 'Gross sales minus return invoice amounts, matching EcommReco sales-vs-return rules.',
-  profit: 'Net sales after returns. Marketplace fees are not allocated to states.',
+  netSales:
+    'Gross sales minus return invoice amounts, matching EcommReco sales-vs-return rules.',
+  profit:
+    'Net sales after returns. Marketplace fees are not allocated to states.',
   orders: 'Count of distinct sales order IDs.',
   units: 'Sum of sales quantities.',
   returnRate: 'Returned units / sold units.',
@@ -71,6 +73,7 @@ type GeoOverviewResult = {
       previousTo: string;
       marketplace: string;
       metric: GeographyMetric;
+      allTime: boolean;
     };
     summary: {
       sales: number;
@@ -124,8 +127,13 @@ export class GeographyAnalyticsService {
 
     const match = await this.buildMatch(ctx, query);
     const current = await this.aggregateStates(match);
-    const previousMatch = await this.buildMatch(ctx, query, ctx.previousFrom, ctx.previousTo);
-    const previous = await this.aggregateStates(previousMatch);
+    // All Time has no comparable prior window — skip previous-period aggregation.
+    const previous =
+      ctx.previousFrom && ctx.previousTo
+        ? await this.aggregateStates(
+            await this.buildMatch(ctx, query, ctx.previousFrom, ctx.previousTo),
+          )
+        : [];
     const prevByCode = new Map(previous.map((row) => [row.stateCode, row]));
 
     const mappedSales = current
@@ -134,8 +142,14 @@ export class GeographyAnalyticsService {
     const totalSales = current.reduce((sum, row) => sum + row.sales, 0);
     const totalOrders = current.reduce((sum, row) => sum + row.orders, 0);
     const totalUnits = current.reduce((sum, row) => sum + row.unitsSold, 0);
-    const totalReturnValue = current.reduce((sum, row) => sum + row.returnValue, 0);
-    const totalReturnUnits = current.reduce((sum, row) => sum + row.returnUnits, 0);
+    const totalReturnValue = current.reduce(
+      (sum, row) => sum + row.returnValue,
+      0,
+    );
+    const totalReturnUnits = current.reduce(
+      (sum, row) => sum + row.returnUnits,
+      0,
+    );
     const totalNet = current.reduce((sum, row) => sum + row.netSales, 0);
 
     const byCode = new Map(current.map((row) => [row.stateCode, row]));
@@ -149,7 +163,10 @@ export class GeographyAnalyticsService {
       );
     });
     const unmapped = byCode.get(UNMAPPED_STATE_CODE);
-    if (unmapped && (unmapped.sales > 0 || unmapped.returnValue > 0 || unmapped.orders > 0)) {
+    if (
+      unmapped &&
+      (unmapped.sales > 0 || unmapped.returnValue > 0 || unmapped.orders > 0)
+    ) {
       states.push(
         this.toStateMetrics(
           UNMAPPED_STATE_CODE,
@@ -160,10 +177,12 @@ export class GeographyAnalyticsService {
       );
     }
 
-    const metric = (query.metric ?? 'sales') as GeographyMetric;
+    const metric = query.metric ?? 'sales';
     const ranked = [...states]
       .filter((row) => row.stateCode !== UNMAPPED_STATE_CODE)
-      .sort((a, b) => this.metricValue(b, metric) - this.metricValue(a, metric));
+      .sort(
+        (a, b) => this.metricValue(b, metric) - this.metricValue(a, metric),
+      );
 
     const payload: GeoOverviewResult = {
       success: true,
@@ -177,6 +196,7 @@ export class GeographyAnalyticsService {
           previousTo: ctx.previousTo,
           marketplace: query.marketplace ?? '',
           metric,
+          allTime: ctx.allTime,
         },
         summary: {
           sales: this.round(totalSales),
@@ -187,7 +207,9 @@ export class GeographyAnalyticsService {
           aov: totalOrders > 0 ? this.round(totalSales / totalOrders) : 0,
           returnValue: this.round(totalReturnValue),
           returnRate:
-            totalUnits > 0 ? this.round((totalReturnUnits / totalUnits) * 100) : 0,
+            totalUnits > 0
+              ? this.round((totalReturnUnits / totalUnits) * 100)
+              : 0,
           coveragePercent:
             totalSales > 0 ? this.round((mappedSales / totalSales) * 100) : 100,
           unmappedPercent:
@@ -226,7 +248,12 @@ export class GeographyAnalyticsService {
       states.find((row) => row.stateCode === stateCode) ??
       this.emptyRaw(stateCode);
     const totalSales = states.reduce((sum, row) => sum + row.sales, 0);
-    const summary = this.toStateMetrics(stateCode, state, undefined, totalSales);
+    const summary = this.toStateMetrics(
+      stateCode,
+      state,
+      undefined,
+      totalSales,
+    );
     return {
       success: true,
       data: {
@@ -377,10 +404,14 @@ export class GeographyAnalyticsService {
     const row = current ?? this.emptyRaw(stateCode);
     const prevSales = previous?.sales ?? 0;
     const trendPercent =
-      prevSales > 0 ? this.round(((row.sales - prevSales) / prevSales) * 100) : null;
+      prevSales > 0
+        ? this.round(((row.sales - prevSales) / prevSales) * 100)
+        : null;
     const aov = row.orders > 0 ? this.round(row.sales / row.orders) : 0;
     const returnRate =
-      row.unitsSold > 0 ? this.round((row.returnUnits / row.unitsSold) * 100) : 0;
+      row.unitsSold > 0
+        ? this.round((row.returnUnits / row.unitsSold) * 100)
+        : 0;
     return {
       stateCode,
       stateName: catalogNameForCode(stateCode),
@@ -394,7 +425,8 @@ export class GeographyAnalyticsService {
       profit: this.round(row.netSales),
       aov,
       returnRate,
-      contribution: totalSales > 0 ? this.round((row.sales / totalSales) * 100) : 0,
+      contribution:
+        totalSales > 0 ? this.round((row.sales / totalSales) * 100) : 0,
       previousSales: this.round(prevSales),
       trendPercent,
     };
@@ -514,7 +546,9 @@ export class GeographyAnalyticsService {
       .aggregate<{ _id: string; sales: number }>([
         { $match: this.stripVirtual(match) },
         ...this.stateCodeStages(),
-        ...(match.stateCode ? [{ $match: { stateCode: match.stateCode } }] : []),
+        ...(match.stateCode
+          ? [{ $match: { stateCode: match.stateCode } }]
+          : []),
         {
           $group: {
             _id: { $substr: [{ $ifNull: ['$invoiceDate', ''] }, 0, 7] },
@@ -545,7 +579,9 @@ export class GeographyAnalyticsService {
       .aggregate<{ _id: string; sales: number }>([
         { $match: this.stripVirtual(match) },
         ...this.stateCodeStages(),
-        ...(match.stateCode ? [{ $match: { stateCode: match.stateCode } }] : []),
+        ...(match.stateCode
+          ? [{ $match: { stateCode: match.stateCode } }]
+          : []),
         {
           $group: {
             _id: '$marketplace',
@@ -563,7 +599,8 @@ export class GeographyAnalyticsService {
     return rows
       .map((row) => ({
         marketplaceId: String(row._id ?? ''),
-        name: names.get(String(row._id ?? '')) ?? String(row._id ?? 'Marketplace'),
+        name:
+          names.get(String(row._id ?? '')) ?? String(row._id ?? 'Marketplace'),
         sales: this.round(Number(row.sales ?? 0)),
       }))
       .sort((a, b) => b.sales - a.sales);
@@ -583,7 +620,9 @@ export class GeographyAnalyticsService {
       }>([
         { $match: this.stripVirtual(match) },
         ...this.stateCodeStages(),
-        ...(match.stateCode ? [{ $match: { stateCode: match.stateCode } }] : []),
+        ...(match.stateCode
+          ? [{ $match: { stateCode: match.stateCode } }]
+          : []),
         {
           $group: {
             _id: { $ifNull: ['$skuID', 'Unknown'] },
@@ -648,7 +687,12 @@ export class GeographyAnalyticsService {
             ...(ctx.gstin ? { gstin: ctx.gstin } : {}),
             marketplaceSku: { $in: skus },
           })
-          .select({ marketplaceSku: 1, productName: 1, category: 1, masterSku: 1 })
+          .select({
+            marketplaceSku: 1,
+            productName: 1,
+            category: 1,
+            masterSku: 1,
+          })
           .lean()
           .exec()
       : [];
@@ -779,9 +823,14 @@ export class GeographyAnalyticsService {
       actor?.role === 'seller' && actorId ? actorId : requestedSeller;
     const sellerAliases =
       await this.validationService.resolveSellerIdAliases(sellerId);
-    const gstin = String(query.gstin ?? '').trim().toUpperCase();
+    const gstin = String(query.gstin ?? '')
+      .trim()
+      .toUpperCase();
     const range = this.defaultRange(query.fromDate, query.toDate);
-    const previous = this.previousRange(range.fromDate, range.toDate);
+    const previous =
+      range.fromDate && range.toDate
+        ? this.previousRange(range.fromDate, range.toDate)
+        : { previousFrom: '', previousTo: '' };
     const marketplaceKeys = await this.resolveMarketplaceKeys(
       sellerAliases,
       query.marketplace,
@@ -793,20 +842,29 @@ export class GeographyAnalyticsService {
       gstin,
       ...range,
       ...previous,
+      allTime: !range.fromDate && !range.toDate,
       marketplaceKeys,
     };
   }
 
+  /**
+   * Missing both dates = All Time (no invoiceDate restriction).
+   * Do not default to the current calendar month.
+   */
   private defaultRange(fromDate?: string, toDate?: string) {
-    if (fromDate && toDate) {
-      return { fromDate, toDate };
+    const from = String(fromDate ?? '').trim();
+    const to = String(toDate ?? '').trim();
+    if (!from && !to) {
+      return { fromDate: '', toDate: '' };
     }
-    const now = new Date();
-    const start = new Date(now.getFullYear(), now.getMonth(), 1);
-    const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    if (from && to) {
+      return { fromDate: from, toDate: to };
+    }
+    // Partial range: fill the missing bound with today (not a forced month window).
+    const today = this.iso(new Date());
     return {
-      fromDate: fromDate || this.iso(start),
-      toDate: toDate || this.iso(end),
+      fromDate: from || to,
+      toDate: to || today,
     };
   }
 
@@ -872,7 +930,9 @@ export class GeographyAnalyticsService {
       .exec();
     const map = new Map<string, string>();
     for (const doc of docs) {
-      const platform = doc.platformMarketplaceId as { name?: string } | undefined;
+      const platform = doc.platformMarketplaceId as
+        | { name?: string }
+        | undefined;
       map.set(
         String(doc._id),
         String(platform?.name ?? doc.storeName ?? doc._id),
@@ -882,13 +942,16 @@ export class GeographyAnalyticsService {
   }
 
   private normalizeRequestedState(value: string) {
-    const raw = String(value ?? '').trim().toUpperCase();
+    const raw = String(value ?? '')
+      .trim()
+      .toUpperCase();
     if (!raw) return '';
     if (raw === UNMAPPED_STATE_CODE) return UNMAPPED_STATE_CODE;
     const byIso = INDIA_STATE_CATALOG.find((item) => item.isoCode === raw);
     if (byIso) return byIso.gstCode;
     const padded = raw.padStart(2, '0');
-    if (INDIA_STATE_CATALOG.some((item) => item.gstCode === padded)) return padded;
+    if (INDIA_STATE_CATALOG.some((item) => item.gstCode === padded))
+      return padded;
     if (padded === '25') return '26';
     if (padded === '37') return '28';
     return '';

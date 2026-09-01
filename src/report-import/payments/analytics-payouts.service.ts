@@ -12,9 +12,7 @@ import {
   type PaymentNeftSummaryRow,
 } from '../utils/payment-summary.aggregation';
 import { FlipkartPaymentRepository } from './flipkart/flipkart-payment.repository';
-import {
-  FLIPKART_PAYMENT_SECONDARY_SHEETS,
-} from './flipkart/sheets/flipkart-payment-sheet-kinds';
+import { FLIPKART_PAYMENT_SECONDARY_SHEETS } from './flipkart/sheets/flipkart-payment-sheet-kinds';
 import { FlipkartPaymentSecondaryRepository } from './flipkart/sheets/flipkart-payment-secondary.repository';
 import {
   SellerPayoutRecord,
@@ -25,7 +23,10 @@ import {
   MeeshoOrderPayments,
   MeeshoOrderPaymentsDocument,
 } from './meesho/schemas/order-payments.schema';
-import { MeeshoAdsCost, MeeshoAdsCostDocument } from './meesho/schemas/ads-cost.schema';
+import {
+  MeeshoAdsCost,
+  MeeshoAdsCostDocument,
+} from './meesho/schemas/ads-cost.schema';
 import {
   MeeshoReferralPayments,
   MeeshoReferralPaymentsDocument,
@@ -52,12 +53,14 @@ export type MeeshoPayoutSheetKind =
 export type PayoutSheetTotals = Record<string, number>;
 export type PayoutSheetCounts = Record<string, number>;
 
-const MEESHO_PAYOUT_SHEETS: Array<{ kind: MeeshoPayoutSheetKind; label: string }> =
-  [
-    { kind: 'ads', label: 'Ads Cost' },
-    { kind: 'referralPayments', label: 'Referral Payments' },
-    { kind: 'compensationRecovery', label: 'Compensation and Recovery' },
-  ];
+const MEESHO_PAYOUT_SHEETS: Array<{
+  kind: MeeshoPayoutSheetKind;
+  label: string;
+}> = [
+  { kind: 'ads', label: 'Ads Cost' },
+  { kind: 'referralPayments', label: 'Referral Payments' },
+  { kind: 'compensationRecovery', label: 'Compensation and Recovery' },
+];
 
 const AMAZON_PAYOUT_SHEETS = [
   {
@@ -75,9 +78,15 @@ const PAYOUT_SHEET_LABELS: Record<string, string> = {
   ...Object.fromEntries(
     FLIPKART_PAYMENT_SECONDARY_SHEETS.map((def) => [def.kind, def.label]),
   ),
-  ...Object.fromEntries(MEESHO_PAYOUT_SHEETS.map((def) => [def.kind, def.label])),
-  ...Object.fromEntries(AMAZON_PAYOUT_SHEETS.map((def) => [def.kind, def.label])),
-  ...Object.fromEntries(MYNTRA_PAYOUT_SHEETS.map((def) => [def.kind, def.label])),
+  ...Object.fromEntries(
+    MEESHO_PAYOUT_SHEETS.map((def) => [def.kind, def.label]),
+  ),
+  ...Object.fromEntries(
+    AMAZON_PAYOUT_SHEETS.map((def) => [def.kind, def.label]),
+  ),
+  ...Object.fromEntries(
+    MYNTRA_PAYOUT_SHEETS.map((def) => [def.kind, def.label]),
+  ),
   ads: 'Ads Cost',
 };
 
@@ -156,6 +165,109 @@ function emptyPayoutComponents(): PayoutComponents {
 
 function absAmount(value: unknown): number {
   return Math.abs(Number(value ?? 0));
+}
+
+const PAYOUT_MARKETPLACE_SLUGS = [
+  'amazon',
+  'flipkart',
+  'myntra',
+  'meesho',
+] as const;
+
+function guessPayoutMarketplaceSlug(value: string): string {
+  const lower = String(value ?? '')
+    .trim()
+    .toLowerCase();
+  if (!lower) return '';
+  if (
+    lower === 'amazon' ||
+    lower === 'flipkart' ||
+    lower === 'myntra' ||
+    lower === 'meesho'
+  ) {
+    return lower;
+  }
+  if (lower.includes('amazon')) return 'amazon';
+  if (lower.includes('flipkart')) return 'flipkart';
+  if (lower.includes('myntra')) return 'myntra';
+  if (lower.includes('meesho')) return 'meesho';
+  return '';
+}
+
+function isPayoutMarketplaceSlug(
+  value: string,
+): value is (typeof PAYOUT_MARKETPLACE_SLUGS)[number] {
+  return (PAYOUT_MARKETPLACE_SLUGS as readonly string[]).includes(value);
+}
+
+function resolvePayoutRowSlug(
+  row: { marketplace?: string },
+  slugByRaw: Map<string, string>,
+): string {
+  const raw = String(row.marketplace ?? '').trim();
+  return slugByRaw.get(raw) || guessPayoutMarketplaceSlug(raw) || raw.toLowerCase();
+}
+
+export type PayoutMarketplaceBreakdownItem = {
+  marketplace: string;
+  orderCount: number;
+  netSales: number;
+  totalNetSales: number;
+  commissionExpense: number;
+  customerReturnCharges: number;
+  claims: number;
+  ads: number;
+  totalSettlement: number;
+  bankPayout: number;
+};
+
+function summarizePayoutsByMarketplace(
+  rows: PayoutAnalyticsRow[],
+  slugByRaw: Map<string, string>,
+): PayoutMarketplaceBreakdownItem[] {
+  const bySlug = new Map<
+    string,
+    { orderCount: number; netSales: number; components: PayoutComponents }
+  >();
+  for (const slug of PAYOUT_MARKETPLACE_SLUGS) {
+    bySlug.set(slug, {
+      orderCount: 0,
+      netSales: 0,
+      components: emptyPayoutComponents(),
+    });
+  }
+  for (const row of rows) {
+    const slug = resolvePayoutRowSlug(row, slugByRaw);
+    if (!bySlug.has(slug)) continue;
+    const bucket = bySlug.get(slug)!;
+    bucket.orderCount += 1;
+    bucket.netSales += Number(row.bankSettlementTotal ?? 0);
+    bucket.components.netSales += Number(row.components?.netSales ?? 0);
+    bucket.components.commissionExpense += Number(
+      row.components?.commissionExpense ?? 0,
+    );
+    bucket.components.customerReturnCharges += Number(
+      row.components?.customerReturnCharges ?? 0,
+    );
+    bucket.components.claims += Number(row.components?.claims ?? 0);
+    bucket.components.ads += Number(row.components?.ads ?? 0);
+  }
+  return PAYOUT_MARKETPLACE_SLUGS.map((marketplace) => {
+    const bucket = bySlug.get(marketplace)!;
+    const derived = derivePayoutFormulas(bucket.components);
+    return {
+      marketplace,
+      orderCount: bucket.orderCount,
+      netSales: bucket.netSales,
+      totalNetSales: bucket.components.netSales,
+      commissionExpense: bucket.components.commissionExpense,
+      customerReturnCharges: bucket.components.customerReturnCharges,
+      claims: bucket.components.claims,
+      ads: bucket.components.ads,
+      totalSettlement: derived.totalSettlement,
+      bankPayout: derived.bankPayout,
+    };
+  });
 }
 
 function derivePayoutFormulas(components: PayoutComponents): {
@@ -267,7 +379,9 @@ function buildSheetBreakdown(input: {
   return items;
 }
 
-function summarizePayoutRows(rows: PayoutAnalyticsRow[]): PayoutAnalyticsTotals {
+function summarizePayoutRows(
+  rows: PayoutAnalyticsRow[],
+): PayoutAnalyticsTotals {
   const sheetTotals = emptySheetTotals();
   const sheetCounts = emptySheetCounts();
   let bankSettlementTotal = 0;
@@ -284,7 +398,9 @@ function summarizePayoutRows(rows: PayoutAnalyticsRow[]): PayoutAnalyticsTotals 
     orderTotal += Number(row.orderTotal ?? 0);
     orderCount += Number(row.orderCount ?? 0);
     components.netSales += Number(row.components?.netSales ?? 0);
-    components.commissionExpense += Number(row.components?.commissionExpense ?? 0);
+    components.commissionExpense += Number(
+      row.components?.commissionExpense ?? 0,
+    );
     components.customerReturnCharges += Number(
       row.components?.customerReturnCharges ?? 0,
     );
@@ -373,6 +489,15 @@ export class AnalyticsPayoutsService {
         limit: 0,
         skip: 0,
         totals: emptyPayoutAnalyticsTotals(),
+        receiptCounts: {
+          all: 0,
+          verified: 0,
+          pending: 0,
+          verifiedAmount: 0,
+          pendingAmount: 0,
+          bankPayout: 0,
+        },
+        byMarketplace: summarizePayoutsByMarketplace([], new Map()),
       };
     }
 
@@ -382,18 +507,26 @@ export class AnalyticsPayoutsService {
     const skip = Math.max(0, Number(query.skip ?? '0'));
 
     const marketplaceSlug =
-      String(query.marketplaceSlug ?? '').trim().toLowerCase() ||
+      String(query.marketplaceSlug ?? '')
+        .trim()
+        .toLowerCase() ||
       (await this.resolveMarketplaceSlug(query.marketplace));
     const selectedMarketplace = String(query.marketplace ?? '').trim();
+    // Flipkart / Amazon / Myntra payment rows store the seller marketplace-link
+    // ObjectId in `marketplace`. Platform slugs are only for routing which
+    // aggregator to run — applying `marketplace=flipkart` (etc.) returns zero
+    // rows even when settlement data exists. Meesho stores the slug itself.
+    const marketplaceForStorage = this.resolveMarketplaceStorageFilter(
+      selectedMarketplace,
+      marketplaceSlug,
+    );
     const normalizedQuery: ListAnalyticsPayoutsDto = {
       ...query,
-      // Payment collections historically store the marketplace-link ObjectId,
-      // while newer Meesho collections store the platform slug. Keep the
-      // selected storage identifier here; marketplaceSlug is only for routing.
-      marketplace: selectedMarketplace || marketplaceSlug,
+      marketplace: marketplaceForStorage,
     };
 
-    let aggregated: Awaited<ReturnType<typeof this.aggregateMeeshoPayouts>> = [];
+    let aggregated: Awaited<ReturnType<typeof this.aggregateMeeshoPayouts>> =
+      [];
     let useLegacy = false;
 
     // Selected-marketplace requests must only inspect that marketplace. Besides
@@ -497,14 +630,16 @@ export class AnalyticsPayoutsService {
     const receipts = await this.payoutRecordModel
       .find({
         sellerId: { $in: sellerAliases },
-        ...(query.gstin
-          ? { gstin: query.gstin.trim().toUpperCase() }
-          : {}),
-        ...(selectedMarketplace
+        ...(query.gstin ? { gstin: query.gstin.trim().toUpperCase() } : {}),
+        ...(marketplaceForStorage
           ? {
               marketplace: {
                 $in: Array.from(
-                  new Set([selectedMarketplace, marketplaceSlug].filter(Boolean)),
+                  new Set(
+                    [marketplaceForStorage, selectedMarketplace].filter(
+                      Boolean,
+                    ),
+                  ),
                 ),
               },
             }
@@ -560,7 +695,9 @@ export class AnalyticsPayoutsService {
       };
     });
 
-    const search = String(query.search ?? '').trim().toLowerCase();
+    const search = String(query.search ?? '')
+      .trim()
+      .toLowerCase();
     if (search) {
       rows = rows.filter(
         (r) =>
@@ -569,7 +706,42 @@ export class AnalyticsPayoutsService {
       );
     }
 
-    const totals = summarizePayoutRows(rows);
+    const slugByRaw = new Map<string, string>();
+    const uniqueMarketplaces = [
+      ...new Set(
+        rows
+          .map((row) => String(row.marketplace ?? '').trim())
+          .filter(Boolean),
+      ),
+    ];
+    const unresolvedMarketplaces: string[] = [];
+    for (const raw of uniqueMarketplaces) {
+      const guessed = guessPayoutMarketplaceSlug(raw);
+      if (guessed) {
+        slugByRaw.set(raw, guessed);
+      } else {
+        unresolvedMarketplaces.push(raw);
+      }
+    }
+    if (unresolvedMarketplaces.length > 0) {
+      await Promise.all(
+        unresolvedMarketplaces.map(async (raw) => {
+          slugByRaw.set(raw, await this.resolveMarketplaceSlug(raw));
+        }),
+      );
+    }
+    // Drop leaked other-platform rows before status counts / marketplace cards /
+    // table+financial totals so all consumers share one marketplace-scoped set.
+    if (isPayoutMarketplaceSlug(marketplaceSlug)) {
+      rows = rows.filter(
+        (row) => resolvePayoutRowSlug(row, slugByRaw) === marketplaceSlug,
+      );
+    }
+
+    // Keep status-card breakdown + marketplace cards on the pre-status row set.
+    // Financial `totals` must match the table, so they are computed after the
+    // receiptStatus filter below (complete filtered set, not the page slice).
+    const preStatusTotals = summarizePayoutRows(rows);
     const receiptCounts = {
       all: rows.length,
       verified: rows.filter((r) => r.bankReceiveAmount != null).length,
@@ -580,14 +752,20 @@ export class AnalyticsPayoutsService {
       pendingAmount: rows
         .filter((r) => r.bankReceiveAmount == null)
         .reduce((sum, r) => sum + Number(r.bankSettlementTotal ?? 0), 0),
+      bankPayout: Number(preStatusTotals.bankPayout ?? 0),
     };
+    const byMarketplace = summarizePayoutsByMarketplace(rows, slugByRaw);
 
-    const receiptStatus = String(query.receiptStatus ?? 'all').trim().toLowerCase();
+    const receiptStatus = String(query.receiptStatus ?? 'all')
+      .trim()
+      .toLowerCase();
     if (receiptStatus === 'verified') {
       rows = rows.filter((r) => r.bankReceiveAmount != null);
     } else if (receiptStatus === 'pending') {
       rows = rows.filter((r) => r.bankReceiveAmount == null);
     }
+
+    const totals = summarizePayoutRows(rows);
 
     const sortBy = query.sortBy ?? 'bankSettlementTotal';
     const sortDir = query.sortOrder === 'asc' ? 1 : -1;
@@ -621,6 +799,7 @@ export class AnalyticsPayoutsService {
       skip,
       totals,
       receiptCounts,
+      byMarketplace,
       source: useLegacy
         ? ('import_rows' as const)
         : ('flipkart_payment_order_reports' as const),
@@ -698,7 +877,10 @@ export class AnalyticsPayoutsService {
     const marketplace = String(dto.marketplace ?? '').trim();
 
     if (!sellerId || !neftId || !marketplace) {
-      return { success: false, message: 'sellerId, marketplace, and neftId are required' };
+      return {
+        success: false,
+        message: 'sellerId, marketplace, and neftId are required',
+      };
     }
 
     const gstin = dto.gstin?.trim().toUpperCase();
@@ -770,7 +952,10 @@ export class AnalyticsPayoutsService {
     const marketplace = String(dto.marketplace ?? '').trim();
 
     if (!sellerId || !neftId || !marketplace) {
-      return { success: false, message: 'sellerId, marketplace, and neftId are required' };
+      return {
+        success: false,
+        message: 'sellerId, marketplace, and neftId are required',
+      };
     }
 
     const doc = await this.payoutRecordModel
@@ -815,7 +1000,9 @@ export class AnalyticsPayoutsService {
   }): Promise<number> {
     const sellerId = String(input.sellerId ?? '').trim();
     const marketplace = String(input.marketplace ?? '').trim();
-    const neftIds = [...new Set(input.neftIds.map((id) => String(id).trim()).filter(Boolean))];
+    const neftIds = [
+      ...new Set(input.neftIds.map((id) => String(id).trim()).filter(Boolean)),
+    ];
     if (!sellerId || !marketplace || !neftIds.length) return 0;
 
     const result = await this.payoutRecordModel
@@ -1159,7 +1346,10 @@ export class AnalyticsPayoutsService {
     row: PayoutAnalyticsRow,
   ): PayoutExpandedSheet[] {
     const expanded: PayoutExpandedSheet[] = [];
-    if (Number(row.orderTotal ?? 0) !== 0 || Number(row.orderCount ?? 0) !== 0) {
+    if (
+      Number(row.orderTotal ?? 0) !== 0 ||
+      Number(row.orderCount ?? 0) !== 0
+    ) {
       expanded.push({
         kind: 'orders',
         label: 'Orders',
@@ -1234,10 +1424,13 @@ export class AnalyticsPayoutsService {
       ...new Set(nonAmazonRows.map((row) => row.marketplace)),
     ];
     const slugEntries = await Promise.all(
-      uniqueMarketplaces.map(async (marketplace) => [
-        marketplace,
-        await this.resolveMarketplaceSlug(marketplace),
-      ] as const),
+      uniqueMarketplaces.map(
+        async (marketplace) =>
+          [
+            marketplace,
+            await this.resolveMarketplaceSlug(marketplace),
+          ] as const,
+      ),
     );
     const slugByMarketplace = new Map(slugEntries);
 
@@ -1348,24 +1541,21 @@ export class AnalyticsPayoutsService {
             row,
             'orders',
             orders.filter(
-              (record) =>
-                this.payoutDateKey(record.paymentDate) === dateKey,
+              (record) => this.payoutDateKey(record.paymentDate) === dateKey,
             ) as unknown as Array<Record<string, unknown>>,
           );
           this.setExpandedRows(
             row,
             'ads',
             ads.filter(
-              (record) =>
-                this.payoutDateKey(record.deductionDate) === dateKey,
+              (record) => this.payoutDateKey(record.deductionDate) === dateKey,
             ) as unknown as Array<Record<string, unknown>>,
           );
           this.setExpandedRows(
             row,
             'referralPayments',
             referrals.filter(
-              (record) =>
-                this.payoutDateKey(record.paymentDate) === dateKey,
+              (record) => this.payoutDateKey(record.paymentDate) === dateKey,
             ) as unknown as Array<Record<string, unknown>>,
           );
           this.setExpandedRows(
@@ -1443,15 +1633,9 @@ export class AnalyticsPayoutsService {
       rowCount: number;
       sourceRowNumber: number;
     };
-    type AmazonTransactionGroups = Map<
-      string,
-      Map<string, AmazonOrderGroup>
-    >;
+    type AmazonTransactionGroups = Map<string, Map<string, AmazonOrderGroup>>;
 
-    const groupedBySettlement = new Map<
-      string,
-      AmazonTransactionGroups
-    >();
+    const groupedBySettlement = new Map<string, AmazonTransactionGroups>();
     for (const transaction of transactions) {
       const settlementKey = `${transaction.marketplace}::${transaction.settlementId}`;
       const orderId = String(transaction.orderId ?? '').trim();
@@ -1530,9 +1714,7 @@ export class AnalyticsPayoutsService {
               ),
             };
           })
-          .sort((a, b) =>
-            a.transactionType.localeCompare(b.transactionType),
-          );
+          .sort((a, b) => a.transactionType.localeCompare(b.transactionType));
       }
     }
   }
@@ -1543,19 +1725,21 @@ export class AnalyticsPayoutsService {
   ): Promise<boolean> {
     const marketplace = String(query.marketplace ?? '').trim();
     if (!marketplace || marketplace === 'flipkart') {
-      const flipkartExists = await this.flipkartPaymentRepository.existsByFilter({
-        sellerIds: sellerAliases,
-        ...(marketplace === 'flipkart' ? { marketplace: 'flipkart' } : {}),
-      });
+      const flipkartExists =
+        await this.flipkartPaymentRepository.existsByFilter({
+          sellerIds: sellerAliases,
+          ...(marketplace === 'flipkart' ? { marketplace: 'flipkart' } : {}),
+        });
       return !flipkartExists;
     }
 
     if (marketplace === 'meesho') return true;
 
-    const collectionExists = await this.flipkartPaymentRepository.existsByFilter({
-      sellerIds: sellerAliases,
-      marketplace,
-    });
+    const collectionExists =
+      await this.flipkartPaymentRepository.existsByFilter({
+        sellerIds: sellerAliases,
+        marketplace,
+      });
     return !collectionExists;
   }
 
@@ -1597,9 +1781,40 @@ export class AnalyticsPayoutsService {
     return filter;
   }
 
-  private async resolveMarketplaceSlug(
+  private resolveMarketplaceStorageFilter(
     marketplace?: string,
-  ): Promise<string> {
+    marketplaceSlug?: string,
+  ): string | undefined {
+    const selected = String(marketplace ?? '').trim();
+    const slug = String(marketplaceSlug ?? '')
+      .trim()
+      .toLowerCase();
+    const selectedLower = selected.toLowerCase();
+
+    if (Types.ObjectId.isValid(selected) && selected.length === 24) {
+      return selected;
+    }
+
+    if (slug === 'meesho' || selectedLower === 'meesho') {
+      return 'meesho';
+    }
+
+    // amazon / flipkart / myntra (and bare platform-slug selections) are routing
+    // keys only — payment documents store seller-link ObjectIds.
+    if (
+      !selected ||
+      selectedLower === 'amazon' ||
+      selectedLower === 'flipkart' ||
+      selectedLower === 'myntra' ||
+      selectedLower === slug
+    ) {
+      return undefined;
+    }
+
+    return selected;
+  }
+
+  private async resolveMarketplaceSlug(marketplace?: string): Promise<string> {
     const value = String(marketplace ?? '').trim();
     if (!value) return '';
     const lower = value.toLowerCase();
@@ -1622,9 +1837,13 @@ export class AnalyticsPayoutsService {
       | { slug?: string; name?: string }
       | null
       | undefined;
-    const slug = String(platform?.slug ?? '').trim().toLowerCase();
+    const slug = String(platform?.slug ?? '')
+      .trim()
+      .toLowerCase();
     if (slug) return slug;
-    const name = String(platform?.name ?? '').trim().toLowerCase();
+    const name = String(platform?.name ?? '')
+      .trim()
+      .toLowerCase();
     if (name.includes('meesho')) return 'meesho';
     if (name.includes('flipkart')) return 'flipkart';
     if (name.includes('amazon')) return 'amazon';
@@ -1668,7 +1887,13 @@ export class AnalyticsPayoutsService {
     return new Map(
       rows
         .filter((r) => r.dateKey)
-        .map((r) => [r.dateKey, { total: Number(r.total ?? 0), count: Number(r.count ?? 0) }] as const),
+        .map(
+          (r) =>
+            [
+              r.dateKey,
+              { total: Number(r.total ?? 0), count: Number(r.count ?? 0) },
+            ] as const,
+        ),
     );
   }
 
@@ -1850,7 +2075,12 @@ export class AnalyticsPayoutsService {
             orderIds: {
               $addToSet: {
                 $cond: [
-                  { $ne: [{ $trim: { input: { $ifNull: ['$orderId', ''] } } }, ''] },
+                  {
+                    $ne: [
+                      { $trim: { input: { $ifNull: ['$orderId', ''] } } },
+                      '',
+                    ],
+                  },
                   '$orderId',
                   '$$REMOVE',
                 ],
@@ -1953,7 +2183,11 @@ export class AnalyticsPayoutsService {
               $sum: {
                 $subtract: [
                   { $ifNull: ['$totalSaleAmountInclShippingGst', 0] },
-                  { $abs: { $ifNull: ['$totalSaleReturnAmountInclShippingGst', 0] } },
+                  {
+                    $abs: {
+                      $ifNull: ['$totalSaleReturnAmountInclShippingGst', 0],
+                    },
+                  },
                 ],
               },
             },
@@ -2031,36 +2265,36 @@ export class AnalyticsPayoutsService {
 
     const [orderRows, adsByDate, referralByDate, compensationByDate] =
       await Promise.all([
-      orderRowsPromise,
-      this.aggregateSheetByDate(
-        this.meeshoAdsCostModel,
-        adsFilter,
-        'deductionDate',
-        {
-          $ifNull: [
-            '$totalAdsCost',
-            {
-              $ifNull: [
-                '$adCostInclCreditsWaiversDiscounts',
-                { $ifNull: ['$adCost', 0] },
-              ],
-            },
-          ],
-        },
-      ),
-      this.aggregateSheetByDate(
-        this.meeshoReferralPaymentsModel,
-        referralFilter,
-        'paymentDate',
-        { $ifNull: ['$netReferralAmount', 0] },
-      ),
-      this.aggregateSheetByDate(
-        this.meeshoCompensationRecoveryModel,
-        compensationFilter,
-        'date',
-        { $ifNull: ['$amountInclGstInr', 0] },
-      ),
-    ]);
+        orderRowsPromise,
+        this.aggregateSheetByDate(
+          this.meeshoAdsCostModel,
+          adsFilter,
+          'deductionDate',
+          {
+            $ifNull: [
+              '$totalAdsCost',
+              {
+                $ifNull: [
+                  '$adCostInclCreditsWaiversDiscounts',
+                  { $ifNull: ['$adCost', 0] },
+                ],
+              },
+            ],
+          },
+        ),
+        this.aggregateSheetByDate(
+          this.meeshoReferralPaymentsModel,
+          referralFilter,
+          'paymentDate',
+          { $ifNull: ['$netReferralAmount', 0] },
+        ),
+        this.aggregateSheetByDate(
+          this.meeshoCompensationRecoveryModel,
+          compensationFilter,
+          'date',
+          { $ifNull: ['$amountInclGstInr', 0] },
+        ),
+      ]);
 
     const byDate = new Map<
       string,
@@ -2162,7 +2396,9 @@ export class AnalyticsPayoutsService {
     return count > 0;
   }
 
-  private resolveMyntraMarketplaceFilter(marketplace?: string): string | undefined {
+  private resolveMyntraMarketplaceFilter(
+    marketplace?: string,
+  ): string | undefined {
     const value = String(marketplace ?? '').trim();
     if (!value || value.toLowerCase() === 'myntra') {
       return undefined;
@@ -2253,9 +2489,7 @@ export class AnalyticsPayoutsService {
       .option({ maxTimeMS: 30_000, allowDiskUse: true })
       .exec();
 
-    const metaMap = new Map(
-      metaByNeft.map((row) => [row._id, row] as const),
-    );
+    const metaMap = new Map(metaByNeft.map((row) => [row._id, row] as const));
 
     return summaryRows.map((row) => {
       const meta = metaMap.get(row.neftNo);

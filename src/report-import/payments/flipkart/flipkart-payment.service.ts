@@ -50,7 +50,10 @@ export class FlipkartPaymentService {
     const started = Date.now();
     const duplicateStrategy = input.duplicateStrategy ?? 'update';
 
-    const parsed = this.parser.parseAllSheets(input.buffer, input.uploadedFileName);
+    const parsed = this.parser.parseAllSheets(
+      input.buffer,
+      input.uploadedFileName,
+    );
     const uploadedAt = new Date();
 
     const payloads: FlipkartPaymentUpsertPayload[] = parsed.rows.map((row) => ({
@@ -234,12 +237,7 @@ export class FlipkartPaymentService {
     add('TDS', row.tds, 'TDS', 'expense');
     add('GST on Marketplace Fees', row.gstOnMarketplaceFees, 'GST', 'expense');
     add('Taxes', row.taxes, 'Tax', 'expense');
-    add(
-      'Protection Fund',
-      row.protectionFund,
-      'Protection Fund',
-      'expense',
-    );
+    add('Protection Fund', row.protectionFund, 'Protection Fund', 'expense');
     add(
       'Bank Settlement Value',
       row.bankSettlementValue,

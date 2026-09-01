@@ -19,6 +19,16 @@ import { CreateAccountDto } from './dto/create-account.dto';
 import { GenerateCredentialsDto } from './dto/generate-credentials.dto';
 import { RequestAdminApprovalDto } from './dto/request-approval.dto';
 import { CreateSellerFromLeadDto } from './dto/create-seller-from-lead.dto';
+import {
+  PaymentOrder,
+  PaymentOrderDocument,
+} from '../payments/schemas/payment-order.schema';
+import {
+  buildSubscriptionPeriodFromMonths,
+  extractQuoteFromPaymentMetadata,
+  normalizeReportMonths,
+  type LeadConversionQuoteSnapshot,
+} from '../billing/utils/reconciliation-subscription.util';
 
 const PRICE_PER_GST_PER_YEAR = 12000;
 
@@ -44,6 +54,8 @@ export class AccountManagerService {
     @InjectModel(Seller.name) private sellerModel: Model<SellerDocument>,
     @InjectModel(Lead.name) private leadModel: Model<LeadDocument>,
     @InjectModel(User.name) private userModel: Model<UserDocument>,
+    @InjectModel(PaymentOrder.name)
+    private paymentOrderModel: Model<PaymentOrderDocument>,
     private readonly notificationsService: NotificationsService,
   ) {}
 
@@ -57,7 +69,9 @@ export class AccountManagerService {
     return { role, email };
   }
 
-  private formatSellerResponse(seller: SellerDocument | Record<string, unknown>) {
+  private formatSellerResponse(
+    seller: SellerDocument | Record<string, unknown>,
+  ) {
     const raw =
       typeof (seller as SellerDocument).toObject === 'function'
         ? (seller as SellerDocument).toObject()
@@ -361,6 +375,30 @@ export class AccountManagerService {
             .conversionRequestedAt ?? new Date(),
         );
 
+    const conversionQuote = await this.resolveLeadConversionQuote(lead);
+    const quoteMonths = normalizeReportMonths(
+      conversionQuote?.selectedMonths ??
+        lead.subscriptionConfig?.selectedMonths ??
+        [],
+    );
+    const subscriptionPeriod = buildSubscriptionPeriodFromMonths(
+      quoteMonths,
+      paymentCompletedAt,
+    );
+    const panSlots =
+      conversionQuote?.panSlots ??
+      conversionQuote?.gstSlots ??
+      gstSlots;
+    const marketplaceSlots =
+      conversionQuote?.marketplaceSlots ??
+      (conversionQuote?.planType === 'single_gst' ||
+      lead.subscriptionConfig?.planType === 'single_gst'
+        ? 1
+        : undefined);
+    const subscriptionDurationDays =
+      conversionQuote?.durationDays ??
+      (quoteMonths.length > 0 ? quoteMonths.length * 30 : durationYears * 365);
+
     const seller = await this.sellerModel.create({
       publicId: generatePublicId('seller', lead.email),
       fullName: lead.fullName,
@@ -370,8 +408,27 @@ export class AccountManagerService {
       leadId: lead.leadId || lead._id.toString(),
       gstSlots,
       gstSlotsPurchased: gstSlots,
-      durationYears,
-      subscriptionDuration: durationYears,
+      allocatedPanSlots: panSlots,
+      totalPanSlots: panSlots,
+      marketplaceSlotsPurchased: marketplaceSlots,
+      durationYears:
+        quoteMonths.length > 0
+          ? Math.max(1, Math.ceil(quoteMonths.length / 12))
+          : durationYears,
+      subscriptionDuration: subscriptionDurationDays,
+      subscriptionPlanType: (conversionQuote?.planType ??
+        lead.subscriptionConfig?.planType) as
+        | 'single_gst'
+        | 'multi_gst_pan'
+        | 'single_gst_multi_marketplace'
+        | undefined,
+      subscriptionPlanLabel:
+        conversionQuote?.packageName ??
+        lead.subscriptionConfig?.packageName ??
+        undefined,
+      reconciliationMonths: quoteMonths.length ? quoteMonths : undefined,
+      subscriptionStartsAt: subscriptionPeriod.startsAt,
+      subscriptionEndsAt: subscriptionPeriod.endsAt,
       amount,
       subscriptionId:
         (lead as unknown as { conversionSubscriptionId?: string })
@@ -639,12 +696,20 @@ export class AccountManagerService {
     seller.credentialsGeneratedAt = credentialsGeneratedAt;
     seller.credentialGeneratedBy = user?.email || 'account_manager';
     if (!seller.subscriptionStartsAt) {
-      const durationYears =
-        seller.durationYears ?? seller.subscriptionDuration ?? 1;
-      const endsAt = new Date(credentialsGeneratedAt);
-      endsAt.setFullYear(endsAt.getFullYear() + durationYears);
-      seller.subscriptionStartsAt = credentialsGeneratedAt;
-      seller.subscriptionEndsAt = endsAt;
+      const anchor = credentialsGeneratedAt;
+      const months = normalizeReportMonths(seller.reconciliationMonths ?? []);
+      if (months.length) {
+        const period = buildSubscriptionPeriodFromMonths(months, anchor);
+        seller.subscriptionStartsAt = period.startsAt;
+        seller.subscriptionEndsAt = period.endsAt;
+      } else {
+        const durationYears =
+          seller.durationYears ?? seller.subscriptionDuration ?? 1;
+        const endsAt = new Date(anchor);
+        endsAt.setFullYear(endsAt.getFullYear() + Number(durationYears));
+        seller.subscriptionStartsAt = anchor;
+        seller.subscriptionEndsAt = endsAt;
+      }
     }
 
     await seller.save();
@@ -677,6 +742,40 @@ export class AccountManagerService {
     const d = date.getDate().toString().padStart(2, '0');
     const rand = Math.random().toString(36).slice(2, 8).toUpperCase();
     return `SUB-${y}${m}${d}-${rand}`;
+  }
+
+  private async resolveLeadConversionQuote(
+    lead: LeadDocument,
+  ): Promise<LeadConversionQuoteSnapshot | null> {
+    const fromLeadConfig = lead.subscriptionConfig;
+    if (
+      fromLeadConfig?.selectedMonths?.length ||
+      fromLeadConfig?.packageName ||
+      fromLeadConfig?.planType
+    ) {
+      return {
+        packageName: fromLeadConfig.packageName,
+        planType: fromLeadConfig.planType,
+        selectedMonths: normalizeReportMonths(fromLeadConfig.selectedMonths ?? []),
+        monthCount: fromLeadConfig.selectedMonths?.length,
+        gstSlots: fromLeadConfig.gstSlots,
+        panSlots: fromLeadConfig.gstSlots,
+        durationYears: fromLeadConfig.durationYears,
+        totalPayable: fromLeadConfig.amount,
+      };
+    }
+
+    const order = await this.paymentOrderModel
+      .findOne({
+        leadId: lead._id,
+        'metadata.checkoutType': 'lead_conversion',
+      })
+      .sort({ createdAt: -1 })
+      .lean()
+      .exec();
+    return extractQuoteFromPaymentMetadata(
+      (order?.metadata ?? null) as Record<string, unknown> | null,
+    );
   }
 
   async requestAdminApproval(dto: RequestAdminApprovalDto, user?: RequestUser) {

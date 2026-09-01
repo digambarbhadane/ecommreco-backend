@@ -64,7 +64,10 @@ export class PaymentInvoiceService {
       .exec();
     if (existing) return existing;
 
-    const seller = await this.sellerModel.findById(order.sellerId).lean().exec();
+    const seller = await this.sellerModel
+      .findById(order.sellerId)
+      .lean()
+      .exec();
     const plan = order.subscriptionPlanId
       ? await this.packageModel.findById(order.subscriptionPlanId).lean().exec()
       : null;
@@ -95,7 +98,7 @@ export class PaymentInvoiceService {
     const baseUrl =
       this.config.get<string>('API_PUBLIC_URL')?.trim() ||
       this.config.get<string>('FRONTEND_URL')?.trim() ||
-      'http://localhost:5000';
+      'http://localhost:5001';
     const invoiceUrl = `${baseUrl.replace(/\/+$/, '')}/api/v1/payments/invoices/${invoiceNumber}/download`;
 
     const invoice = await this.invoiceModel.create({
@@ -143,11 +146,9 @@ export class PaymentInvoiceService {
 
       const companyName =
         this.config.get<string>('COMPANY_NAME')?.trim() || 'EcommReco';
-      const companyGst =
-        this.config.get<string>('COMPANY_GSTIN')?.trim() || '';
+      const companyGst = this.config.get<string>('COMPANY_GSTIN')?.trim() || '';
       const companyAddress =
-        this.config.get<string>('COMPANY_ADDRESS')?.trim() ||
-        'India';
+        this.config.get<string>('COMPANY_ADDRESS')?.trim() || 'India';
 
       doc.fontSize(20).text('TAX INVOICE', { align: 'center' });
       doc.moveDown();
@@ -186,10 +187,9 @@ export class PaymentInvoiceService {
         `GST (${input.order.gstPercentage}%): ₹${input.order.gstAmount.toFixed(2)}`,
         { align: 'right' },
       );
-      doc.fontSize(14).text(
-        `Total: ₹${input.order.totalAmount.toFixed(2)}`,
-        { align: 'right' },
-      );
+      doc.fontSize(14).text(`Total: ₹${input.order.totalAmount.toFixed(2)}`, {
+        align: 'right',
+      });
 
       if (input.plan) {
         doc.moveDown();
@@ -203,10 +203,7 @@ export class PaymentInvoiceService {
   }
 
   async getInvoiceForSeller(sellerId: string, invoiceNumber: string) {
-    return this.invoiceModel
-      .findOne({ sellerId, invoiceNumber })
-      .lean()
-      .exec();
+    return this.invoiceModel.findOne({ sellerId, invoiceNumber }).lean().exec();
   }
 
   async getInvoicePdfPath(invoiceNumber: string) {

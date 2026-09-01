@@ -61,6 +61,15 @@ export class Msg91WidgetService {
     return !!this.getWidgetCredentials();
   }
 
+  /** Safe debug label: last 6 chars of tokenAuth (never logs the full secret). */
+  getCredentialDebugLabel(): string {
+    const credentials = this.getWidgetCredentials();
+    if (!credentials) return 'widget=missing';
+    const tokenTail = credentials.tokenAuth.slice(-6);
+    const widgetTail = credentials.widgetId.slice(-6);
+    return `widget=...${widgetTail} token=...${tokenTail}`;
+  }
+
   isAccessTokenConfigured(): boolean {
     return !!this.getAuthKey();
   }
@@ -174,7 +183,11 @@ export class Msg91WidgetService {
 
     const digits = identifier.replace(/\D/g, '');
     const normalizedIdentifier =
-      digits.length === 10 ? `91${digits}` : digits.startsWith('91') ? digits : `91${digits}`;
+      digits.length === 10
+        ? `91${digits}`
+        : digits.startsWith('91')
+          ? digits
+          : `91${digits}`;
 
     const payload: Record<string, string> = {
       widgetId: credentials.widgetId,
@@ -185,15 +198,28 @@ export class Msg91WidgetService {
       payload.captchaToken = captchaToken.trim();
     }
 
-    const data = await this.postWidgetJson(`${this.widgetApiBase}/sendOtp`, payload);
+    this.logger.log(
+      `MSG91 sendOtp attempt identifier=${normalizedIdentifier} ${this.getCredentialDebugLabel()}`,
+    );
+
+    const data = await this.postWidgetJson(
+      `${this.widgetApiBase}/sendOtp`,
+      payload,
+    );
     if (!this.isSuccessResponse(data)) {
       const message = this.extractErrorMessage(data);
       this.logger.warn(
         `MSG91 sendOtp rejected identifier=${normalizedIdentifier} body=${JSON.stringify(data).slice(0, 300)}`,
       );
-      if (message?.toLowerCase().includes('captcha')) {
+      const lower = (message ?? '').toLowerCase();
+      if (lower.includes('authenticationfailure') || lower.includes('authentication')) {
         throw new BadRequestException(
-          message || 'MSG91 captcha verification failed.',
+          'MSG91 AuthenticationFailure: widgetId/tokenAuth are invalid or the token is disabled. In MSG91 → OTP → your widget → integration, copy the current Token (tokenAuth) into MSG91_TOKEN_AUTH and restart the backend.',
+        );
+      }
+      if (lower.includes('captcha')) {
+        throw new BadRequestException(
+          'MSG91 requires captcha, but server OTP APIs do not support captcha. In MSG91 OTP widget settings turn OFF "Captcha Validation" (and "Invisible OTP"), save, then retry.',
         );
       }
       throw new BadRequestException(message || 'Failed to send OTP.');
@@ -231,7 +257,9 @@ export class Msg91WidgetService {
 
     if (!this.isSuccessResponse(data)) {
       const message = this.extractErrorMessage(data);
-      this.logger.warn(`MSG91 retryOtp rejected body=${JSON.stringify(data).slice(0, 300)}`);
+      this.logger.warn(
+        `MSG91 retryOtp rejected body=${JSON.stringify(data).slice(0, 300)}`,
+      );
       throw new BadRequestException(message || 'Failed to resend OTP.');
     }
 
@@ -241,7 +269,10 @@ export class Msg91WidgetService {
     };
   }
 
-  async verifyWidgetOtp(reqId: string, otp: string): Promise<Msg91WidgetVerifyResult> {
+  async verifyWidgetOtp(
+    reqId: string,
+    otp: string,
+  ): Promise<Msg91WidgetVerifyResult> {
     const credentials = this.getWidgetCredentials();
     if (!credentials) {
       throw new ServiceUnavailableException(
@@ -267,8 +298,12 @@ export class Msg91WidgetService {
 
     if (!this.isSuccessResponse(data)) {
       const message = this.extractErrorMessage(data);
-      this.logger.warn(`MSG91 verifyOtp rejected body=${JSON.stringify(data).slice(0, 300)}`);
-      throw new BadRequestException(message || 'Incorrect OTP. Please try again.');
+      this.logger.warn(
+        `MSG91 verifyOtp rejected body=${JSON.stringify(data).slice(0, 300)}`,
+      );
+      throw new BadRequestException(
+        message || 'Incorrect OTP. Please try again.',
+      );
     }
 
     return {
@@ -277,7 +312,9 @@ export class Msg91WidgetService {
     };
   }
 
-  async verifyAccessToken(accessToken: string): Promise<Msg91WidgetVerifyResult> {
+  async verifyAccessToken(
+    accessToken: string,
+  ): Promise<Msg91WidgetVerifyResult> {
     const authkey = this.getAuthKey();
     if (!authkey) {
       throw new ServiceUnavailableException(
@@ -290,16 +327,20 @@ export class Msg91WidgetService {
       throw new BadRequestException('Access token is required.');
     }
 
-    const params = new URLSearchParams();
-    params.append('authkey', authkey);
-    params.append('access-token', token);
-
+    // MSG91 requires JSON body with hyphenated "access-token".
+    // application/x-www-form-urlencoded returns: "access-token field is required."
     let response: Response;
     try {
       response = await fetch(`${this.widgetApiBase}/verifyAccessToken`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: params.toString(),
+        headers: {
+          'Content-Type': 'application/json',
+          authkey,
+        },
+        body: JSON.stringify({
+          authkey,
+          'access-token': token,
+        }),
       });
     } catch (error: unknown) {
       this.logger.error(
@@ -325,13 +366,30 @@ export class Msg91WidgetService {
 
     if (!this.isSuccessResponse(data, response)) {
       const messageText = this.extractErrorMessage(data);
+      const code = String(data.code ?? data.errorCode ?? '').trim();
       this.logger.warn(
-        `MSG91 verifyAccessToken rejected status=${response.status} body=${body.slice(0, 300)}`,
+        `MSG91 verifyAccessToken rejected status=${response.status} code=${code || 'n/a'} body=${body.slice(0, 300)}`,
       );
-      const userMessage =
-        messageText === 'AuthenticationFailure'
-          ? 'MSG91 account auth key is invalid. Use widget OTP verification (MSG91_WIDGET_ID + MSG91_TOKEN_AUTH) or set the correct MSG91_AUTH_KEY from your MSG91 dashboard.'
-          : messageText || 'Invalid or expired OTP verification token.';
+      let userMessage =
+        messageText || 'Invalid or expired OTP verification token.';
+      if (
+        code === '418' ||
+        /ip.*(whitelist|not allowed)/i.test(messageText ?? '')
+      ) {
+        userMessage =
+          'MSG91 rejected this server IP (error 418). In MSG91 → Authkey settings, whitelist this machine’s public IP or turn off IP security for local development.';
+      } else if (
+        code === '701' ||
+        /invalid access-token|access-token field is required/i.test(
+          messageText ?? '',
+        )
+      ) {
+        userMessage =
+          'OTP verification token is invalid or expired. Please request a new OTP.';
+      } else if (messageText === 'AuthenticationFailure') {
+        userMessage =
+          'MSG91 account auth key is invalid. Set MSG91_AUTH_KEY to the account Authkey from your MSG91 dashboard (not the widget tokenAuth).';
+      }
       throw new BadRequestException(userMessage);
     }
 
@@ -362,8 +420,9 @@ export class Msg91WidgetService {
     }
 
     const body = await response.text();
+    let data: Record<string, unknown>;
     try {
-      return JSON.parse(body) as Record<string, unknown>;
+      data = JSON.parse(body) as Record<string, unknown>;
     } catch {
       this.logger.error(
         `MSG91 widget API invalid JSON status=${response.status} body=${body.slice(0, 200)}`,
@@ -372,6 +431,17 @@ export class Msg91WidgetService {
         'MSG91 service unavailable. Please try again shortly.',
       );
     }
+
+    // Attach HTTP status for callers / logging without changing MSG91 payload shape.
+    if (data.httpStatus == null) {
+      data.httpStatus = response.status;
+    }
+    if (!response.ok && !this.isSuccessResponse(data, response)) {
+      this.logger.warn(
+        `MSG91 widget API HTTP ${response.status} body=${body.slice(0, 400)}`,
+      );
+    }
+    return data;
   }
 
   private isSuccessResponse(
@@ -388,10 +458,16 @@ export class Msg91WidgetService {
     if (data.hasError === false) {
       return true;
     }
-    return response ? response.ok : true;
+    // Never treat an ambiguous payload as success — that caused fake "OTP sent".
+    if (response) {
+      return response.ok && type.length === 0;
+    }
+    return false;
   }
 
-  private extractErrorMessage(data: Record<string, unknown>): string | undefined {
+  private extractErrorMessage(
+    data: Record<string, unknown>,
+  ): string | undefined {
     const message = data.message;
     if (typeof message === 'string' && message.trim()) {
       return message;

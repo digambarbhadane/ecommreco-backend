@@ -125,10 +125,7 @@ export class SubscriptionService implements OnModuleInit {
    * Auto-selects by plan type when packageId is missing or invalid.
    */
   async resolveActivePackage(input: {
-    planType:
-      | 'single_gst'
-      | 'multi_gst_pan'
-      | 'single_gst_multi_marketplace';
+    planType: 'single_gst' | 'multi_gst_pan' | 'single_gst_multi_marketplace';
     packageId?: string;
   }): Promise<SubscriptionPackageDocument> {
     await this.ensureDefaultPackages();
@@ -138,10 +135,7 @@ export class SubscriptionService implements OnModuleInit {
       const selected = await this.packageModel
         .findOne({ _id: packageId, isActive: true })
         .exec();
-      if (
-        selected &&
-        (selected.planType ?? 'multi_gst_pan') === planType
-      ) {
+      if (selected && (selected.planType ?? 'multi_gst_pan') === planType) {
         return selected;
       }
     }

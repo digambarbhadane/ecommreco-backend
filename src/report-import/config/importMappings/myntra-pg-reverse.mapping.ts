@@ -186,17 +186,26 @@ export const MYNTRA_PG_REVERSE_FIELD_CATALOG: MyntraPgFieldDefinition[] = [
   {
     key: 'marketingcontribution_postpaid',
     type: 'number',
-    aliases: ['marketingContribution_postpaid', 'MarketingContribution_postpaid'],
+    aliases: [
+      'marketingContribution_postpaid',
+      'MarketingContribution_postpaid',
+    ],
   },
   {
     key: 'reverseadditionalcharges_prepaid',
     type: 'number',
-    aliases: ['reverseAdditionalCharges_prepaid', 'ReverseAdditionalCharges_prepaid'],
+    aliases: [
+      'reverseAdditionalCharges_prepaid',
+      'ReverseAdditionalCharges_prepaid',
+    ],
   },
   {
     key: 'reverseadditionalcharges_postpaid',
     type: 'number',
-    aliases: ['reverseAdditionalCharges_postpaid', 'ReverseAdditionalCharges_postpaid'],
+    aliases: [
+      'reverseAdditionalCharges_postpaid',
+      'ReverseAdditionalCharges_postpaid',
+    ],
   },
   { key: 'commission_discount', type: 'number' },
   { key: 'sjit_incentive_amount', type: 'number' },

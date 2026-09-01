@@ -1,8 +1,4 @@
-import {
-  ApiTags,
-  ApiOperation,
-  ApiBearerAuth,
-} from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import {
   Body,
   Controller,
@@ -37,7 +33,10 @@ export class SalesActivityController {
   constructor(private readonly svc: SalesActivityService) {}
 
   @Get('sales-activity/today')
-  @ApiOperation({ summary: 'Get today sales activity', description: 'Returns sales activity statistics for today.' })
+  @ApiOperation({
+    summary: 'Get today sales activity',
+    description: 'Returns sales activity statistics for today.',
+  })
   @Roles('sales_manager', 'super_admin')
   async getToday(
     @Req() req: RequestWithUser,
@@ -66,7 +65,11 @@ export class SalesActivityController {
   }
 
   @Post('sales-target')
-  @ApiOperation({ summary: 'Assign sales target', description: 'Assign lead contact and conversion targets to a sales manager.' })
+  @ApiOperation({
+    summary: 'Assign sales target',
+    description:
+      'Assign lead contact and conversion targets to a sales manager.',
+  })
   @Roles('sales_manager', 'super_admin')
   async assignTarget(
     @Body()

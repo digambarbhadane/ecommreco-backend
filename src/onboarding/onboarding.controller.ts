@@ -30,7 +30,9 @@ export class OnboardingController {
 
   @Post('register')
   @Throttle({ default: { limit: 5, ttl: 60000 } })
-  @ApiOperation({ summary: 'Register for trial (always succeeds; payment separate)' })
+  @ApiOperation({
+    summary: 'Register for trial (always succeeds; payment separate)',
+  })
   register(@Body() dto: OnboardingRegisterDto) {
     return this.onboardingService.register(dto);
   }
@@ -49,9 +51,14 @@ export class OnboardingController {
 
   @Post('payment/confirm-public')
   @Throttle({ default: { limit: 10, ttl: 60000 } })
-  @ApiOperation({ summary: 'Verify payment after checkout (no auth; email must match order)' })
+  @ApiOperation({
+    summary: 'Verify payment after checkout (no auth; email must match order)',
+  })
   confirmPaymentPublic(@Body() dto: OnboardingConfirmPublicDto) {
-    return this.onboardingService.verifyAndActivateByEmail(dto.orderId, dto.email);
+    return this.onboardingService.verifyAndActivateByEmail(
+      dto.orderId,
+      dto.email,
+    );
   }
 
   @Post('payment/confirm')
@@ -69,7 +76,9 @@ export class OnboardingController {
 
   @Post('payment/retry-public')
   @Throttle({ default: { limit: 5, ttl: 60000 } })
-  @ApiOperation({ summary: 'Create new payment attempt for pending user (no auth)' })
+  @ApiOperation({
+    summary: 'Create new payment attempt for pending user (no auth)',
+  })
   retryPaymentPublic(@Body() dto: OnboardingResumePaymentDto) {
     return this.onboardingService.resumePaymentByEmail(dto.email ?? '');
   }

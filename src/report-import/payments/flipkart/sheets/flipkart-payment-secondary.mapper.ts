@@ -33,9 +33,13 @@ function buildFieldLookup(
   return buildNormalizedHeaderLookup(entries);
 }
 
-function coerceFieldValue(field: string, value: unknown): string | number | undefined {
+function coerceFieldValue(
+  field: string,
+  value: unknown,
+): string | number | undefined {
   if (field === 'settlementValue') return coercePaymentNumber(value);
-  if (field === 'paymentDate' || field === 'claimDate') return coercePaymentDate(value);
+  if (field === 'paymentDate' || field === 'claimDate')
+    return coercePaymentDate(value);
   return coercePaymentString(value);
 }
 

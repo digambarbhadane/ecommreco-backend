@@ -42,10 +42,42 @@ export type GatewayRefundResult = {
   raw: Record<string, unknown>;
 };
 
+export type CreateGatewayPaymentLinkInput = {
+  linkId: string;
+  amount: number;
+  currency?: string;
+  purpose: string;
+  customerEmail: string;
+  customerPhone: string;
+  customerName?: string;
+  returnUrl: string;
+  notifyUrl?: string;
+  expiryTime: Date;
+};
+
+export type GatewayPaymentLinkResult = {
+  linkId: string;
+  linkUrl: string;
+  cfLinkId: string;
+  raw: Record<string, unknown>;
+};
+
+export type GatewayLinkStatus = {
+  linkId: string;
+  linkStatus: string;
+  amountPaid: number;
+  paymentStatus: GatewayPaymentStatus['paymentStatus'];
+  raw: Record<string, unknown>;
+};
+
 export interface PaymentGateway {
   readonly name: string;
   createOrder(input: CreateGatewayOrderInput): Promise<GatewayOrderResult>;
+  createPaymentLink?(
+    input: CreateGatewayPaymentLinkInput,
+  ): Promise<GatewayPaymentLinkResult>;
   getOrderStatus(orderId: string): Promise<GatewayPaymentStatus>;
+  getLinkStatus?(linkId: string): Promise<GatewayLinkStatus>;
   createRefund(input: GatewayRefundInput): Promise<GatewayRefundResult>;
   verifyWebhookSignature(
     rawBody: string,

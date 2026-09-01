@@ -32,7 +32,11 @@ export const INDIA_STATE_CATALOG: IndiaStateCatalogEntry[] = [
   { gstCode: '22', isoCode: 'CG', name: 'Chhattisgarh' },
   { gstCode: '23', isoCode: 'MP', name: 'Madhya Pradesh' },
   { gstCode: '24', isoCode: 'GJ', name: 'Gujarat' },
-  { gstCode: '26', isoCode: 'DH', name: 'Dadra and Nagar Haveli and Daman and Diu' },
+  {
+    gstCode: '26',
+    isoCode: 'DH',
+    name: 'Dadra and Nagar Haveli and Daman and Diu',
+  },
   { gstCode: '27', isoCode: 'MH', name: 'Maharashtra' },
   { gstCode: '28', isoCode: 'AP', name: 'Andhra Pradesh' },
   { gstCode: '29', isoCode: 'KA', name: 'Karnataka' },
@@ -46,7 +50,9 @@ export const INDIA_STATE_CATALOG: IndiaStateCatalogEntry[] = [
   { gstCode: '38', isoCode: 'LA', name: 'Ladakh' },
 ];
 
-const GST_TO_ENTRY = new Map(INDIA_STATE_CATALOG.map((item) => [item.gstCode, item]));
+const GST_TO_ENTRY = new Map(
+  INDIA_STATE_CATALOG.map((item) => [item.gstCode, item]),
+);
 const ISO_TO_ENTRY = new Map(
   INDIA_STATE_CATALOG.map((item) => [item.isoCode, item]),
 );
@@ -58,12 +64,20 @@ GST_TO_ENTRY.set('37', GST_TO_ENTRY.get('28')!);
 
 export const UNMAPPED_STATE_CODE = 'UNMAPPED';
 
-export function getIndiaStateByGstCode(code: string): IndiaStateCatalogEntry | undefined {
+export function getIndiaStateByGstCode(
+  code: string,
+): IndiaStateCatalogEntry | undefined {
   return GST_TO_ENTRY.get(String(code ?? '').padStart(2, '0'));
 }
 
-export function getIndiaStateByIso(code: string): IndiaStateCatalogEntry | undefined {
-  return ISO_TO_ENTRY.get(String(code ?? '').trim().toUpperCase());
+export function getIndiaStateByIso(
+  code: string,
+): IndiaStateCatalogEntry | undefined {
+  return ISO_TO_ENTRY.get(
+    String(code ?? '')
+      .trim()
+      .toUpperCase(),
+  );
 }
 
 export function canonicalizeGeographyStateCode(

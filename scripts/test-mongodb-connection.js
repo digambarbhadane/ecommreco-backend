@@ -37,7 +37,7 @@ async function tryConnect(candidate) {
   const conn = await mongoose
     .createConnection(candidate.uri, {
       dbName,
-      serverSelectionTimeoutMS: 15000,
+      serverSelectionTimeoutMS: 15001,
     })
     .asPromise();
   return conn;

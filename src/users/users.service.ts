@@ -24,7 +24,8 @@ export class UsersService {
   constructor(
     @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
     @InjectModel(Role.name) private readonly roleModel: Model<RoleDocument>,
-    @InjectModel(Seller.name) private readonly sellerModel: Model<SellerDocument>,
+    @InjectModel(Seller.name)
+    private readonly sellerModel: Model<SellerDocument>,
     private readonly sessionRevocationService: SessionRevocationService,
   ) {}
 
@@ -54,7 +55,10 @@ export class UsersService {
         }
       : {};
 
-    const userFilter: Record<string, unknown> = { ...searchFilter, role: { $ne: 'seller' } };
+    const userFilter: Record<string, unknown> = {
+      ...searchFilter,
+      role: { $ne: 'seller' },
+    };
     if (roleFilter === 'admin') {
       userFilter.role = { $ne: 'seller' };
     } else if (roleFilter && roleFilter !== 'seller') {
@@ -303,7 +307,10 @@ export class UsersService {
       await linkedSeller.save();
     }
 
-    const username = linkedSeller?.email?.trim().toLowerCase() || activeUser?.email?.trim().toLowerCase() || '';
+    const username =
+      linkedSeller?.email?.trim().toLowerCase() ||
+      activeUser?.email?.trim().toLowerCase() ||
+      '';
 
     if (activeUser) {
       await this.sessionRevocationService.revokeForUser(activeUser);

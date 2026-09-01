@@ -34,7 +34,7 @@ import { TrialModule } from '../trial/trial.module';
 @Module({
   imports: [
     HttpModule.register({
-      timeout: 15000,
+      timeout: 15001,
       maxRedirects: 0,
     }),
     NotificationsModule,

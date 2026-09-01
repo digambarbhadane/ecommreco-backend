@@ -194,8 +194,8 @@ export class TrialValidationService {
       : null;
     return Boolean(
       endsAt &&
-        !Number.isNaN(endsAt.getTime()) &&
-        endsAt.getTime() < Date.now(),
+      !Number.isNaN(endsAt.getTime()) &&
+      endsAt.getTime() < Date.now(),
     );
   }
 
@@ -219,7 +219,9 @@ export class TrialValidationService {
       );
     }
     if (access === 'suspended') {
-      throw new BadRequestException('Your account is suspended. Contact support.');
+      throw new BadRequestException(
+        'Your account is suspended. Contact support.',
+      );
     }
   }
 

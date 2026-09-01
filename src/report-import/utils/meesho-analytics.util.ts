@@ -19,8 +19,12 @@ export function classifyMeeshoReturnSubType(
 ): MeeshoReturnSubType | null {
   if (isMeeshoNaTypeOfReturn(typeOfReturn)) return 'na';
 
-  const typeUpper = String(typeOfReturn ?? '').trim().toUpperCase();
-  const subUpper = String(subType ?? '').trim().toUpperCase();
+  const typeUpper = String(typeOfReturn ?? '')
+    .trim()
+    .toUpperCase();
+  const subUpper = String(subType ?? '')
+    .trim()
+    .toUpperCase();
   const combined = `${typeUpper} ${subUpper}`;
 
   if (combined.includes('CANCEL')) return 'cancellation';
@@ -32,7 +36,9 @@ export function classifyMeeshoReturnSubType(
 }
 
 export function isMeeshoCancellationStatus(status?: string | null): boolean {
-  const upper = String(status ?? '').trim().toUpperCase();
+  const upper = String(status ?? '')
+    .trim()
+    .toUpperCase();
   return upper.includes('CANCEL');
 }
 
@@ -60,12 +66,14 @@ export function classifyMeeshoImportRow(
     row.meeshoReturnSubType ??
     classifyMeeshoReturnSubType(row.typeOfReturn, row.subType) ??
     undefined;
-  const cancellationFromOrder = isMeeshoCancellationStatus(row.meeshoOrderStatus);
+  const cancellationFromOrder = isMeeshoCancellationStatus(
+    row.meeshoOrderStatus,
+  );
   const hasTcsReturn = Boolean(
     row.meeshoHasTcsReturn ||
-      row.returnInvoiceDate ||
-      lifecycleSubType ||
-      cancellationFromOrder,
+    row.returnInvoiceDate ||
+    lifecycleSubType ||
+    cancellationFromOrder,
   );
   let meeshoReturnSubType: MeeshoReturnSubType | undefined;
 

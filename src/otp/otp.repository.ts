@@ -51,11 +51,13 @@ export class OtpRepository {
   }
 
   deleteVerifiedProof(mobile: string, purpose: OtpPurpose) {
-    return this.model.deleteOne({
-      mobile,
-      purpose,
-      verified: true,
-    }).exec();
+    return this.model
+      .deleteOne({
+        mobile,
+        purpose,
+        verified: true,
+      })
+      .exec();
   }
 
   upsertWidgetVerified(
@@ -68,29 +70,31 @@ export class OtpRepository {
       requestedUserAgent?: string;
     },
   ) {
-    return this.model.findOneAndUpdate(
-      { mobile, purpose },
-      {
-        $set: {
-          mobile,
-          purpose,
-          verified: true,
-          verifiedAt: data.verifiedAt,
-          verificationProofExpiresAt: data.verificationProofExpiresAt,
-          attempts: 0,
-          requestCount: 1,
-          lastSentAt: data.verifiedAt,
-          requestedIp: data.requestedIp,
-          requestedUserAgent: data.requestedUserAgent,
+    return this.model
+      .findOneAndUpdate(
+        { mobile, purpose },
+        {
+          $set: {
+            mobile,
+            purpose,
+            verified: true,
+            verifiedAt: data.verifiedAt,
+            verificationProofExpiresAt: data.verificationProofExpiresAt,
+            attempts: 0,
+            requestCount: 1,
+            lastSentAt: data.verifiedAt,
+            requestedIp: data.requestedIp,
+            requestedUserAgent: data.requestedUserAgent,
+          },
+          $unset: {
+            otpHash: '',
+            expiresAt: '',
+            blockedUntil: '',
+            msg91ReqId: '',
+          },
         },
-        $unset: {
-          otpHash: '',
-          expiresAt: '',
-          blockedUntil: '',
-          msg91ReqId: '',
-        },
-      },
-      { upsert: true, new: true, setDefaultsOnInsert: true },
-    ).exec();
+        { upsert: true, new: true, setDefaultsOnInsert: true },
+      )
+      .exec();
   }
 }

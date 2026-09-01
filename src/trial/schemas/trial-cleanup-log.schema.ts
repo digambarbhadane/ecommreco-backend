@@ -5,7 +5,12 @@ export type TrialCleanupLogDocument = HydratedDocument<TrialCleanupLog>;
 
 @Schema({ timestamps: true, collection: 'trial_cleanup_logs' })
 export class TrialCleanupLog {
-  @Prop({ type: SchemaTypes.ObjectId, ref: 'Seller', required: true, index: true })
+  @Prop({
+    type: SchemaTypes.ObjectId,
+    ref: 'Seller',
+    required: true,
+    index: true,
+  })
   sellerId!: Types.ObjectId;
 
   @Prop({

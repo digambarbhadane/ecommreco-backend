@@ -53,8 +53,7 @@ export class AmazonPaymentService {
       .map((row) => this.normalizeTransaction(row))
       .filter(
         (row) =>
-          row.calculationRole !== 'sale' &&
-          row.calculationRole !== 'return',
+          row.calculationRole !== 'sale' && row.calculationRole !== 'return',
       );
     await this.settlementService.replaceNormalizedUpload(
       input.uploadId,
@@ -96,8 +95,9 @@ export class AmazonPaymentService {
     row: AmazonPaymentInsertPayload,
   ): NormalizedTransaction {
     const description = String(row.amountDescription ?? '').trim();
-    const haystack =
-      `${row.transactionType} ${description}`.trim().toLowerCase();
+    const haystack = `${row.transactionType} ${description}`
+      .trim()
+      .toLowerCase();
     const role = this.resolveRole(haystack, description);
     const category = this.resolveCategory(description.toLowerCase(), role);
     return {
@@ -161,4 +161,3 @@ export class AmazonPaymentService {
     return categories.find(([pattern]) => pattern.test(value))?.[1] ?? 'Others';
   }
 }
-

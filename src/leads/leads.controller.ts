@@ -30,6 +30,12 @@ import { CreateManualLeadDto } from './dto/create-manual-lead.dto';
 import { ImportLeadsDto } from './dto/import-leads.dto';
 import { UpdateLeadDto } from './dto/update-lead.dto';
 import { UpdateLeadStatusDto } from './dto/update-lead-status.dto';
+import {
+  LeadConversionConfirmPaymentDto,
+  LeadConversionPaymentLinkDto,
+  LeadConversionQuoteDto,
+} from './dto/lead-conversion-checkout.dto';
+import { LeadConversionPaymentService } from './lead-conversion-payment.service';
 import { LeadsService } from './leads.service';
 
 import { ThrottlerGuard } from '@nestjs/throttler';
@@ -66,10 +72,17 @@ type BulkAssignLeadsBody = { leadIds: string[]; salesManagerId: string };
 @ApiBearerAuth('bearer')
 @Controller(['leads', 'lead'])
 export class LeadsController {
-  constructor(private readonly leadsService: LeadsService) {}
+  constructor(
+    private readonly leadsService: LeadsService,
+    private readonly conversionPayment: LeadConversionPaymentService,
+  ) {}
 
   @Post()
-  @ApiOperation({ summary: 'Create manual lead', description: 'Create a new lead manually. Requires super_admin or sales_manager role.' })
+  @ApiOperation({
+    summary: 'Create manual lead',
+    description:
+      'Create a new lead manually. Requires super_admin or sales_manager role.',
+  })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   @HttpCode(HttpStatus.CREATED)
@@ -180,7 +193,10 @@ export class LeadsController {
   }
 
   @Post('import')
-  @ApiOperation({ summary: 'Import leads in bulk', description: 'Import multiple leads at once. Super admin only.' })
+  @ApiOperation({
+    summary: 'Import leads in bulk',
+    description: 'Import multiple leads at once. Super admin only.',
+  })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin')
   @HttpCode(HttpStatus.CREATED)
@@ -189,7 +205,11 @@ export class LeadsController {
   }
 
   @Get('dashboard-stats')
-  @ApiOperation({ summary: 'Get dashboard statistics', description: 'Returns lead statistics for dashboard. Supports date range filtering.' })
+  @ApiOperation({
+    summary: 'Get dashboard statistics',
+    description:
+      'Returns lead statistics for dashboard. Supports date range filtering.',
+  })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   getDashboardStats(
@@ -201,7 +221,10 @@ export class LeadsController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'List leads', description: 'Returns paginated list of leads with filtering support.' })
+  @ApiOperation({
+    summary: 'List leads',
+    description: 'Returns paginated list of leads with filtering support.',
+  })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   listLeads(
@@ -241,7 +264,10 @@ export class LeadsController {
   }
 
   @Get('follow-ups')
-  @ApiOperation({ summary: 'List follow-ups', description: 'Returns paginated list of lead follow-ups.' })
+  @ApiOperation({
+    summary: 'List follow-ups',
+    description: 'Returns paginated list of lead follow-ups.',
+  })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   listFollowUps(
@@ -323,7 +349,10 @@ export class LeadsController {
   }
 
   @Get('notes-public')
-  @ApiOperation({ summary: 'List notes (dev only)', description: 'Development-only endpoint.' })
+  @ApiOperation({
+    summary: 'List notes (dev only)',
+    description: 'Development-only endpoint.',
+  })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   listNotesPublic(
@@ -347,7 +376,10 @@ export class LeadsController {
   }
 
   @Get('follow-ups-public')
-  @ApiOperation({ summary: 'List follow-ups (dev only)', description: 'Development-only endpoint.' })
+  @ApiOperation({
+    summary: 'List follow-ups (dev only)',
+    description: 'Development-only endpoint.',
+  })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   listFollowUpsPublic(
@@ -407,7 +439,10 @@ export class LeadsController {
   }
 
   @Patch('assign')
-  @ApiOperation({ summary: 'Bulk assign leads', description: 'Assign multiple leads to a sales manager. Super admin only.' })
+  @ApiOperation({
+    summary: 'Bulk assign leads',
+    description: 'Assign multiple leads to a sales manager. Super admin only.',
+  })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin')
   bulkAssignLeads(
@@ -422,7 +457,11 @@ export class LeadsController {
   }
 
   @Post(':id/convert')
-  @ApiOperation({ summary: 'Convert lead to seller', description: 'Convert a lead into a seller account with subscription details.' })
+  @ApiOperation({
+    summary: 'Convert lead to seller',
+    description:
+      'Convert a lead into a seller account with subscription details.',
+  })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   async convertLead(
@@ -471,7 +510,10 @@ export class LeadsController {
   }
 
   @Patch(':id/follow-ups/:followUpId')
-  @ApiOperation({ summary: 'Update follow-up details', description: 'Update scheduled time and notes for a follow-up.' })
+  @ApiOperation({
+    summary: 'Update follow-up details',
+    description: 'Update scheduled time and notes for a follow-up.',
+  })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   async updateFollowUp(
@@ -520,7 +562,10 @@ export class LeadsController {
   }
 
   @Post(':id/subscription')
-  @ApiOperation({ summary: 'Update lead subscription', description: 'Assign GST slots and duration for lead subscription.' })
+  @ApiOperation({
+    summary: 'Update lead subscription',
+    description: 'Assign GST slots and duration for lead subscription.',
+  })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   async updateSubscription(
@@ -537,7 +582,10 @@ export class LeadsController {
   }
 
   @Post(':id/payment-link')
-  @ApiOperation({ summary: 'Generate payment link for lead', description: 'Generate Cashfree payment link for lead subscription.' })
+  @ApiOperation({
+    summary: 'Generate payment link for lead',
+    description: 'Generate Cashfree payment link for lead subscription.',
+  })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   generatePaymentLink(
@@ -568,8 +616,58 @@ export class LeadsController {
     );
   }
 
+  @Post(':id/conversion/quote')
+  @ApiOperation({ summary: 'Quote lead conversion subscription checkout' })
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('super_admin', 'sales_manager', 'accounts_manager')
+  async quoteConversion(
+    @Param('id') id: string,
+    @Body() dto: LeadConversionQuoteDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    await this.leadsService.assertLeadAccess(id, req.user);
+    return this.conversionPayment.quote(id, dto);
+  }
+
+  @Post(':id/conversion/payment-link')
+  @ApiOperation({ summary: 'Generate Cashfree payment link for lead conversion' })
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('super_admin', 'sales_manager', 'accounts_manager')
+  async createConversionPaymentLink(
+    @Param('id') id: string,
+    @Body() dto: LeadConversionPaymentLinkDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    await this.leadsService.assertLeadAccess(id, req.user);
+    return this.conversionPayment.createPaymentLink(
+      id,
+      dto,
+      req.user?.email || 'admin',
+    );
+  }
+
+  @Post(':id/conversion/confirm-payment')
+  @ApiOperation({ summary: 'Verify and confirm lead conversion payment' })
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('super_admin', 'sales_manager', 'accounts_manager')
+  async confirmConversionPayment(
+    @Param('id') id: string,
+    @Body() dto: LeadConversionConfirmPaymentDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    await this.leadsService.assertLeadAccess(id, req.user);
+    return this.conversionPayment.confirmPayment(
+      id,
+      dto,
+      req.user?.email || 'admin',
+    );
+  }
+
   @Post(':id/follow-up')
-  @ApiOperation({ summary: 'Schedule follow-up', description: 'Schedule a follow-up call/meeting for a lead.' })
+  @ApiOperation({
+    summary: 'Schedule follow-up',
+    description: 'Schedule a follow-up call/meeting for a lead.',
+  })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   async scheduleFollowUp(
@@ -587,7 +685,11 @@ export class LeadsController {
   }
 
   @Post([':id/demo', ':id/demos', ':id/schedule-demo'])
-  @ApiOperation({ summary: 'Schedule demo', description: 'Schedule a product demo for a lead. Supports optional email notification and meeting link.' })
+  @ApiOperation({
+    summary: 'Schedule demo',
+    description:
+      'Schedule a product demo for a lead. Supports optional email notification and meeting link.',
+  })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   async scheduleDemo(
@@ -610,7 +712,10 @@ export class LeadsController {
   }
 
   @Patch(':id/demos/:demoId/status')
-  @ApiOperation({ summary: 'Update demo status', description: 'Mark demo as scheduled or done.' })
+  @ApiOperation({
+    summary: 'Update demo status',
+    description: 'Mark demo as scheduled or done.',
+  })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   async updateDemoStatus(

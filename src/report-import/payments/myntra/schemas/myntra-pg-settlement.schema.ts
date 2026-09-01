@@ -1,7 +1,8 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, SchemaTypes } from 'mongoose';
 
-export type MyntraPgSettlementDocument = HydratedDocument<MyntraPgSettlementRow>;
+export type MyntraPgSettlementDocument =
+  HydratedDocument<MyntraPgSettlementRow>;
 
 @Schema({
   timestamps: true,
@@ -168,8 +169,9 @@ export class MyntraPgSettlementRow {
   uploadedAt: Date;
 }
 
-export const MyntraPgSettlementRowSchema =
-  SchemaFactory.createForClass(MyntraPgSettlementRow);
+export const MyntraPgSettlementRowSchema = SchemaFactory.createForClass(
+  MyntraPgSettlementRow,
+);
 
 MyntraPgSettlementRowSchema.index(
   { sellerId: 1, marketplace: 1, reportMonth: 1, reportKind: 1, rowKey: 1 },

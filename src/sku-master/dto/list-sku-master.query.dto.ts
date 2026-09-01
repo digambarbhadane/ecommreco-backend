@@ -1,20 +1,5 @@
 import { Type } from 'class-transformer';
-import {
-  IsIn,
-  IsInt,
-  IsOptional,
-  IsString,
-  Max,
-  Min,
-} from 'class-validator';
-
-const MARKETPLACE_FILTERS = [
-  'ALL',
-  'myntra',
-  'meesho',
-  'amazon',
-  'flipkart',
-] as const;
+import { IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
 
 const STATUS_FILTERS = ['ALL', 'MAPPED', 'UNMAPPED'] as const;
 
@@ -23,9 +8,10 @@ export class ListSkuMasterQueryDto {
   @IsString()
   gstId?: string;
 
+  /** `ALL` or any platform marketplace slug (amazon, flipkart, myntra, …). */
   @IsOptional()
-  @IsIn(MARKETPLACE_FILTERS)
-  marketplace?: (typeof MARKETPLACE_FILTERS)[number];
+  @IsString()
+  marketplace?: string;
 
   @IsOptional()
   @IsIn(STATUS_FILTERS)

@@ -63,7 +63,14 @@ export class ImportJob {
 
   @Prop({
     required: true,
-    enum: ['queued', 'uploading', 'processing', 'completed', 'failed', 'cancelled'],
+    enum: [
+      'queued',
+      'uploading',
+      'processing',
+      'completed',
+      'failed',
+      'cancelled',
+    ],
     default: 'queued',
     index: true,
   })

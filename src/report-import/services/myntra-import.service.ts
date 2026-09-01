@@ -153,22 +153,33 @@ export class MyntraImportService {
     };
 
     return {
-      gstrReportPacked: await parse(files.gstrReportPackedFile, 'gstrReportPacked'),
-      mDirectOrders: await parse(files.mDirectOrdersReportFile, 'mDirectOrders'),
+      gstrReportPacked: await parse(
+        files.gstrReportPackedFile,
+        'gstrReportPacked',
+      ),
+      mDirectOrders: await parse(
+        files.mDirectOrdersReportFile,
+        'mDirectOrders',
+      ),
       salesRevenueB2c: await parse(
         files.salesRevenuePackedB2cFile,
         'salesRevenueB2c',
       ),
       gstrReportRto: await parse(files.gstrReportRtoFile, 'gstrReportRto'),
       gstrReportRt: await parse(files.gstrReportRtFile, 'gstrReportRt'),
-      mDirectReturns: await parse(files.mDirectReturnsReportFile, 'mDirectReturns'),
+      mDirectReturns: await parse(
+        files.mDirectReturnsReportFile,
+        'mDirectReturns',
+      ),
     };
   }
 
   private normalizeOrderKey(raw: unknown): string {
     if (raw === undefined || raw === null) return '';
     if (typeof raw === 'number' && Number.isFinite(raw)) {
-      return Number.isInteger(raw) ? String(raw) : String(raw).replace(/\.0+$/, '');
+      return Number.isInteger(raw)
+        ? String(raw)
+        : String(raw).replace(/\.0+$/, '');
     }
     let value = String(raw).trim();
     if (!value) return '';
@@ -197,8 +208,12 @@ export class MyntraImportService {
   private resolvePreferredReturnOrderId(
     row: ParsedSheetRow,
     mappedOrderID?: string,
+    orderAliases?: readonly string[],
   ): string | undefined {
-    for (const alias of MYNTRA_PREFERRED_RETURN_ORDER_ID_ALIASES) {
+    const aliases = orderAliases?.length
+      ? orderAliases
+      : MYNTRA_PREFERRED_RETURN_ORDER_ID_ALIASES;
+    for (const alias of aliases) {
       const raw = this.getExactRowCell(row, alias);
       const key = this.normalizeOrderKey(raw);
       if (!key) continue;
@@ -211,7 +226,10 @@ export class MyntraImportService {
     return fallback;
   }
 
-  private collectOrderKeys(row: ParsedSheetRow, aliases: readonly string[]): string[] {
+  private collectOrderKeys(
+    row: ParsedSheetRow,
+    aliases: readonly string[],
+  ): string[] {
     const keys = new Set<string>();
     for (const alias of aliases) {
       const key = this.normalizeOrderKey(getRowCell(row, alias));
@@ -257,7 +275,10 @@ export class MyntraImportService {
     return undefined;
   }
 
-  private mergeDefined<T extends Record<string, unknown>>(base: T, patch: Partial<T>): T {
+  private mergeDefined<T extends Record<string, unknown>>(
+    base: T,
+    patch: Partial<T>,
+  ): T {
     const out = { ...base };
     for (const [key, value] of Object.entries(patch)) {
       if (value !== undefined && value !== null && value !== '') {
@@ -342,18 +363,31 @@ export class MyntraImportService {
       existing?: number,
       matched?: number,
     ): number | undefined => {
-      if (matched === undefined || matched === null || matched === 0) return existing;
+      if (matched === undefined || matched === null || matched === 0)
+        return existing;
       return matched;
     };
-    returnRow.igstAmount = keepExistingOrSale(existingIgst, fromSale.igstAmount);
-    returnRow.cgstAmount = keepExistingOrSale(existingCgst, fromSale.cgstAmount);
-    returnRow.sgstAmount = keepExistingOrSale(existingSgst, fromSale.sgstAmount);
+    returnRow.igstAmount = keepExistingOrSale(
+      existingIgst,
+      fromSale.igstAmount,
+    );
+    returnRow.cgstAmount = keepExistingOrSale(
+      existingCgst,
+      fromSale.cgstAmount,
+    );
+    returnRow.sgstAmount = keepExistingOrSale(
+      existingSgst,
+      fromSale.sgstAmount,
+    );
     returnRow.igstRate = existingIgstRate ?? fromSale.igstRate;
     returnRow.cgstRate = existingCgstRate ?? fromSale.cgstRate;
     returnRow.sgstRate = existingSgstRate ?? fromSale.sgstRate;
     // Keep transaction type aligned with final GST breakup so summary aggregation
     // does not zero-out the wrong bucket (IGST vs CGST/SGST).
-    if (sale.gstTransactionType === 'intra' || sale.gstTransactionType === 'inter') {
+    if (
+      sale.gstTransactionType === 'intra' ||
+      sale.gstTransactionType === 'inter'
+    ) {
       returnRow.gstTransactionType = sale.gstTransactionType;
     } else {
       const finalIgst = Number(returnRow.igstAmount ?? 0);
@@ -372,25 +406,53 @@ export class MyntraImportService {
   private negateUnmatchedReturnAmounts(row: NormalizedImportRow): void {
     const negate = (value?: number) =>
       value === undefined || value === null ? undefined : -Math.abs(value);
-    if (row.quantity !== undefined && row.quantity !== null && row.quantity > 0) {
+    if (
+      row.quantity !== undefined &&
+      row.quantity !== null &&
+      row.quantity > 0
+    ) {
       row.quantity = -Math.abs(row.quantity);
     }
-    if (row.invoiceAmount !== undefined && row.invoiceAmount !== null && row.invoiceAmount > 0) {
+    if (
+      row.invoiceAmount !== undefined &&
+      row.invoiceAmount !== null &&
+      row.invoiceAmount > 0
+    ) {
       row.invoiceAmount = negate(row.invoiceAmount);
     }
-    if (row.taxableAmount !== undefined && row.taxableAmount !== null && row.taxableAmount > 0) {
+    if (
+      row.taxableAmount !== undefined &&
+      row.taxableAmount !== null &&
+      row.taxableAmount > 0
+    ) {
       row.taxableAmount = negate(row.taxableAmount);
     }
-    if (row.igstAmount !== undefined && row.igstAmount !== null && row.igstAmount > 0) {
+    if (
+      row.igstAmount !== undefined &&
+      row.igstAmount !== null &&
+      row.igstAmount > 0
+    ) {
       row.igstAmount = negate(row.igstAmount);
     }
-    if (row.cgstAmount !== undefined && row.cgstAmount !== null && row.cgstAmount > 0) {
+    if (
+      row.cgstAmount !== undefined &&
+      row.cgstAmount !== null &&
+      row.cgstAmount > 0
+    ) {
       row.cgstAmount = negate(row.cgstAmount);
     }
-    if (row.sgstAmount !== undefined && row.sgstAmount !== null && row.sgstAmount > 0) {
+    if (
+      row.sgstAmount !== undefined &&
+      row.sgstAmount !== null &&
+      row.sgstAmount > 0
+    ) {
       row.sgstAmount = negate(row.sgstAmount);
     }
-    if (row.gstAmount !== undefined && row.gstAmount !== null && row.gstAmount > 0) {
+    if (
+      row.gstAmount !== undefined &&
+      row.gstAmount !== null &&
+      row.gstAmount > 0
+    ) {
       row.gstAmount = negate(row.gstAmount);
     }
   }
@@ -398,7 +460,9 @@ export class MyntraImportService {
   private mergeMdirectReturnFields(
     target: NormalizedImportRow,
     mDirectReturnsRow: ParsedSheetRow | undefined,
-    returnsHeaderMap: ReturnType<MappingService['buildMyntraMdirectReturnsHeaderMap']>,
+    returnsHeaderMap: ReturnType<
+      MappingService['buildMyntraMdirectReturnsHeaderMap']
+    >,
   ): void {
     if (!mDirectReturnsRow) return;
     const fromReturns = this.mapping.mapRowFast(
@@ -526,7 +590,10 @@ export class MyntraImportService {
     rows: NormalizedImportRow[],
     historicalSaleIdsToMarkReturned: string[],
   ): void {
-    const lookupKeys = this.buildReturnLookupKeys(orderKeys, returnRow.invoiceNo);
+    const lookupKeys = this.buildReturnLookupKeys(
+      orderKeys,
+      returnRow.invoiceNo,
+    );
 
     let matchedCurrent: CurrentSaleEntry | undefined;
     for (const key of lookupKeys) {
@@ -540,6 +607,10 @@ export class MyntraImportService {
     if (matchedCurrent) {
       const sale = matchedCurrent.snapshot;
       this.applyMatchedSaleAmounts(returnRow, sale);
+      // Keep Order Wise Payments grouped under the original GSTR Order Id for RTO.
+      if (sale.orderID && returnRow.documentType !== 'Customer Return') {
+        returnRow.orderID = sale.orderID;
+      }
       returnRow.myntraReturnMatchStatus = 'MATCHED_CURRENT_MONTH';
       returnRow.linkedSaleRowId = undefined;
       returnRow.saleReferenceMonth = undefined;
@@ -558,12 +629,16 @@ export class MyntraImportService {
 
     if (matchedHistorical) {
       this.applyMatchedSaleAmounts(returnRow, matchedHistorical);
+      if (matchedHistorical.orderID && returnRow.documentType !== 'Customer Return') {
+        returnRow.orderID = matchedHistorical.orderID;
+      }
       if (returnRow.documentType === 'RTO Return') {
         this.logger.log(
           JSON.stringify({
             tag: 'MATCHED_PREVIOUS_MONTH_ORIGINAL_SALE',
             orderId: matchedHistorical.orderID ?? null,
-            packetId: (matchedHistorical as Record<string, unknown>).packetID ?? null,
+            packetId:
+              (matchedHistorical as Record<string, unknown>).packetID ?? null,
             invoiceNumber: matchedHistorical.invoiceNo ?? null,
             saleMonth: matchedHistorical.reportMonth ?? null,
             originalTaxable: matchedHistorical.taxableAmount ?? null,
@@ -615,6 +690,9 @@ export class MyntraImportService {
 
     if (matchedSameMonthDb) {
       this.applyMatchedSaleAmounts(returnRow, matchedSameMonthDb);
+      if (matchedSameMonthDb.orderID && returnRow.documentType !== 'Customer Return') {
+        returnRow.orderID = matchedSameMonthDb.orderID;
+      }
       returnRow.myntraReturnMatchStatus = 'MATCHED_PREVIOUS_MONTH';
       returnRow.linkedSaleRowId = matchedSameMonthDb._id;
       returnRow.saleReferenceMonth = matchedSameMonthDb.reportMonth;
@@ -628,11 +706,15 @@ export class MyntraImportService {
       const gstrRow = gstrByOrder.get(key);
       if (!gstrRow) continue;
       const gstrMapped = this.mapping.mapMyntraGstrRow(gstrRow);
+      const snapshot = this.negateSaleAmounts(this.toSaleSnapshot(gstrMapped));
+      if (returnRow.documentType === 'Customer Return') {
+        delete snapshot.orderID;
+      }
       Object.assign(
         returnRow,
         this.mergeDefined(
           returnRow,
-          this.negateSaleAmounts(this.toSaleSnapshot(gstrMapped)),
+          snapshot,
         ),
       );
       this.negateUnmatchedReturnAmounts(returnRow);
@@ -671,7 +753,9 @@ export class MyntraImportService {
     priorMonthSales: Map<string, HistoricalSaleEntry>;
     sameMonthDbSales: Map<string, HistoricalSaleEntry>;
     mDirectReturnsByOrder: Map<string, ParsedSheetRow>;
-    returnsHeaderMap: ReturnType<MappingService['buildMyntraMdirectReturnsHeaderMap']>;
+    returnsHeaderMap: ReturnType<
+      MappingService['buildMyntraMdirectReturnsHeaderMap']
+    >;
     targetRows: MyntraBuildResult['rows'];
     targetErrors: MyntraBuildResult['errors'];
     historicalSaleIdsToMarkReturned: string[];
@@ -692,7 +776,11 @@ export class MyntraImportService {
     for (let i = 0; i < params.rowsToProcess.length; i += 1) {
       const sourceRow = params.rowsToProcess[i];
       try {
-        const mapped = this.mapping.mapRowFast(sourceRow, 'sales', params.headerMap);
+        const mapped = this.mapping.mapRowFast(
+          sourceRow,
+          'sales',
+          params.headerMap,
+        );
         this.mapping.enrichMyntraGstrReturnGstFields(
           mapped,
           sourceRow,
@@ -706,6 +794,7 @@ export class MyntraImportService {
         const preferredOrderId = this.resolvePreferredReturnOrderId(
           sourceRow,
           mapped.orderID,
+          params.orderAliases,
         );
         if (preferredOrderId) {
           mapped.orderID = preferredOrderId;
@@ -727,7 +816,11 @@ export class MyntraImportService {
           sourceRow,
           MYNTRA_MDIRECT_RETURNS_ORDER_ID_ALIASES,
         );
-        this.mergeMdirectReturnFields(mapped, mDirectReturnsRow, params.returnsHeaderMap);
+        this.mergeMdirectReturnFields(
+          mapped,
+          mDirectReturnsRow,
+          params.returnsHeaderMap,
+        );
         mapped.documentType = params.documentType;
         mapped.typeOfReturn = params.documentType;
         mapped.myntraTransactionType = 'RETURN';
@@ -745,7 +838,9 @@ export class MyntraImportService {
 
         if (mapped.myntraReturnMatchStatus === 'MATCHED_CURRENT_MONTH') {
           stats.matchedCurrent += 1;
-        } else if (mapped.myntraReturnMatchStatus === 'MATCHED_PREVIOUS_MONTH') {
+        } else if (
+          mapped.myntraReturnMatchStatus === 'MATCHED_PREVIOUS_MONTH'
+        ) {
           stats.matchedPrevious += 1;
         } else {
           stats.unmatched += 1;
@@ -788,7 +883,6 @@ export class MyntraImportService {
         });
       }
       if (i > 0 && i % 2000 === 0) {
-        // eslint-disable-next-line no-await-in-loop
         await yieldToEventLoop();
       }
     }
@@ -868,7 +962,10 @@ export class MyntraImportService {
         mapped.documentType = 'SALE';
         mapped.myntraTransactionType = 'SALE';
 
-        const orderKeys = this.collectOrderKeys(gstrRow, MYNTRA_GSTR_ORDER_ID_ALIASES);
+        const orderKeys = this.collectOrderKeys(
+          gstrRow,
+          MYNTRA_GSTR_ORDER_ID_ALIASES,
+        );
         const primaryKey = orderKeys[0];
         if (!primaryKey) {
           missingOrderIdInGstr += 1;
@@ -880,7 +977,11 @@ export class MyntraImportService {
         const salesRow = this.lookupRowByOrderKeys(
           salesByOrder,
           gstrRow,
-          MYNTRA_GSTR_ORDER_ID_ALIASES,
+          [
+            ...MYNTRA_GSTR_ORDER_ID_ALIASES,
+            ...MYNTRA_SALES_ORDER_ID_ALIASES,
+            'order_release_id',
+          ],
         );
         if (salesRow) {
           const fromSales = this.mapping.mapRowFast(
@@ -888,7 +989,8 @@ export class MyntraImportService {
             'sales',
             salesHeaderMap,
           );
-          Object.assign(mapped, this.mergeDefined(mapped, fromSales));
+          const { orderID: _saleOrderId, ...salesFields } = fromSales;
+          Object.assign(mapped, this.mergeDefined(mapped, salesFields));
         } else {
           missingInSales += 1;
         }
@@ -904,7 +1006,8 @@ export class MyntraImportService {
             'sales',
             mdirectHeaderMap,
           );
-          Object.assign(mapped, this.mergeDefined(mapped, fromMdirect));
+          const { orderID: _mDirectOrderId, ...mDirectFields } = fromMdirect;
+          Object.assign(mapped, this.mergeDefined(mapped, mDirectFields));
         }
 
         if (!mapped.orderID) mapped.orderID = primaryKey;
@@ -918,11 +1021,18 @@ export class MyntraImportService {
           __sheetName: gstrRow.__sheetName,
           __rowNumber: gstrRow.__rowNumber,
         });
+        const saleEntry: CurrentSaleEntry = {
+          rowIndex,
+          snapshot: this.toSaleSnapshot(mapped),
+        };
         for (const key of orderKeys) {
-          currentSales.set(key, {
-            rowIndex,
-            snapshot: this.toSaleSnapshot(mapped),
-          });
+          currentSales.set(key, saleEntry);
+        }
+        // Invoice lookup lets RTO/RT rows that carry a different order_id
+        // (but the same invoice) resolve to the original GSTR Order Id.
+        const invoiceKey = this.normalizeOrderKey(mapped.invoiceNo);
+        if (invoiceKey && !currentSales.has(invoiceKey)) {
+          currentSales.set(invoiceKey, saleEntry);
         }
       } catch {
         errors.push({

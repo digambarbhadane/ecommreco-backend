@@ -30,7 +30,8 @@ import { OtpModule } from '../otp/otp.module';
       useFactory: (config: ConfigService) => ({
         secret: (() => {
           const s = config.get<string>('JWT_SECRET');
-          if (!s) throw new Error('JWT_SECRET environment variable is required');
+          if (!s)
+            throw new Error('JWT_SECRET environment variable is required');
           return s;
         })(),
         signOptions: { expiresIn: '30m' },

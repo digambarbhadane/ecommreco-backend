@@ -1,5 +1,6 @@
 {
   "watch": ["src", "config", "load-env.js", "server.js"],
   "ext": "ts,js,json",
-  "ignore": ["src/**/*.spec.ts", "dist"]
+  "ignore": ["src/**/*.spec.ts", "dist"],
+  "delay": 1500
 }

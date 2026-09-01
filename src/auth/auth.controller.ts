@@ -22,7 +22,10 @@ import { SkipThrottle, Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { OtpService } from '../otp/otp.service';
 import { SendOtpDto, VerifyOtpDto, ResendOtpDto } from '../otp/dto/otp.dto';
-import { OtpVerifiedGuard, verifyOtpRequired } from '../otp/guards/otp-verified.guard';
+import {
+  OtpVerifiedGuard,
+  verifyOtpRequired,
+} from '../otp/guards/otp-verified.guard';
 import { OTP_PURPOSE } from '../otp/otp.constants';
 import {
   ForgotPasswordOtpDto,
@@ -61,6 +64,24 @@ export class AuthController {
   private assertTrustedOrigin(req: Request) {
     const origin = String(req.headers.origin ?? '').trim();
     if (!origin) return;
+    // Allow private LAN hosts used during local device testing (matches main.ts CORS).
+    try {
+      const host = new URL(origin).hostname.toLowerCase();
+      const isLoopback =
+        host === 'localhost' ||
+        host === '127.0.0.1' ||
+        host === '::1' ||
+        host === '0.0.0.0';
+      const isPrivate =
+        /^10\./.test(host) ||
+        /^192\.168\./.test(host) ||
+        /^172\.(1[6-9]|2\d|3[0-1])\./.test(host);
+      // Windows/LAN machine names (e.g. http://Diku:8080) and mDNS (.local).
+      const isLanHostname = !host.includes('.') || host.endsWith('.local');
+      if (isLoopback || isPrivate || isLanHostname) return;
+    } catch {
+      // fall through to allow-list check
+    }
     const allowed = new Set(
       [
         String(process.env.FRONTEND_URL ?? ''),
@@ -176,7 +197,8 @@ export class AuthController {
     }
     return {
       success: true,
-      message: 'If an account exists for this mobile number, an OTP has been sent.',
+      message:
+        'If an account exists for this mobile number, an OTP has been sent.',
     };
   }
 
@@ -193,13 +215,19 @@ export class AuthController {
   }
 
   @Get('health')
-  @ApiOperation({ summary: 'Health check', description: 'Returns server health status' })
+  @ApiOperation({
+    summary: 'Health check',
+    description: 'Returns server health status',
+  })
   health() {
     return this.authService.health();
   }
 
   @Get('database-connection')
-  @ApiOperation({ summary: 'Check database connection', description: 'Tests MongoDB connectivity' })
+  @ApiOperation({
+    summary: 'Check database connection',
+    description: 'Tests MongoDB connectivity',
+  })
   databaseConnection() {
     return this.authService.databaseConnection();
   }
@@ -208,16 +236,23 @@ export class AuthController {
   @UseGuards(ThrottlerGuard)
   @ApiOperation({
     summary: 'Forgot password (legacy email stub)',
-    description: 'Deprecated email-only stub. Use forgot-password with mobile OTP.',
+    description:
+      'Deprecated email-only stub. Use forgot-password with mobile OTP.',
     security: [],
   })
   forgotPasswordLegacy(@Body() dto: { email?: string }) {
     void dto;
-    return { success: true, message: 'If the email exists, a reset link has been sent.' };
+    return {
+      success: true,
+      message: 'If the email exists, a reset link has been sent.',
+    };
   }
 
   @Post('login')
   @UseGuards(ThrottlerGuard)
+  // Override the global 10/min default — short wrong-password loops must not
+  // lock sellers out of the only unauthenticated entry point.
+  @Throttle({ default: { limit: 30, ttl: 60000 } })
   @ApiOperation({
     summary: 'Login',
     description:
@@ -278,7 +313,9 @@ export class AuthController {
     this.assertTrustedOrigin(req);
     let userId = req.user?.id;
     let sessionId = req.user?.sessionId;
-    const bearer = String(authorization ?? '').replace(/^Bearer\s+/i, '').trim();
+    const bearer = String(authorization ?? '')
+      .replace(/^Bearer\s+/i, '')
+      .trim();
     if ((!userId || !sessionId) && bearer) {
       try {
         const decoded = await this.authService.decodeAccessToken(bearer);
@@ -300,7 +337,11 @@ export class AuthController {
   }
 
   @Post('bootstrap-super-admin')
-  @ApiOperation({ summary: 'Bootstrap super admin', description: 'Create the first super admin account. Requires valid setup token in x-setup-token header.' })
+  @ApiOperation({
+    summary: 'Bootstrap super admin',
+    description:
+      'Create the first super admin account. Requires valid setup token in x-setup-token header.',
+  })
   bootstrapSuperAdmin(
     @Headers('x-setup-token') setupToken: string | undefined,
     @Body() dto: BootstrapSuperAdminDto,
@@ -309,19 +350,29 @@ export class AuthController {
   }
 
   @Get('debug-db')
-  @ApiOperation({ summary: 'Debug database', description: 'Returns database statistics. Requires x-setup-token header.' })
+  @ApiOperation({
+    summary: 'Debug database',
+    description: 'Returns database statistics. Requires x-setup-token header.',
+  })
   debugDb(@Headers('x-setup-token') setupToken: string | undefined) {
     return this.authService.debugDb({ setupToken });
   }
 
   @Get('debug-super-admin')
-  @ApiOperation({ summary: 'Debug super admin', description: 'Debug super admin account. Requires x-setup-token header.' })
+  @ApiOperation({
+    summary: 'Debug super admin',
+    description: 'Debug super admin account. Requires x-setup-token header.',
+  })
   debugSuperAdmin(@Headers('x-setup-token') setupToken: string | undefined) {
     return this.authService.debugSuperAdmin({ setupToken });
   }
 
   @Get('debug-identity')
-  @ApiOperation({ summary: 'Debug identity lookup', description: 'Look up user or seller by identifier. Requires x-setup-token header.' })
+  @ApiOperation({
+    summary: 'Debug identity lookup',
+    description:
+      'Look up user or seller by identifier. Requires x-setup-token header.',
+  })
   debugIdentity(
     @Headers('x-setup-token') setupToken: string | undefined,
     @Query('identifier') identifier: string | undefined,
@@ -330,7 +381,11 @@ export class AuthController {
   }
 
   @Post('dev-reset-password')
-  @ApiOperation({ summary: 'Reset password (dev only)', description: 'Reset user or seller password. Requires x-setup-token header. Do not use in production.' })
+  @ApiOperation({
+    summary: 'Reset password (dev only)',
+    description:
+      'Reset user or seller password. Requires x-setup-token header. Do not use in production.',
+  })
   devResetPassword(
     @Headers('x-setup-token') setupToken: string | undefined,
     @Body() dto: DevResetPasswordDto,

@@ -1,4 +1,4 @@
-export const MONGO_IN_BATCH_SIZE = 5000;
+export const MONGO_IN_BATCH_SIZE = 5001;
 
 export function chunkArray<T>(items: T[], size = MONGO_IN_BATCH_SIZE): T[][] {
   if (!items.length) return [];

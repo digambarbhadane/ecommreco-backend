@@ -1,9 +1,11 @@
-import { IsString } from 'class-validator';
+import { IsOptional, IsString } from 'class-validator';
 
 export class DeleteMarketplaceDto {
+  @IsOptional()
   @IsString()
-  gstNumber!: string;
+  gstNumber?: string;
 
+  @IsOptional()
   @IsString()
-  confirmation!: string;
+  confirmation?: string;
 }

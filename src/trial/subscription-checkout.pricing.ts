@@ -59,7 +59,9 @@ export function panRequiresFullMonthBilling(
 
   const trialGst = ctx.trialGstNumber.toUpperCase();
   const trialMarketplaces = new Set(
-    ctx.trialMarketplacePlatformIds.map((id) => String(id).trim()).filter(Boolean),
+    ctx.trialMarketplacePlatformIds
+      .map((id) => String(id).trim())
+      .filter(Boolean),
   );
   if (!trialMarketplaces.size) {
     return true;
@@ -300,9 +302,7 @@ export function resolveSubscriptionCheckoutPricing(input: {
       ),
     );
     if (!marketplaces.length) {
-      throw new Error(
-        `Select at least one marketplace for GST ${gstNumber}.`,
-      );
+      throw new Error(`Select at least one marketplace for GST ${gstNumber}.`);
     }
     gstNumbers.push(gstNumber);
   }

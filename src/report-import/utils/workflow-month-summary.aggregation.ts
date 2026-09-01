@@ -46,14 +46,26 @@ const sgstForSummary = {
 
 export const PAYMENT_AMOUNT_FIELDS = [
   { key: 'finalSettlementAmount', label: 'Final settlement' },
-  { key: 'totalSaleAmountInclShippingGst', label: 'Total sale (incl. shipping & GST)' },
+  {
+    key: 'totalSaleAmountInclShippingGst',
+    label: 'Total sale (incl. shipping & GST)',
+  },
   {
     key: 'totalSaleReturnAmountInclShippingGst',
     label: 'Total sale return (incl. shipping & GST)',
   },
-  { key: 'meeshoCommissionInclGst', label: 'Marketplace commission (incl. GST)' },
-  { key: 'meeshoGoldPlatformFeeInclGst', label: 'Gold platform fee (incl. GST)' },
-  { key: 'meeshoMallPlatformFeeInclGst', label: 'Mall platform fee (incl. GST)' },
+  {
+    key: 'meeshoCommissionInclGst',
+    label: 'Marketplace commission (incl. GST)',
+  },
+  {
+    key: 'meeshoGoldPlatformFeeInclGst',
+    label: 'Gold platform fee (incl. GST)',
+  },
+  {
+    key: 'meeshoMallPlatformFeeInclGst',
+    label: 'Mall platform fee (incl. GST)',
+  },
   { key: 'fixedFeeInclGst', label: 'Fixed fee (incl. GST)' },
   { key: 'warehousingFeeInclGst', label: 'Warehousing fee (incl. GST)' },
   { key: 'shippingChargeInclGst', label: 'Shipping charge (incl. GST)' },
@@ -64,7 +76,10 @@ export const PAYMENT_AMOUNT_FIELDS = [
   { key: 'compensation', label: 'Compensation' },
   { key: 'claims', label: 'Claims' },
   { key: 'recovery', label: 'Recovery' },
-  { key: 'otherSupportServiceChargesExclGst', label: 'Other support charges (excl. GST)' },
+  {
+    key: 'otherSupportServiceChargesExclGst',
+    label: 'Other support charges (excl. GST)',
+  },
   { key: 'waiversExclGst', label: 'Waivers (excl. GST)' },
 ] as const;
 
@@ -380,7 +395,10 @@ export function resolveFlipkartBucket(
 
   return {
     bucket: 'other',
-    label: bestLabel || String(documentType ?? voucherType ?? 'Unknown').trim() || 'Unknown',
+    label:
+      bestLabel ||
+      String(documentType ?? voucherType ?? 'Unknown').trim() ||
+      'Unknown',
   };
 }
 
@@ -401,7 +419,10 @@ export function compareFlipkartVoucherTypes(a: string, b: string): number {
   const rank = (value: string) => {
     const upper = value.trim().toUpperCase();
     if (/RETURN\s*CANCEL/.test(upper)) return 1;
-    if (/^SALE$/.test(upper) || (upper.includes('SALE') && !upper.includes('RETURN'))) {
+    if (
+      /^SALE$/.test(upper) ||
+      (upper.includes('SALE') && !upper.includes('RETURN'))
+    ) {
       return 0;
     }
     if (/^RETURN$/.test(upper) || /\bRTO\b/.test(upper)) return 2;
@@ -424,8 +445,7 @@ export function classifyFlipkartDocumentType(
   const isGrossSale = bucket === 'sale';
   const isReturn = bucket === 'return';
   const isCancellation = bucket === 'cancellation';
-  const isReturnActivity =
-    isReturn || isCancellation || isReturnCancellation;
+  const isReturnActivity = isReturn || isCancellation || isReturnCancellation;
   return {
     isGrossSale,
     isReturnCancellation,
@@ -566,14 +586,28 @@ export function mapFlipkartVoucherTypeSummaryRows(
     .sort((a, b) => compareFlipkartVoucherTypes(a.voucherType, b.voucherType));
 }
 
-export function isFlipkartCreditNoteDocumentType(documentType?: string | null): boolean {
-  const upper = String(documentType ?? '').trim().toUpperCase();
-  return /CREDIT\s*NOTE/.test(upper) || (upper.includes('CREDIT') && !upper.includes('DEBIT'));
+export function isFlipkartCreditNoteDocumentType(
+  documentType?: string | null,
+): boolean {
+  const upper = String(documentType ?? '')
+    .trim()
+    .toUpperCase();
+  return (
+    /CREDIT\s*NOTE/.test(upper) ||
+    (upper.includes('CREDIT') && !upper.includes('DEBIT'))
+  );
 }
 
-export function isFlipkartDebitNoteDocumentType(documentType?: string | null): boolean {
-  const upper = String(documentType ?? '').trim().toUpperCase();
-  return /DEBIT\s*NOTE/.test(upper) || (upper.includes('DEBIT') && !upper.includes('CREDIT'));
+export function isFlipkartDebitNoteDocumentType(
+  documentType?: string | null,
+): boolean {
+  const upper = String(documentType ?? '')
+    .trim()
+    .toUpperCase();
+  return (
+    /DEBIT\s*NOTE/.test(upper) ||
+    (upper.includes('DEBIT') && !upper.includes('CREDIT'))
+  );
 }
 
 export type FlipkartNoteKind = 'credit' | 'debit';
@@ -614,7 +648,10 @@ export function aggregateFlipkartNotesByOrderId(
     invoiceAmount: 0,
   });
 
-  const perOrder = new Map<string, { credit: FlipkartNoteSummaryRow; debit: FlipkartNoteSummaryRow }>();
+  const perOrder = new Map<
+    string,
+    { credit: FlipkartNoteSummaryRow; debit: FlipkartNoteSummaryRow }
+  >();
 
   for (const row of rows) {
     const documentType = String(row.documentType ?? '').trim();
@@ -642,9 +679,18 @@ export function aggregateFlipkartNotesByOrderId(
       target.cgst += flipkartNoteComponentSign(kind, tax.cgst);
       target.sgst += flipkartNoteComponentSign(kind, tax.sgst);
     } else {
-      target.igst += flipkartNoteComponentSign(kind, Number(row.igstAmount ?? 0));
-      target.cgst += flipkartNoteComponentSign(kind, Number(row.cgstAmount ?? 0));
-      target.sgst += flipkartNoteComponentSign(kind, Number(row.sgstAmount ?? 0));
+      target.igst += flipkartNoteComponentSign(
+        kind,
+        Number(row.igstAmount ?? 0),
+      );
+      target.cgst += flipkartNoteComponentSign(
+        kind,
+        Number(row.cgstAmount ?? 0),
+      );
+      target.sgst += flipkartNoteComponentSign(
+        kind,
+        Number(row.sgstAmount ?? 0),
+      );
     }
     perOrder.set(orderId, bucket);
   }
@@ -711,15 +757,18 @@ export function mapFlipkartNoteFacetRows(
     invoiceAmount: 0,
   });
 
-  const toRow = (item?: {
-    orderCount?: number;
-    pcs?: number;
-    invoiceAmount?: number;
-    taxableAmount?: number;
-    igst?: number;
-    cgst?: number;
-    sgst?: number;
-  }, kind?: FlipkartNoteKind): FlipkartNoteSummaryRow => {
+  const toRow = (
+    item?: {
+      orderCount?: number;
+      pcs?: number;
+      invoiceAmount?: number;
+      taxableAmount?: number;
+      igst?: number;
+      cgst?: number;
+      sgst?: number;
+    },
+    kind?: FlipkartNoteKind,
+  ): FlipkartNoteSummaryRow => {
     const row = {
       totalRows: Number(item?.orderCount ?? 0),
       pcs: Number(item?.pcs ?? 0),
@@ -825,7 +874,10 @@ export function buildFlipkartWorkflowMonthSummaryPipeline(
     PAYMENT_AMOUNT_FIELDS.map(({ key }) => [key, sumField(key)]),
   );
 
-  const sumWhen = (condition: Record<string, unknown>, fieldExpr: Record<string, unknown> | number) => ({
+  const sumWhen = (
+    condition: Record<string, unknown>,
+    fieldExpr: Record<string, unknown> | number,
+  ) => ({
     $sum: { $cond: [condition, fieldExpr, 0] },
   });
 
@@ -835,11 +887,15 @@ export function buildFlipkartWorkflowMonthSummaryPipeline(
   const fkSgst = sgstAmt;
 
   const flipkartSummaryTypeUpper = '$flipkartSummaryTypeUpper';
-  const flipkartBucketIs = (bucket: string) => ({ $eq: ['$flipkartBucket', bucket] });
+  const flipkartBucketIs = (bucket: string) => ({
+    $eq: ['$flipkartBucket', bucket],
+  });
   const flipkartIsGrossSale = flipkartBucketIs('sale');
   const flipkartIsReturn = flipkartBucketIs('return');
   const flipkartIsCancellation = flipkartBucketIs('cancellation');
-  const flipkartReturnCancellationMatch = flipkartBucketIs('return_cancellation');
+  const flipkartReturnCancellationMatch = flipkartBucketIs(
+    'return_cancellation',
+  );
   const flipkartIsReturnDeduction = {
     $or: [flipkartIsReturn, flipkartIsCancellation],
   };
@@ -1061,7 +1117,10 @@ export function buildFlipkartWorkflowMonthSummaryPipeline(
                             case: { $eq: ['$$chosenRank', 30] },
                             then: 'cancellation',
                           },
-                          { case: { $eq: ['$$chosenRank', 20] }, then: 'return' },
+                          {
+                            case: { $eq: ['$$chosenRank', 20] },
+                            then: 'return',
+                          },
                           { case: { $eq: ['$$chosenRank', 10] }, then: 'sale' },
                         ],
                         default: 'other',
@@ -1163,69 +1222,132 @@ export function buildFlipkartWorkflowMonthSummaryPipeline(
                 $sum: { $cond: [{ $eq: ['$reportType', 'cashback'] }, 1, 0] },
               },
               flipkartGrossSalesRows: sumWhen(flipkartIsGrossSale, 1),
-              flipkartReturnDeductionRows: sumWhen(flipkartIsReturnDeduction, 1),
+              flipkartReturnDeductionRows: sumWhen(
+                flipkartIsReturnDeduction,
+                1,
+              ),
               flipkartReturnRows: sumWhen(flipkartIsReturn, 1),
               flipkartCancellationRows: sumWhen(flipkartIsCancellation, 1),
-              flipkartReturnCancellationRows: sumWhen(flipkartReturnCancellationMatch, 1),
+              flipkartReturnCancellationRows: sumWhen(
+                flipkartReturnCancellationMatch,
+                1,
+              ),
               flipkartReturnCustomerRows: sumWhen(flipkartIsReturnCustomer, 1),
               flipkartReturnCourierRows: sumWhen(flipkartIsReturnCourier, 1),
               flipkartReturnNaRows: sumWhen(flipkartIsReturnNa, 1),
               flipkartGrossSalesPcs: sumWhen(flipkartIsGrossSale, qty),
-              flipkartReturnDeductionPcs: sumWhen(flipkartIsReturnDeduction, qty),
+              flipkartReturnDeductionPcs: sumWhen(
+                flipkartIsReturnDeduction,
+                qty,
+              ),
               flipkartReturnPcs: sumWhen(flipkartIsReturn, qty),
               flipkartCancellationPcs: sumWhen(flipkartIsCancellation, qty),
-              flipkartReturnCancellationPcs: sumWhen(flipkartReturnCancellationMatch, qty),
+              flipkartReturnCancellationPcs: sumWhen(
+                flipkartReturnCancellationMatch,
+                qty,
+              ),
               flipkartReturnCustomerPcs: sumWhen(flipkartIsReturnCustomer, qty),
               flipkartReturnCourierPcs: sumWhen(flipkartIsReturnCourier, qty),
               flipkartReturnNaPcs: sumWhen(flipkartIsReturnNa, qty),
-              flipkartGrossSalesTaxable: sumWhen(flipkartIsGrossSale, taxableAmt),
-              flipkartReturnDeductionTaxable: sumWhen(flipkartIsReturnDeduction, taxableAmt),
+              flipkartGrossSalesTaxable: sumWhen(
+                flipkartIsGrossSale,
+                taxableAmt,
+              ),
+              flipkartReturnDeductionTaxable: sumWhen(
+                flipkartIsReturnDeduction,
+                taxableAmt,
+              ),
               flipkartReturnTaxable: sumWhen(flipkartIsReturn, taxableAmt),
-              flipkartCancellationTaxable: sumWhen(flipkartIsCancellation, taxableAmt),
+              flipkartCancellationTaxable: sumWhen(
+                flipkartIsCancellation,
+                taxableAmt,
+              ),
               flipkartReturnCancellationTaxable: sumWhen(
                 flipkartReturnCancellationMatch,
                 taxableAmt,
               ),
-              flipkartReturnCustomerTaxable: sumWhen(flipkartIsReturnCustomer, taxableAmt),
-              flipkartReturnCourierTaxable: sumWhen(flipkartIsReturnCourier, taxableAmt),
+              flipkartReturnCustomerTaxable: sumWhen(
+                flipkartIsReturnCustomer,
+                taxableAmt,
+              ),
+              flipkartReturnCourierTaxable: sumWhen(
+                flipkartIsReturnCourier,
+                taxableAmt,
+              ),
               flipkartReturnNaTaxable: sumWhen(flipkartIsReturnNa, taxableAmt),
               flipkartGrossSalesIgst: sumWhen(flipkartIsGrossSale, fkIgst),
-              flipkartReturnDeductionIgst: sumWhen(flipkartIsReturnDeduction, fkIgst),
+              flipkartReturnDeductionIgst: sumWhen(
+                flipkartIsReturnDeduction,
+                fkIgst,
+              ),
               flipkartReturnIgst: sumWhen(flipkartIsReturn, fkIgst),
               flipkartCancellationIgst: sumWhen(flipkartIsCancellation, fkIgst),
               flipkartReturnCancellationIgst: sumWhen(
                 flipkartReturnCancellationMatch,
                 fkIgst,
               ),
-              flipkartReturnCustomerIgst: sumWhen(flipkartIsReturnCustomer, fkIgst),
-              flipkartReturnCourierIgst: sumWhen(flipkartIsReturnCourier, fkIgst),
+              flipkartReturnCustomerIgst: sumWhen(
+                flipkartIsReturnCustomer,
+                fkIgst,
+              ),
+              flipkartReturnCourierIgst: sumWhen(
+                flipkartIsReturnCourier,
+                fkIgst,
+              ),
               flipkartReturnNaIgst: sumWhen(flipkartIsReturnNa, fkIgst),
               flipkartGrossSalesCgst: sumWhen(flipkartIsGrossSale, fkCgst),
-              flipkartReturnDeductionCgst: sumWhen(flipkartIsReturnDeduction, fkCgst),
+              flipkartReturnDeductionCgst: sumWhen(
+                flipkartIsReturnDeduction,
+                fkCgst,
+              ),
               flipkartReturnCgst: sumWhen(flipkartIsReturn, fkCgst),
               flipkartCancellationCgst: sumWhen(flipkartIsCancellation, fkCgst),
               flipkartReturnCancellationCgst: sumWhen(
                 flipkartReturnCancellationMatch,
                 fkCgst,
               ),
-              flipkartReturnCustomerCgst: sumWhen(flipkartIsReturnCustomer, fkCgst),
-              flipkartReturnCourierCgst: sumWhen(flipkartIsReturnCourier, fkCgst),
+              flipkartReturnCustomerCgst: sumWhen(
+                flipkartIsReturnCustomer,
+                fkCgst,
+              ),
+              flipkartReturnCourierCgst: sumWhen(
+                flipkartIsReturnCourier,
+                fkCgst,
+              ),
               flipkartReturnNaCgst: sumWhen(flipkartIsReturnNa, fkCgst),
               flipkartGrossSalesSgst: sumWhen(flipkartIsGrossSale, fkSgst),
-              flipkartReturnDeductionSgst: sumWhen(flipkartIsReturnDeduction, fkSgst),
+              flipkartReturnDeductionSgst: sumWhen(
+                flipkartIsReturnDeduction,
+                fkSgst,
+              ),
               flipkartReturnSgst: sumWhen(flipkartIsReturn, fkSgst),
               flipkartCancellationSgst: sumWhen(flipkartIsCancellation, fkSgst),
               flipkartReturnCancellationSgst: sumWhen(
                 flipkartReturnCancellationMatch,
                 fkSgst,
               ),
-              flipkartReturnCustomerSgst: sumWhen(flipkartIsReturnCustomer, fkSgst),
-              flipkartReturnCourierSgst: sumWhen(flipkartIsReturnCourier, fkSgst),
+              flipkartReturnCustomerSgst: sumWhen(
+                flipkartIsReturnCustomer,
+                fkSgst,
+              ),
+              flipkartReturnCourierSgst: sumWhen(
+                flipkartIsReturnCourier,
+                fkSgst,
+              ),
               flipkartReturnNaSgst: sumWhen(flipkartIsReturnNa, fkSgst),
-              flipkartGrossSalesInvoice: sumWhen(flipkartIsGrossSale, invoiceAmt),
-              flipkartReturnDeductionInvoice: sumWhen(flipkartIsReturnDeduction, invoiceAmt),
+              flipkartGrossSalesInvoice: sumWhen(
+                flipkartIsGrossSale,
+                invoiceAmt,
+              ),
+              flipkartReturnDeductionInvoice: sumWhen(
+                flipkartIsReturnDeduction,
+                invoiceAmt,
+              ),
               flipkartReturnInvoice: sumWhen(flipkartIsReturn, invoiceAmt),
-              flipkartCancellationInvoice: sumWhen(flipkartIsCancellation, invoiceAmt),
+              flipkartCancellationInvoice: sumWhen(
+                flipkartIsCancellation,
+                invoiceAmt,
+              ),
               flipkartReturnCancellationInvoice: sumWhen(
                 flipkartReturnCancellationMatch,
                 invoiceAmt,
@@ -1234,7 +1356,10 @@ export function buildFlipkartWorkflowMonthSummaryPipeline(
                 flipkartIsReturnCustomer,
                 invoiceAmt,
               ),
-              flipkartReturnCourierInvoice: sumWhen(flipkartIsReturnCourier, invoiceAmt),
+              flipkartReturnCourierInvoice: sumWhen(
+                flipkartIsReturnCourier,
+                invoiceAmt,
+              ),
               flipkartReturnNaInvoice: sumWhen(flipkartIsReturnNa, invoiceAmt),
               totalInvoiceAmount: { $sum: invoiceAmt },
               totalTaxableAmount: { $sum: taxableAmt },
@@ -1271,12 +1396,20 @@ export function buildFlipkartWorkflowMonthSummaryPipeline(
               },
               intraStateTaxableAmount: {
                 $sum: {
-                  $cond: [{ $eq: ['$gstTransactionType', 'intra'] }, taxableAmt, 0],
+                  $cond: [
+                    { $eq: ['$gstTransactionType', 'intra'] },
+                    taxableAmt,
+                    0,
+                  ],
                 },
               },
               interStateTaxableAmount: {
                 $sum: {
-                  $cond: [{ $eq: ['$gstTransactionType', 'inter'] }, taxableAmt, 0],
+                  $cond: [
+                    { $eq: ['$gstTransactionType', 'inter'] },
+                    taxableAmt,
+                    0,
+                  ],
                 },
               },
               minInvoiceDate: { $min: '$invoiceDate' },
@@ -1392,14 +1525,19 @@ export function buildMeeshoWorkflowMonthSummaryPipeline(
     PAYMENT_AMOUNT_FIELDS.map(({ key }) => [key, sumField(key)]),
   );
 
-  const sumWhen = (flag: string, fieldExpr: Record<string, unknown> | number) => ({
+  const sumWhen = (
+    flag: string,
+    fieldExpr: Record<string, unknown> | number,
+  ) => ({
     $sum: { $cond: [{ $eq: [`$${flag}`, true] }, fieldExpr, 0] },
   });
 
   /** TCS Sales Return documents only — matches Excel pivot on the return file. */
   const isMeeshoReturnRow = { $eq: ['$meeshoIsGrossSale', false] };
 
-  const sumWhenMeeshoReturnRow = (fieldExpr: Record<string, unknown> | number) => ({
+  const sumWhenMeeshoReturnRow = (
+    fieldExpr: Record<string, unknown> | number,
+  ) => ({
     $sum: { $cond: [isMeeshoReturnRow, fieldExpr, 0] },
   });
 
@@ -1410,10 +1548,7 @@ export function buildMeeshoWorkflowMonthSummaryPipeline(
     $sum: {
       $cond: [
         {
-          $and: [
-            isMeeshoReturnRow,
-            { $eq: ['$meeshoReturnSubType', subType] },
-          ],
+          $and: [isMeeshoReturnRow, { $eq: ['$meeshoReturnSubType', subType] }],
         },
         fieldExpr,
         0,
@@ -1438,65 +1573,100 @@ export function buildMeeshoWorkflowMonthSummaryPipeline(
               },
               meeshoGrossSalesRows: sumWhen('meeshoIsGrossSale', 1),
               meeshoTcsReturnRows: sumWhenMeeshoReturnRow(1),
-              meeshoReturnCancellationRows: sumWhenTcsReturnSubType('cancellation', 1),
+              meeshoReturnCancellationRows: sumWhenTcsReturnSubType(
+                'cancellation',
+                1,
+              ),
               meeshoReturnRtoRows: sumWhenTcsReturnSubType('rto', 1),
-              meeshoReturnCustomerRows: sumWhenTcsReturnSubType('customer_return', 1),
+              meeshoReturnCustomerRows: sumWhenTcsReturnSubType(
+                'customer_return',
+                1,
+              ),
               meeshoReturnNaRows: sumWhenTcsReturnSubType('na', 1),
               meeshoGrossSalesPcs: sumWhen('meeshoIsGrossSale', qty),
-              meeshoTcsReturnPcs: sumWhenMeeshoReturnRow(meeshoReturnQtyForSummary),
+              meeshoTcsReturnPcs: sumWhenMeeshoReturnRow(
+                meeshoReturnQtyForSummary,
+              ),
               meeshoReturnCancellationPcs: sumWhenTcsReturnSubType(
                 'cancellation',
                 meeshoReturnQtyForSummary,
               ),
-              meeshoReturnRtoPcs: sumWhenTcsReturnSubType('rto', meeshoReturnQtyForSummary),
+              meeshoReturnRtoPcs: sumWhenTcsReturnSubType(
+                'rto',
+                meeshoReturnQtyForSummary,
+              ),
               meeshoReturnCustomerPcs: sumWhenTcsReturnSubType(
                 'customer_return',
                 meeshoReturnQtyForSummary,
               ),
-              meeshoReturnNaPcs: sumWhenTcsReturnSubType('na', meeshoReturnQtyForSummary),
+              meeshoReturnNaPcs: sumWhenTcsReturnSubType(
+                'na',
+                meeshoReturnQtyForSummary,
+              ),
               meeshoGrossSalesTaxable: sumWhen('meeshoIsGrossSale', taxableAmt),
               meeshoTcsReturnTaxable: sumWhenMeeshoReturnRow(taxableAmt),
               meeshoReturnCancellationTaxable: sumWhenTcsReturnSubType(
                 'cancellation',
                 taxableAmt,
               ),
-              meeshoReturnRtoTaxable: sumWhenTcsReturnSubType('rto', taxableAmt),
+              meeshoReturnRtoTaxable: sumWhenTcsReturnSubType(
+                'rto',
+                taxableAmt,
+              ),
               meeshoReturnCustomerTaxable: sumWhenTcsReturnSubType(
                 'customer_return',
                 taxableAmt,
               ),
               meeshoReturnNaTaxable: sumWhenTcsReturnSubType('na', taxableAmt),
-              meeshoGrossSalesIgst: sumWhen('meeshoIsGrossSale', igstForSummary),
+              meeshoGrossSalesIgst: sumWhen(
+                'meeshoIsGrossSale',
+                igstForSummary,
+              ),
               meeshoTcsReturnIgst: sumWhenMeeshoReturnRow(igstForSummary),
               meeshoReturnCancellationIgst: sumWhenTcsReturnSubType(
                 'cancellation',
                 igstForSummary,
               ),
-              meeshoReturnRtoIgst: sumWhenTcsReturnSubType('rto', igstForSummary),
+              meeshoReturnRtoIgst: sumWhenTcsReturnSubType(
+                'rto',
+                igstForSummary,
+              ),
               meeshoReturnCustomerIgst: sumWhenTcsReturnSubType(
                 'customer_return',
                 igstForSummary,
               ),
               meeshoReturnNaIgst: sumWhenTcsReturnSubType('na', igstForSummary),
-              meeshoGrossSalesCgst: sumWhen('meeshoIsGrossSale', cgstForSummary),
+              meeshoGrossSalesCgst: sumWhen(
+                'meeshoIsGrossSale',
+                cgstForSummary,
+              ),
               meeshoTcsReturnCgst: sumWhenMeeshoReturnRow(cgstForSummary),
               meeshoReturnCancellationCgst: sumWhenTcsReturnSubType(
                 'cancellation',
                 cgstForSummary,
               ),
-              meeshoReturnRtoCgst: sumWhenTcsReturnSubType('rto', cgstForSummary),
+              meeshoReturnRtoCgst: sumWhenTcsReturnSubType(
+                'rto',
+                cgstForSummary,
+              ),
               meeshoReturnCustomerCgst: sumWhenTcsReturnSubType(
                 'customer_return',
                 cgstForSummary,
               ),
               meeshoReturnNaCgst: sumWhenTcsReturnSubType('na', cgstForSummary),
-              meeshoGrossSalesSgst: sumWhen('meeshoIsGrossSale', sgstForSummary),
+              meeshoGrossSalesSgst: sumWhen(
+                'meeshoIsGrossSale',
+                sgstForSummary,
+              ),
               meeshoTcsReturnSgst: sumWhenMeeshoReturnRow(sgstForSummary),
               meeshoReturnCancellationSgst: sumWhenTcsReturnSubType(
                 'cancellation',
                 sgstForSummary,
               ),
-              meeshoReturnRtoSgst: sumWhenTcsReturnSubType('rto', sgstForSummary),
+              meeshoReturnRtoSgst: sumWhenTcsReturnSubType(
+                'rto',
+                sgstForSummary,
+              ),
               meeshoReturnCustomerSgst: sumWhenTcsReturnSubType(
                 'customer_return',
                 sgstForSummary,
@@ -1508,7 +1678,10 @@ export function buildMeeshoWorkflowMonthSummaryPipeline(
                 'cancellation',
                 invoiceAmt,
               ),
-              meeshoReturnRtoInvoice: sumWhenTcsReturnSubType('rto', invoiceAmt),
+              meeshoReturnRtoInvoice: sumWhenTcsReturnSubType(
+                'rto',
+                invoiceAmt,
+              ),
               meeshoReturnCustomerInvoice: sumWhenTcsReturnSubType(
                 'customer_return',
                 invoiceAmt,
@@ -1549,12 +1722,20 @@ export function buildMeeshoWorkflowMonthSummaryPipeline(
               },
               intraStateTaxableAmount: {
                 $sum: {
-                  $cond: [{ $eq: ['$gstTransactionType', 'intra'] }, taxableAmt, 0],
+                  $cond: [
+                    { $eq: ['$gstTransactionType', 'intra'] },
+                    taxableAmt,
+                    0,
+                  ],
                 },
               },
               interStateTaxableAmount: {
                 $sum: {
-                  $cond: [{ $eq: ['$gstTransactionType', 'inter'] }, taxableAmt, 0],
+                  $cond: [
+                    { $eq: ['$gstTransactionType', 'inter'] },
+                    taxableAmt,
+                    0,
+                  ],
                 },
               },
               minInvoiceDate: { $min: '$invoiceDate' },
@@ -1706,31 +1887,46 @@ export function buildAmazonWorkflowMonthSummaryPipeline(
               amazonGrossSalesTaxable: sumWhen(isAmazonShipment, taxableAmt),
               amazonShipmentTaxable: sumWhen(isAmazonShipment, taxableAmt),
               amazonReturnTotalTaxable: sumWhen(isAmazonReturnRow, absTaxable),
-              amazonCustomerReturnTaxable: sumWhen(isAmazonCustomerReturn, absTaxable),
+              amazonCustomerReturnTaxable: sumWhen(
+                isAmazonCustomerReturn,
+                absTaxable,
+              ),
               amazonRtoTaxable: sumWhen(isAmazonRto, absTaxable),
               amazonNaTaxable: sumWhen(isAmazonNaReturn, absTaxable),
               amazonGrossSalesIgst: sumWhen(isAmazonShipment, igstForSummary),
               amazonShipmentIgst: sumWhen(isAmazonShipment, igstForSummary),
               amazonReturnTotalIgst: sumWhen(isAmazonReturnRow, absIgst),
-              amazonCustomerReturnIgst: sumWhen(isAmazonCustomerReturn, absIgst),
+              amazonCustomerReturnIgst: sumWhen(
+                isAmazonCustomerReturn,
+                absIgst,
+              ),
               amazonRtoIgst: sumWhen(isAmazonRto, absIgst),
               amazonNaIgst: sumWhen(isAmazonNaReturn, absIgst),
               amazonGrossSalesCgst: sumWhen(isAmazonShipment, cgstForSummary),
               amazonShipmentCgst: sumWhen(isAmazonShipment, cgstForSummary),
               amazonReturnTotalCgst: sumWhen(isAmazonReturnRow, absCgst),
-              amazonCustomerReturnCgst: sumWhen(isAmazonCustomerReturn, absCgst),
+              amazonCustomerReturnCgst: sumWhen(
+                isAmazonCustomerReturn,
+                absCgst,
+              ),
               amazonRtoCgst: sumWhen(isAmazonRto, absCgst),
               amazonNaCgst: sumWhen(isAmazonNaReturn, absCgst),
               amazonGrossSalesSgst: sumWhen(isAmazonShipment, sgstForSummary),
               amazonShipmentSgst: sumWhen(isAmazonShipment, sgstForSummary),
               amazonReturnTotalSgst: sumWhen(isAmazonReturnRow, absSgst),
-              amazonCustomerReturnSgst: sumWhen(isAmazonCustomerReturn, absSgst),
+              amazonCustomerReturnSgst: sumWhen(
+                isAmazonCustomerReturn,
+                absSgst,
+              ),
               amazonRtoSgst: sumWhen(isAmazonRto, absSgst),
               amazonNaSgst: sumWhen(isAmazonNaReturn, absSgst),
               amazonGrossSalesInvoice: sumWhen(isAmazonShipment, invoiceAmt),
               amazonShipmentInvoice: sumWhen(isAmazonShipment, invoiceAmt),
               amazonReturnTotalInvoice: sumWhen(isAmazonReturnRow, absInvoice),
-              amazonCustomerReturnInvoice: sumWhen(isAmazonCustomerReturn, absInvoice),
+              amazonCustomerReturnInvoice: sumWhen(
+                isAmazonCustomerReturn,
+                absInvoice,
+              ),
               amazonRtoInvoice: sumWhen(isAmazonRto, absInvoice),
               amazonNaInvoice: sumWhen(isAmazonNaReturn, absInvoice),
               salesDocRows: sumWhen(isAmazonShipment, 1),
@@ -1784,12 +1980,20 @@ export function buildAmazonWorkflowMonthSummaryPipeline(
               },
               intraStateTaxableAmount: {
                 $sum: {
-                  $cond: [{ $eq: ['$gstTransactionType', 'intra'] }, taxableAmt, 0],
+                  $cond: [
+                    { $eq: ['$gstTransactionType', 'intra'] },
+                    taxableAmt,
+                    0,
+                  ],
                 },
               },
               interStateTaxableAmount: {
                 $sum: {
-                  $cond: [{ $eq: ['$gstTransactionType', 'inter'] }, taxableAmt, 0],
+                  $cond: [
+                    { $eq: ['$gstTransactionType', 'inter'] },
+                    taxableAmt,
+                    0,
+                  ],
                 },
               },
               minInvoiceDate: { $min: '$invoiceDate' },
@@ -1838,10 +2042,18 @@ export function classifyMyntraReturnSubType(
   documentType?: string | null,
   typeOfReturn?: string | null,
 ): MyntraReturnSubType | null {
-  const doc = String(documentType ?? '').trim().toUpperCase();
-  const ret = String(typeOfReturn ?? '').trim().toUpperCase();
+  const doc = String(documentType ?? '')
+    .trim()
+    .toUpperCase();
+  const ret = String(typeOfReturn ?? '')
+    .trim()
+    .toUpperCase();
   if (doc === 'SALE' || (!doc && !ret)) return null;
-  if (doc === 'RTO RETURN' || ret === 'RTO RETURN' || /\bRTO\b/.test(`${doc} ${ret}`)) {
+  if (
+    doc === 'RTO RETURN' ||
+    ret === 'RTO RETURN' ||
+    /\bRTO\b/.test(`${doc} ${ret}`)
+  ) {
     return 'rto';
   }
   if (
@@ -1861,7 +2073,11 @@ export function isMyntraSaleRow(
   documentType?: string | null,
   _typeOfReturn?: string | null,
 ): boolean {
-  return String(documentType ?? '').trim().toUpperCase() === 'SALE';
+  return (
+    String(documentType ?? '')
+      .trim()
+      .toUpperCase() === 'SALE'
+  );
 }
 
 export type MyntraMonthTotalsRow = WorkflowMonthTotalsRow & {
@@ -2030,7 +2246,9 @@ export function buildMyntraWorkflowMonthSummaryPipeline(
           },
           in: {
             $cond: [
-              { $regexMatch: { input: '$$raw', regex: '^\\d{4}-\\d{2}-\\d{2}' } },
+              {
+                $regexMatch: { input: '$$raw', regex: '^\\d{4}-\\d{2}-\\d{2}' },
+              },
               { $substr: ['$$raw', 0, 7] },
               {
                 $cond: [
@@ -2090,19 +2308,13 @@ export function buildMyntraWorkflowMonthSummaryPipeline(
               {
                 case: { $eq: ['$documentType', 'RTO Return'] },
                 then: {
-                  $ifNull: [
-                    '$orderCancelDate',
-                    '$order_cancel_date',
-                  ],
+                  $ifNull: ['$orderCancelDate', '$order_cancel_date'],
                 },
               },
               {
                 case: { $eq: ['$documentType', 'Customer Return'] },
                 then: {
-                  $ifNull: [
-                    '$frRefundedDate',
-                    '$fr_refunded_date',
-                  ],
+                  $ifNull: ['$frRefundedDate', '$fr_refunded_date'],
                 },
               },
             ],
@@ -2133,47 +2345,86 @@ export function buildMyntraWorkflowMonthSummaryPipeline(
               myntraGrossSalesRows: sumWhenMyntra(isMyntraSale, 1),
               myntraReturnTotalRows: sumWhenMyntra(isMyntraAnyReturn, 1),
               myntraReturnRtoRows: sumWhenMyntra(isMyntraRto, 1),
-              myntraReturnCustomerRows: sumWhenMyntra(isMyntraCustomerReturn, 1),
+              myntraReturnCustomerRows: sumWhenMyntra(
+                isMyntraCustomerReturn,
+                1,
+              ),
               myntraReturnNaRows: sumWhenMyntra(isMyntraNaReturn, 1),
               myntraGrossSalesPcs: sumWhenMyntra(isMyntraSale, qty),
               myntraReturnTotalPcs: sumWhenMyntra(isMyntraAnyReturn, absQty),
               myntraReturnRtoPcs: sumWhenMyntra(isMyntraRto, absQty),
-              myntraReturnCustomerPcs: sumWhenMyntra(isMyntraCustomerReturn, absQty),
+              myntraReturnCustomerPcs: sumWhenMyntra(
+                isMyntraCustomerReturn,
+                absQty,
+              ),
               myntraReturnNaPcs: sumWhenMyntra(isMyntraNaReturn, absQty),
               myntraGrossSalesTaxable: sumWhenMyntra(isMyntraSale, taxableAmt),
-              myntraReturnTotalTaxable: sumWhenMyntra(isMyntraAnyReturn, absTaxable),
+              myntraReturnTotalTaxable: sumWhenMyntra(
+                isMyntraAnyReturn,
+                absTaxable,
+              ),
               myntraReturnRtoTaxable: sumWhenMyntra(isMyntraRto, absTaxable),
-              myntraReturnCustomerTaxable: sumWhenMyntra(isMyntraCustomerReturn, absTaxable),
-              myntraReturnNaTaxable: sumWhenMyntra(isMyntraNaReturn, absTaxable),
+              myntraReturnCustomerTaxable: sumWhenMyntra(
+                isMyntraCustomerReturn,
+                absTaxable,
+              ),
+              myntraReturnNaTaxable: sumWhenMyntra(
+                isMyntraNaReturn,
+                absTaxable,
+              ),
               myntraGrossSalesIgst: sumWhenMyntra(isMyntraSale, igstForSummary),
               myntraReturnTotalIgst: sumWhenMyntra(isMyntraAnyReturn, absIgst),
               myntraReturnRtoIgst: sumWhenMyntra(isMyntraRto, absIgst),
-              myntraReturnCustomerIgst: sumWhenMyntra(isMyntraCustomerReturn, absIgst),
+              myntraReturnCustomerIgst: sumWhenMyntra(
+                isMyntraCustomerReturn,
+                absIgst,
+              ),
               myntraReturnNaIgst: sumWhenMyntra(isMyntraNaReturn, absIgst),
               myntraGrossSalesCgst: sumWhenMyntra(isMyntraSale, cgstForSummary),
               myntraReturnTotalCgst: sumWhenMyntra(isMyntraAnyReturn, absCgst),
               myntraReturnRtoCgst: sumWhenMyntra(isMyntraRto, absCgst),
-              myntraReturnCustomerCgst: sumWhenMyntra(isMyntraCustomerReturn, absCgst),
+              myntraReturnCustomerCgst: sumWhenMyntra(
+                isMyntraCustomerReturn,
+                absCgst,
+              ),
               myntraReturnNaCgst: sumWhenMyntra(isMyntraNaReturn, absCgst),
               myntraGrossSalesSgst: sumWhenMyntra(isMyntraSale, sgstForSummary),
               myntraReturnTotalSgst: sumWhenMyntra(isMyntraAnyReturn, absSgst),
               myntraReturnRtoSgst: sumWhenMyntra(isMyntraRto, absSgst),
-              myntraReturnCustomerSgst: sumWhenMyntra(isMyntraCustomerReturn, absSgst),
+              myntraReturnCustomerSgst: sumWhenMyntra(
+                isMyntraCustomerReturn,
+                absSgst,
+              ),
               myntraReturnNaSgst: sumWhenMyntra(isMyntraNaReturn, absSgst),
               myntraGrossSalesInvoice: sumWhenMyntra(isMyntraSale, invoiceAmt),
-              myntraReturnTotalInvoice: sumWhenMyntra(isMyntraAnyReturn, absInvoice),
+              myntraReturnTotalInvoice: sumWhenMyntra(
+                isMyntraAnyReturn,
+                absInvoice,
+              ),
               myntraReturnRtoInvoice: sumWhenMyntra(isMyntraRto, absInvoice),
-              myntraReturnCustomerInvoice: sumWhenMyntra(isMyntraCustomerReturn, absInvoice),
-              myntraReturnNaInvoice: sumWhenMyntra(isMyntraNaReturn, absInvoice),
+              myntraReturnCustomerInvoice: sumWhenMyntra(
+                isMyntraCustomerReturn,
+                absInvoice,
+              ),
+              myntraReturnNaInvoice: sumWhenMyntra(
+                isMyntraNaReturn,
+                absInvoice,
+              ),
               salesDocRows: sumWhenMyntra(isMyntraSale, 1),
               returnsDocRows: sumWhenMyntra(isMyntraAnyReturn, 1),
               totalInvoiceAmount: { $sum: invoiceAmt },
               salesInvoiceAmount: sumWhenMyntra(isMyntraSale, invoiceAmt),
-              returnsInvoiceAmount: sumWhenMyntra(isMyntraAnyReturn, absInvoice),
+              returnsInvoiceAmount: sumWhenMyntra(
+                isMyntraAnyReturn,
+                absInvoice,
+              ),
               salesPcs: sumWhenMyntra(isMyntraSale, qty),
               returnsPcs: sumWhenMyntra(isMyntraAnyReturn, absQty),
               salesTaxableAmount: sumWhenMyntra(isMyntraSale, taxableAmt),
-              returnsTaxableAmount: sumWhenMyntra(isMyntraAnyReturn, absTaxable),
+              returnsTaxableAmount: sumWhenMyntra(
+                isMyntraAnyReturn,
+                absTaxable,
+              ),
               salesIgst: sumWhenMyntra(isMyntraSale, igstForSummary),
               returnsIgst: sumWhenMyntra(isMyntraAnyReturn, absIgst),
               salesCgst: sumWhenMyntra(isMyntraSale, cgstForSummary),

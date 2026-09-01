@@ -23,6 +23,9 @@ type RequestActor = {
 export class SkuMasterSyncService {
   private readonly logger = new Logger(SkuMasterSyncService.name);
   private readonly marketplaceSlugCache = new Map<string, string>();
+  /** Avoid re-aggregating imports on every pagination/search request. */
+  private readonly lastSyncAtByKey = new Map<string, number>();
+  private readonly syncTtlMs = 60_000;
 
   constructor(
     @InjectModel(ImportUpload.name)
@@ -43,13 +46,55 @@ export class SkuMasterSyncService {
     });
   }
 
+  /**
+   * Backfill UNMAPPED SKU master rows from import_rows for one GST or all
+   * seller GSTs (when gstId is omitted). Safe to re-run — upserts only insert
+   * missing marketplace SKUs.
+   */
+  async syncForScope(gstId: string | undefined, actor: RequestActor) {
+    const requestedGstId = String(gstId ?? '').trim();
+    const cacheKey = `${String(actor.id ?? actor.email ?? '')}:${requestedGstId || 'ALL'}`;
+    const lastAt = this.lastSyncAtByKey.get(cacheKey) ?? 0;
+    if (Date.now() - lastAt < this.syncTtlMs) {
+      return { inserted: 0, skipped: 0 };
+    }
+
+    let result: { inserted: number; skipped: number };
+    if (requestedGstId) {
+      result = await this.syncForGst(requestedGstId, actor);
+    } else {
+      const gstIds = await this.skuMasterService.listAccessibleGstIds(actor);
+      let inserted = 0;
+      let skipped = 0;
+      for (const id of gstIds) {
+        const one = await this.syncForGst(id, actor);
+        inserted += one.inserted;
+        skipped += one.skipped;
+      }
+      result = { inserted, skipped };
+    }
+
+    this.lastSyncAtByKey.set(cacheKey, Date.now());
+    return result;
+  }
+
   async syncForGst(gstId: string, actor: RequestActor) {
-    const { gst, sellerScope } = await this.skuMasterService.validateGstForSeller(
-      gstId,
-      actor,
-    );
-    const gstin = String(gst.gstNumber ?? '').trim().toUpperCase();
+    const { gst, sellerScope } =
+      await this.skuMasterService.validateGstForSeller(gstId, actor);
+    const gstin = String(gst.gstNumber ?? '')
+      .trim()
+      .toUpperCase();
     if (!gstin) return { inserted: 0, skipped: 0 };
+
+    const gstinCandidates = Array.from(
+      new Set(
+        [
+          gstin,
+          gstin.toLowerCase(),
+          String(gst.gstNumber ?? '').trim(),
+        ].filter(Boolean),
+      ),
+    );
 
     const skuGroups = await this.rowModel
       .aggregate<{
@@ -60,7 +105,7 @@ export class SkuMasterSyncService {
         {
           $match: {
             sellerId: { $in: sellerScope.aliases },
-            gstin,
+            gstin: { $in: gstinCandidates },
             skuID: { $exists: true, $nin: [null, ''] },
           },
         },
@@ -82,6 +127,7 @@ export class SkuMasterSyncService {
           },
         },
       ])
+      .allowDiskUse(true)
       .exec();
 
     if (!skuGroups.length) {
@@ -135,7 +181,7 @@ export class SkuMasterSyncService {
 
     if (inserted > 0) {
       this.logger.log(
-        `GST SKU sync inserted=${inserted} skipped=${skipped} gst=${gstin} seller=${sellerScope.canonicalSellerId}`,
+        `GST SKU sync inserted=${inserted} skipped=${skipped} gst=${gstin} seller=${sellerScope.canonicalSellerId} marketplaces=${[...groupedByMarketplace.keys()].join(',')}`,
       );
     }
 
@@ -234,7 +280,9 @@ export class SkuMasterSyncService {
       .findById(marketplace.platformMarketplaceId)
       .lean()
       .exec();
-    const slug = String(platform?.slug ?? '').trim().toLowerCase();
+    const slug = String(platform?.slug ?? '')
+      .trim()
+      .toLowerCase();
     if (slug) this.marketplaceSlugCache.set(trimmed, slug);
     return slug;
   }

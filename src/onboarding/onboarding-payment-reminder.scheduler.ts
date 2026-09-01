@@ -34,7 +34,9 @@ export class OnboardingPaymentReminderScheduler {
 
   @Cron('0 10 * * *')
   async sendAbandonedPaymentReminders() {
-    if (!isOnboardingV2Enabled(this.config.get<string>('ONBOARDING_V2_ENABLED'))) {
+    if (
+      !isOnboardingV2Enabled(this.config.get<string>('ONBOARDING_V2_ENABLED'))
+    ) {
       return;
     }
 
@@ -66,12 +68,15 @@ export class OnboardingPaymentReminderScheduler {
       .exec();
 
     for (const lead of leads) {
-      const anchor = lead.lastPaymentAttemptAt ?? (lead as { createdAt?: Date }).createdAt;
+      const anchor =
+        lead.lastPaymentAttemptAt ?? (lead as { createdAt?: Date }).createdAt;
       if (!anchor || anchor.getTime() > cutoff.getTime()) {
         continue;
       }
 
-      const email = String(lead.email ?? '').trim().toLowerCase();
+      const email = String(lead.email ?? '')
+        .trim()
+        .toLowerCase();
       if (!email) continue;
 
       const user = lead.userId
@@ -130,7 +135,8 @@ export class OnboardingPaymentReminderScheduler {
         { _id: lead._id },
         {
           $set: {
-            [`metadata.onboardingReminders.${reminderKey}`]: new Date().toISOString(),
+            [`metadata.onboardingReminders.${reminderKey}`]:
+              new Date().toISOString(),
           },
         },
       );

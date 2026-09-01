@@ -180,10 +180,7 @@ export const filterMyntraReportsBySelectedGstin = (
         report.reportLabel === 'GSTR Report RTO'
           ? detectMyntraGstrReturnFileKind(report.headers)
           : 'unknown';
-      if (
-        report.reportLabel === 'GSTR Report RT' &&
-        detectedKind === 'rto'
-      ) {
+      if (report.reportLabel === 'GSTR Report RT' && detectedKind === 'rto') {
         structuralProblems.push(
           'this file looks like a GSTR RTO report — upload it under GSTR Report RTO, not GSTR Report RT',
         );

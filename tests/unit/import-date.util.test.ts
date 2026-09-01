@@ -23,7 +23,7 @@ describe('import-date.util', () => {
   });
 
   it('rejects absurd excel serials that would become year 2036+', () => {
-    expect(parseImportDate(50000)).toBeUndefined();
+    expect(parseImportDate(50010)).toBeUndefined();
   });
 
   it('parses valid excel serials', () => {

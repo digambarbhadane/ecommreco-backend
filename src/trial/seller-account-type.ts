@@ -106,10 +106,17 @@ export function formatPlanDurationLabel(
 ): string {
   if (isTrial) {
     const { startsAt, endsAt } = getPlanValidityPeriod(seller, true);
-    if (startsAt && endsAt && !Number.isNaN(startsAt.getTime()) && !Number.isNaN(endsAt.getTime())) {
+    if (
+      startsAt &&
+      endsAt &&
+      !Number.isNaN(startsAt.getTime()) &&
+      !Number.isNaN(endsAt.getTime())
+    ) {
       const days = Math.max(
         1,
-        Math.ceil((endsAt.getTime() - startsAt.getTime()) / (24 * 60 * 60 * 1000)),
+        Math.ceil(
+          (endsAt.getTime() - startsAt.getTime()) / (24 * 60 * 60 * 1000),
+        ),
       );
       return `${days} day trial`;
     }
@@ -130,8 +137,15 @@ export function formatPlanDurationLabel(
   }
 
   const { startsAt, endsAt } = getPlanValidityPeriod(seller, false);
-  if (startsAt && endsAt && !Number.isNaN(startsAt.getTime()) && !Number.isNaN(endsAt.getTime())) {
-    const days = Math.ceil((endsAt.getTime() - startsAt.getTime()) / (24 * 60 * 60 * 1000));
+  if (
+    startsAt &&
+    endsAt &&
+    !Number.isNaN(startsAt.getTime()) &&
+    !Number.isNaN(endsAt.getTime())
+  ) {
+    const days = Math.ceil(
+      (endsAt.getTime() - startsAt.getTime()) / (24 * 60 * 60 * 1000),
+    );
     if (days > 0 && days < 32) {
       return `${days} day(s)`;
     }
@@ -142,15 +156,15 @@ export function formatPlanDurationLabel(
   return '—';
 }
 
-export function resolveSubscriptionDisplayId(seller: SellerAccountFields): string | undefined {
-  return (
-    seller.subscriptionId ||
-    seller.trialSubscriptionId ||
-    undefined
-  );
+export function resolveSubscriptionDisplayId(
+  seller: SellerAccountFields,
+): string | undefined {
+  return seller.subscriptionId || seller.trialSubscriptionId || undefined;
 }
 
-export function resolveAccountCreatedAt(seller: SellerAccountFields): Date | undefined {
+export function resolveAccountCreatedAt(
+  seller: SellerAccountFields,
+): Date | undefined {
   const value = seller.accountCreatedAt ?? seller.createdAt;
   if (!value) return undefined;
   const parsed = new Date(value);

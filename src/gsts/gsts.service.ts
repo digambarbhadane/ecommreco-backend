@@ -34,7 +34,10 @@ import {
   ImportRowDocument,
 } from '../report-import/schemas/import-row.schema';
 import { rethrowMongoWriteError } from '../common/utils/mongo-errors';
-import { buildGstIdFilter, buildGstIdsFilter } from '../common/utils/seller-id.util';
+import {
+  buildGstIdFilter,
+  buildGstIdsFilter,
+} from '../common/utils/seller-id.util';
 import {
   cascadeDeleteAcrossCollections,
   type MarketplaceScopeToken,
@@ -175,9 +178,7 @@ export class GstsService {
     const isFirstGstForSeller = sellerGsts.length === 0;
     const isExistingPanForSeller = sellerPanSet.has(extractedPan);
 
-    const lockedPan = String(
-      seller.lockedPanNumber ?? seller.panNumber ?? '',
-    )
+    const lockedPan = String(seller.lockedPanNumber ?? seller.panNumber ?? '')
       .trim()
       .toUpperCase();
     const purchasedPanSlots = Math.max(
@@ -237,8 +238,7 @@ export class GstsService {
     const businessName =
       verification.legalName?.trim() || verification.tradeName?.trim() || '';
     const tradeName = verification.tradeName?.trim() || businessName;
-    const state =
-      this.extractStateFromVerification(verification) || undefined;
+    const state = this.extractStateFromVerification(verification) || undefined;
     if (panIndex === -1) {
       panProfiles.push({
         panNumber: extractedPan,
@@ -262,7 +262,9 @@ export class GstsService {
       state,
       status: 'active',
       taxpayerType: verification.taxpayerType ?? undefined,
-      registrationDate: this.formatRegistrationDate(verification.registrationDate),
+      registrationDate: this.formatRegistrationDate(
+        verification.registrationDate,
+      ),
       address: verification.principalAddress ?? undefined,
       verifiedAt,
       verificationResponse: verification.rawResponse ?? undefined,
@@ -393,10 +395,7 @@ export class GstsService {
     if (sellerId) {
       resolvedSeller = await this.findSellerByIdentifier(sellerId);
       if (resolvedSeller) {
-        if (
-          resolvedSeller.isTrial &&
-          resolvedSeller.trialStatus === 'active'
-        ) {
+        if (resolvedSeller.isTrial && resolvedSeller.trialStatus === 'active') {
           await this.trialService.ensureTrialGstProvisioned(resolvedSeller);
         }
         filter.sellerId = {
@@ -465,9 +464,7 @@ export class GstsService {
   }
 
   private async buildGstSlotSummary(
-    sellerForFilter: Awaited<
-      ReturnType<GstsService['findSellerByIdentifier']>
-    >,
+    sellerForFilter: Awaited<ReturnType<GstsService['findSellerByIdentifier']>>,
     sellerId: string,
   ): Promise<
     | {
@@ -539,10 +536,18 @@ export class GstsService {
   }
 
   async getOversight() {
-    const gsts = await this.gstModel.find().sort({ createdAt: -1 }).lean().exec();
-    const sellerIds = Array.from(new Set(gsts.map((gst) => String(gst.sellerId ?? '')).filter(Boolean)));
+    const gsts = await this.gstModel
+      .find()
+      .sort({ createdAt: -1 })
+      .lean()
+      .exec();
+    const sellerIds = Array.from(
+      new Set(gsts.map((gst) => String(gst.sellerId ?? '')).filter(Boolean)),
+    );
 
-    const sellerObjectIds = sellerIds.filter((id) => Types.ObjectId.isValid(id));
+    const sellerObjectIds = sellerIds.filter((id) =>
+      Types.ObjectId.isValid(id),
+    );
     const sellers = await this.sellerModel
       .find({
         $or: [
@@ -567,7 +572,10 @@ export class GstsService {
       .lean()
       .exec();
 
-    const marketplacesByGstId = new Map<string, Array<{ id: string; name: string }>>();
+    const marketplacesByGstId = new Map<
+      string,
+      Array<{ id: string; name: string }>
+    >();
     for (const mp of marketplaces) {
       const gstId = String(mp.gstId ?? '');
       if (!gstId) continue;
@@ -575,14 +583,17 @@ export class GstsService {
         | { _id?: unknown; name?: string; slug?: string }
         | undefined;
       const name =
-        String(platform?.name ?? platform?.slug ?? mp.storeName ?? 'Marketplace').trim() ||
-        'Marketplace';
+        String(
+          platform?.name ?? platform?.slug ?? mp.storeName ?? 'Marketplace',
+        ).trim() || 'Marketplace';
       const list = marketplacesByGstId.get(gstId) ?? [];
       list.push({ id: String(mp._id ?? ''), name });
       marketplacesByGstId.set(gstId, list);
     }
 
-    const gstNumbers = gsts.map((gst) => String(gst.gstNumber ?? '').toUpperCase()).filter(Boolean);
+    const gstNumbers = gsts
+      .map((gst) => String(gst.gstNumber ?? '').toUpperCase())
+      .filter(Boolean);
     const revenueStats = gstNumbers.length
       ? await this.importRowModel
           .aggregate<{
@@ -624,7 +635,12 @@ export class GstsService {
                     $cond: [
                       {
                         $or: [
-                          { $regexMatch: { input: '$docUpper', regex: 'RETURN' } },
+                          {
+                            $regexMatch: {
+                              input: '$docUpper',
+                              regex: 'RETURN',
+                            },
+                          },
                           { $regexMatch: { input: '$docUpper', regex: 'RTO' } },
                         ],
                       },
@@ -655,7 +671,9 @@ export class GstsService {
       const gstId = String(gst._id);
       const seller = sellerByKey.get(String(gst.sellerId ?? ''));
       const linkedMarketplaces = marketplacesByGstId.get(gstId) ?? [];
-      const stats = revenueByGstin.get(String(gst.gstNumber ?? '').toUpperCase()) ?? {
+      const stats = revenueByGstin.get(
+        String(gst.gstNumber ?? '').toUpperCase(),
+      ) ?? {
         revenue: 0,
         salesCount: 0,
         returnsCount: 0,
@@ -701,9 +719,16 @@ export class GstsService {
         row.riskLevel === 'High' ||
         row.riskLevel === 'Medium',
     ).length;
-    const activeGsts = rows.filter((row) => row.status.toLowerCase() === 'active').length;
-    const linkedMarketplaceTotal = rows.reduce((sum, row) => sum + row.marketplaceCount, 0);
-    const uniqueStates = new Set(rows.map((row) => row.state).filter((state) => state && state !== '—'));
+    const activeGsts = rows.filter(
+      (row) => row.status.toLowerCase() === 'active',
+    ).length;
+    const linkedMarketplaceTotal = rows.reduce(
+      (sum, row) => sum + row.marketplaceCount,
+      0,
+    );
+    const uniqueStates = new Set(
+      rows.map((row) => row.state).filter((state) => state && state !== '—'),
+    );
 
     return {
       success: true,
@@ -822,7 +847,12 @@ export class GstsService {
       .trim()
       .toUpperCase();
     const confirmationText = String(options?.confirmationText ?? '').trim();
-    if (confirmedGst !== String(gst.gstNumber ?? '').trim().toUpperCase()) {
+    if (
+      confirmedGst !==
+      String(gst.gstNumber ?? '')
+        .trim()
+        .toUpperCase()
+    ) {
       throw new BadRequestException('Entered GST Number does not match.');
     }
     if (confirmationText !== 'DELETE') {
@@ -850,8 +880,12 @@ export class GstsService {
       return {
         linkId: String(item._id ?? ''),
         platformId: String(item.platformMarketplaceId ?? ''),
-        platformSlug: String(platform?.slug ?? '').trim().toLowerCase(),
-        platformName: String(platform?.name ?? '').trim().toLowerCase(),
+        platformSlug: String(platform?.slug ?? '')
+          .trim()
+          .toLowerCase(),
+        platformName: String(platform?.name ?? '')
+          .trim()
+          .toLowerCase(),
       };
     });
 
@@ -950,7 +984,9 @@ export class GstsService {
       );
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : 'Unknown cascade cleanup error';
+        error instanceof Error
+          ? error.message
+          : 'Unknown cascade cleanup error';
       this.logger.error(
         `GST cascade cleanup failed for ${input.gstNumber}: ${message}`,
       );
@@ -1016,7 +1052,9 @@ export class GstsService {
     if (Array.isArray(seller.panProfiles)) {
       seller.panProfiles.forEach((item) => {
         const pan =
-          typeof item.panNumber === 'string' ? item.panNumber.trim().toUpperCase() : '';
+          typeof item.panNumber === 'string'
+            ? item.panNumber.trim().toUpperCase()
+            : '';
         if (pan) sellerPanSet.add(pan);
       });
     }
@@ -1036,11 +1074,18 @@ export class GstsService {
       }
       purchasedPanSlots += 1;
       seller.gstSlotsPurchased = purchasedPanSlots;
-      seller.gstSlots = Math.max(Number(seller.gstSlots ?? 0), purchasedPanSlots);
+      seller.gstSlots = Math.max(
+        Number(seller.gstSlots ?? 0),
+        purchasedPanSlots,
+      );
     }
 
-    const panProfiles = Array.isArray(seller.panProfiles) ? [...seller.panProfiles] : [];
-    const panIndex = panProfiles.findIndex((item) => item.panNumber === extractedPan);
+    const panProfiles = Array.isArray(seller.panProfiles)
+      ? [...seller.panProfiles]
+      : [];
+    const panIndex = panProfiles.findIndex(
+      (item) => item.panNumber === extractedPan,
+    );
     const businessName = dto.businessName?.trim();
     if (panIndex === -1) {
       panProfiles.push({
@@ -1117,8 +1162,11 @@ export class GstsService {
 
     const address = verification.principalAddress ?? '';
     if (!address) return '';
-    const parts = address.split(',').map((part) => part.trim()).filter(Boolean);
-    return parts.length > 1 ? parts[parts.length - 2] : parts[0] ?? '';
+    const parts = address
+      .split(',')
+      .map((part) => part.trim())
+      .filter(Boolean);
+    return parts.length > 1 ? parts[parts.length - 2] : (parts[0] ?? '');
   }
 
   private formatRegistrationDate(value?: Date | string | null) {
@@ -1187,7 +1235,9 @@ export class GstsService {
   }
 
   private softExtractPanFromGst(gstNumber?: string) {
-    const normalized = String(gstNumber ?? '').trim().toUpperCase();
+    const normalized = String(gstNumber ?? '')
+      .trim()
+      .toUpperCase();
     if (normalized.length < 12) return '';
     return normalized.slice(2, 12);
   }
@@ -1216,7 +1266,9 @@ export class GstsService {
     // In that case map user -> seller profile by email.
     const user = await this.findSellerUserByIdentifier(value);
     if (!user) return null;
-    const email = String(user.email ?? '').trim().toLowerCase();
+    const email = String(user.email ?? '')
+      .trim()
+      .toLowerCase();
     if (!email) return null;
     return this.sellerModel
       .findOne({
@@ -1244,7 +1296,7 @@ export class GstsService {
 
   private getSellerObjectIdString(seller: SellerDocument) {
     const id = seller?._id as Types.ObjectId | string | undefined;
-    return typeof id === 'string' ? id : id?.toString?.() ?? '';
+    return typeof id === 'string' ? id : (id?.toString?.() ?? '');
   }
 
   private getSellerIdAliases(seller: SellerDocument, requestedId?: string) {
@@ -1280,6 +1332,8 @@ export class GstsService {
         : {
             $set: { gstSlotsUsed: gstUsed, usedPanSlots: panUsed },
           };
-    await this.sellerModel.updateOne({ _id: normalizedSellerId }, update).exec();
+    await this.sellerModel
+      .updateOne({ _id: normalizedSellerId }, update)
+      .exec();
   }
 }

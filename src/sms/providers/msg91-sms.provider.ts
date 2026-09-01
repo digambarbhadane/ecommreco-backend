@@ -57,13 +57,16 @@ export class Msg91SmsProvider implements SmsProvider {
 
     if (!response.ok) {
       const body = await response.text();
-      this.logger.error(`MSG91 flow send failed status=${response.status} body=${body}`);
+      this.logger.error(
+        `MSG91 flow send failed status=${response.status} body=${body}`,
+      );
       throw new Error('MSG91 send failed');
     }
 
-    const payload = (await response.json().catch(() => null)) as
-      | { message?: string; type?: string }
-      | null;
+    const payload = (await response.json().catch(() => null)) as {
+      message?: string;
+      type?: string;
+    } | null;
 
     return {
       sent: true,
@@ -101,7 +104,9 @@ export class Msg91SmsProvider implements SmsProvider {
 
     if (!response.ok) {
       const body = await response.text();
-      this.logger.error(`MSG91 SMS failed status=${response.status} body=${body}`);
+      this.logger.error(
+        `MSG91 SMS failed status=${response.status} body=${body}`,
+      );
       throw new Error('MSG91 send failed');
     }
 

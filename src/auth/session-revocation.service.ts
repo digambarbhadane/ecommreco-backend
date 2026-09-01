@@ -45,13 +45,18 @@ export class SessionRevocationService {
     );
   }
 
-  async revokeForSeller(seller: { _id?: unknown; email?: string }): Promise<void> {
+  async revokeForSeller(seller: {
+    _id?: unknown;
+    email?: string;
+  }): Promise<void> {
     const userIds = new Set<string>();
     if (seller._id) {
       userIds.add(String(seller._id));
     }
 
-    const email = String(seller.email ?? '').trim().toLowerCase();
+    const email = String(seller.email ?? '')
+      .trim()
+      .toLowerCase();
     if (email) {
       const linkedUser = await this.userModel
         .findOne({ email, role: 'seller' })
@@ -77,7 +82,9 @@ export class SessionRevocationService {
       userIds.add(userId);
     }
 
-    const email = String(user.email ?? '').trim().toLowerCase();
+    const email = String(user.email ?? '')
+      .trim()
+      .toLowerCase();
     if (email) {
       const seller = await this.sellerModel
         .findOne({ email })
@@ -97,8 +104,16 @@ export class SessionRevocationService {
     if (!normalized) return;
 
     const [user, seller] = await Promise.all([
-      this.userModel.findOne({ email: normalized }).select('_id email').lean().exec(),
-      this.sellerModel.findOne({ email: normalized }).select('_id email').lean().exec(),
+      this.userModel
+        .findOne({ email: normalized })
+        .select('_id email')
+        .lean()
+        .exec(),
+      this.sellerModel
+        .findOne({ email: normalized })
+        .select('_id email')
+        .lean()
+        .exec(),
     ]);
 
     if (user) {
