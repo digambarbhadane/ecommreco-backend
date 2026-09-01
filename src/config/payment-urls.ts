@@ -53,7 +53,7 @@ export function resolvePaymentNotifyBaseUrl(config: ConfigReader): string {
     return apiPublic.replace(/\/+$/, '');
   }
 
-  const port = readConfigValue(config, 'PORT') ?? '5000';
+  const port = readConfigValue(config, 'PORT') ?? '5001';
   return `http://localhost:${port}`;
 }
 

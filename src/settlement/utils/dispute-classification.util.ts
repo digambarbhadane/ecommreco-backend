@@ -22,19 +22,13 @@ export function disputeClassificationStages(
         amountDue: {
           $round: [
             {
-              $max: [
-                0,
-                { $subtract: ['$receivable', '$received'] },
-              ],
+              $max: [0, { $subtract: ['$receivable', '$received'] }],
             },
             2,
           ],
         },
         hasPayoutDifference: {
-          $gt: [
-            { $subtract: ['$receivable', '$received'] },
-            TOLERANCE,
-          ],
+          $gt: [{ $subtract: ['$receivable', '$received'] }, TOLERANCE],
         },
         ageDays: {
           $cond: [
@@ -99,7 +93,9 @@ export function disputeClassificationStages(
 export function buildDisputeCategoryMatch(
   category?: DisputeCategory | string,
 ): Record<string, unknown> | null {
-  const value = String(category ?? 'all').trim().toLowerCase();
+  const value = String(category ?? 'all')
+    .trim()
+    .toLowerCase();
   if (!value || value === 'all') return null;
   if (value === 'due') return { disputeCategory: 'due' };
   if (value === 'overdue') return { disputeCategory: 'overdue' };

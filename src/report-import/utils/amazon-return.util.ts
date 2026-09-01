@@ -122,9 +122,10 @@ export function lookupAmazonReturnDetails(
   return returnByOrder.get(key);
 }
 
-export function applyAmazonReturnDetailsToRow<
-  T extends AmazonReturnDetails,
->(row: T, details?: AmazonReturnDetails | null): T {
+export function applyAmazonReturnDetailsToRow<T extends AmazonReturnDetails>(
+  row: T,
+  details?: AmazonReturnDetails | null,
+): T {
   if (!details) return row;
   return {
     ...row,

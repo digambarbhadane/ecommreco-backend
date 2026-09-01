@@ -1,6 +1,9 @@
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
-import { PanSlotRequest, PanSlotRequestSchema } from '../pan-slot-requests/schemas/pan-slot-request.schema';
+import {
+  PanSlotRequest,
+  PanSlotRequestSchema,
+} from '../pan-slot-requests/schemas/pan-slot-request.schema';
 import {
   PanSlotTransaction,
   PanSlotTransactionSchema,
@@ -11,6 +14,10 @@ import {
   MarketplaceSchema,
 } from '../marketplaces/schemas/marketplace.schema';
 import { Seller, SellerSchema } from '../sellers/schemas/seller.schema';
+import {
+  PaymentOrder,
+  PaymentOrderSchema,
+} from '../payments/schemas/payment-order.schema';
 import { User, UserSchema } from '../users/schemas/user.schema';
 import {
   Subscription,
@@ -28,6 +35,7 @@ import { BillingService } from './billing.service';
     MongooseModule.forFeature([
       { name: User.name, schema: UserSchema },
       { name: Seller.name, schema: SellerSchema },
+      { name: PaymentOrder.name, schema: PaymentOrderSchema },
       { name: Gst.name, schema: GstSchema },
       { name: Marketplace.name, schema: MarketplaceSchema },
       { name: Subscription.name, schema: SubscriptionSchema },

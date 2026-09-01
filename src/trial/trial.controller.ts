@@ -8,11 +8,7 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import {
-  ApiBearerAuth,
-  ApiOperation,
-  ApiTags,
-} from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
 import { ConfigService } from '@nestjs/config';
 import { Throttle } from '@nestjs/throttler';
@@ -55,7 +51,9 @@ export class TrialController {
   ) {}
 
   private useOnboardingV2() {
-    return isOnboardingV2Enabled(this.config.get<string>('ONBOARDING_V2_ENABLED'));
+    return isOnboardingV2Enabled(
+      this.config.get<string>('ONBOARDING_V2_ENABLED'),
+    );
   }
 
   @Get('pricing')
@@ -76,14 +74,18 @@ export class TrialController {
 
   @Post('otp/send')
   @Throttle({ default: { limit: 10, ttl: 60000 } })
-  @ApiOperation({ summary: 'Send OTP to email or mobile for trial registration' })
+  @ApiOperation({
+    summary: 'Send OTP to email or mobile for trial registration',
+  })
   sendOtp(@Body() dto: SendTrialOtpDto) {
     return this.trialOtpService.sendOtp(dto);
   }
 
   @Post('otp/verify')
   @Throttle({ default: { limit: 20, ttl: 60000 } })
-  @ApiOperation({ summary: 'Verify email or mobile OTP for trial registration' })
+  @ApiOperation({
+    summary: 'Verify email or mobile OTP for trial registration',
+  })
   verifyOtp(@Body() dto: VerifyTrialOtpDto) {
     return this.trialOtpService.verifyOtp(dto);
   }
@@ -91,7 +93,10 @@ export class TrialController {
   @Get('otp/status')
   @ApiOperation({ summary: 'Check email and mobile OTP verification status' })
   otpStatus(@Query('email') email: string, @Query('mobile') mobile: string) {
-    return this.trialOtpService.getVerificationStatus(email ?? '', mobile ?? '');
+    return this.trialOtpService.getVerificationStatus(
+      email ?? '',
+      mobile ?? '',
+    );
   }
 
   @Get('packages')
@@ -125,7 +130,9 @@ export class TrialController {
   }
 
   @Post('payment/:sellerId/init')
-  @ApiOperation({ summary: 'Create Cashfree order for trial registration payment' })
+  @ApiOperation({
+    summary: 'Create Cashfree order for trial registration payment',
+  })
   initTrialPayment(@Param('sellerId') sellerId: string) {
     return this.trialService.initTrialPayment(sellerId);
   }

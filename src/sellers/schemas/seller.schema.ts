@@ -298,7 +298,10 @@ export class Seller {
 
   /** single_gst | multi_gst_pan — set on trial→paid conversion */
   @Prop({ type: String, enum: ['single_gst', 'multi_gst_pan'] })
-  subscriptionPlanType?: 'single_gst' | 'multi_gst_pan' | 'single_gst_multi_marketplace';
+  subscriptionPlanType?:
+    | 'single_gst'
+    | 'multi_gst_pan'
+    | 'single_gst_multi_marketplace';
 
   /** Total marketplace links purchased on the current subscription. */
   @Prop({ default: 0 })

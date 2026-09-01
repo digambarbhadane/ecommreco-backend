@@ -40,7 +40,7 @@ export function normalizeSwaggerDocument(document: OpenAPIObject): OpenAPIObject
   document.paths = normalizedPaths;
 
   const defaultServers = [
-    { url: `http://localhost:5000${API_PREFIX}`, description: 'Local development server' },
+    { url: `http://localhost:5001${API_PREFIX}`, description: 'Local development server' },
     { url: `https://api-uat.ecommreco.com${API_PREFIX}`, description: 'UAT server' },
     { url: `https://api.ecommreco.com${API_PREFIX}`, description: 'Production server' },
   ];
@@ -77,7 +77,7 @@ export const buildSwaggerConfig = () =>
       'API documentation for EcommReco platform. Authentication is handled via JWT Bearer tokens. Include the token in the Authorization header as: Bearer <token>',
     )
     .setVersion('1.0.0')
-    .addServer('http://localhost:5000/api/v1', 'Local development server')
+    .addServer('http://localhost:5001/api/v1', 'Local development server')
     .addServer('https://api-uat.ecommreco.com/api/v1', 'UAT server')
     .addServer('https://api.ecommreco.com/api/v1', 'Production server')
     .addCookieAuth('access_token', { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' }, 'access_token')

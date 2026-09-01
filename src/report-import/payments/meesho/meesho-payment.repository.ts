@@ -7,7 +7,10 @@ import {
   MeeshoOrderPayments,
   MeeshoOrderPaymentsDocument,
 } from './schemas/order-payments.schema';
-import { MeeshoAdsCost, MeeshoAdsCostDocument } from './schemas/ads-cost.schema';
+import {
+  MeeshoAdsCost,
+  MeeshoAdsCostDocument,
+} from './schemas/ads-cost.schema';
 import {
   MeeshoReferralPayments,
   MeeshoReferralPaymentsDocument,
@@ -87,10 +90,7 @@ export class MeeshoPaymentRepository {
     };
   }
 
-  private toObjectIds(meta: {
-    sellerId: string;
-    importId: string;
-  }): {
+  private toObjectIds(meta: { sellerId: string; importId: string }): {
     sellerId: Types.ObjectId;
     importId: Types.ObjectId;
   } {
@@ -110,9 +110,14 @@ export class MeeshoPaymentRepository {
     }
 
     await Promise.all(
-      (['orderPayments', 'adsCost', 'referralPayments', 'compensationRecovery'] as const).map(
-        (kind) => this.modelForKind(kind).deleteMany(filter).exec(),
-      ),
+      (
+        [
+          'orderPayments',
+          'adsCost',
+          'referralPayments',
+          'compensationRecovery',
+        ] as const
+      ).map((kind) => this.modelForKind(kind).deleteMany(filter).exec()),
     );
   }
 
@@ -139,7 +144,10 @@ export class MeeshoPaymentRepository {
         'orderPayments',
         data.orderPayments.map((row) => ({
           ...row,
-          ...this.buildMeta(metaBase, sheetNames.orderPayments ?? 'Order Payments'),
+          ...this.buildMeta(
+            metaBase,
+            sheetNames.orderPayments ?? 'Order Payments',
+          ),
           ...ids,
           marketplace: 'meesho',
         })),
@@ -202,9 +210,16 @@ export class MeeshoPaymentRepository {
       };
       const insertedCount = bulkError.insertedDocs?.length ?? 0;
       const failedCount =
-        bulkError.writeErrors?.length ?? Math.max(0, rows.length - insertedCount);
-      if (insertedCount > 0 || /E11000|duplicate key/i.test(String(bulkError.message))) {
-        return { inserted: insertedCount || rows.length - failedCount, failed: failedCount };
+        bulkError.writeErrors?.length ??
+        Math.max(0, rows.length - insertedCount);
+      if (
+        insertedCount > 0 ||
+        /E11000|duplicate key/i.test(String(bulkError.message))
+      ) {
+        return {
+          inserted: insertedCount || rows.length - failedCount,
+          failed: failedCount,
+        };
       }
       throw error;
     }

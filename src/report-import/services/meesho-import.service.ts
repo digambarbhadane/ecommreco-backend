@@ -143,7 +143,9 @@ export class MeeshoImportService {
   }
 
   /** Index rows by order id preserving all matches (across lifecycle sheets). */
-  indexManyBySubOrderNum(rows: ParsedSheetRow[]): Map<string, ParsedSheetRow[]> {
+  indexManyBySubOrderNum(
+    rows: ParsedSheetRow[],
+  ): Map<string, ParsedSheetRow[]> {
     const index = new Map<string, ParsedSheetRow[]>();
     rows.forEach((row) => {
       const raw = getRowCell(row, ...MEESHO_ORDER_ID_ALIASES);
@@ -181,9 +183,15 @@ export class MeeshoImportService {
     let enriched = mapped;
     const variants = this.orderIdVariants(salesOrderIdRaw);
     const lifecycleRows = [
-      ...variants.flatMap((orderId) => indexes.returnInTransit.get(orderId) ?? []),
-      ...variants.flatMap((orderId) => indexes.returnOutForDelivery.get(orderId) ?? []),
-      ...variants.flatMap((orderId) => indexes.returnDeliveryComplete.get(orderId) ?? []),
+      ...variants.flatMap(
+        (orderId) => indexes.returnInTransit.get(orderId) ?? [],
+      ),
+      ...variants.flatMap(
+        (orderId) => indexes.returnOutForDelivery.get(orderId) ?? [],
+      ),
+      ...variants.flatMap(
+        (orderId) => indexes.returnDeliveryComplete.get(orderId) ?? [],
+      ),
     ];
     for (const lifecycleRow of lifecycleRows) {
       enriched = this.mapping.enrichMeeshoFromLifecycleReturnReport(
@@ -227,7 +235,9 @@ export class MeeshoImportService {
     _reportMonth?: string,
   ): MeeshoBuildResult {
     const orderReportByOrder = this.indexBySubOrderNum(parsed.orderReport.rows);
-    const tcsReturnByOrder = this.indexBySubOrderNum(parsed.tcsSalesReturn.rows);
+    const tcsReturnByOrder = this.indexBySubOrderNum(
+      parsed.tcsSalesReturn.rows,
+    );
     const lifecycleIndexes = {
       returnInTransit: this.indexManyBySubOrderNum(parsed.returnInTransit.rows),
       returnOutForDelivery: this.indexManyBySubOrderNum(
@@ -296,7 +306,8 @@ export class MeeshoImportService {
           errors.push({
             sheetName: salesRow.__sheetName,
             rowNumber: salesRow.__rowNumber,
-            error: 'Missing order id (sub_order_num / Sub Order No) in TCS Sales Report row',
+            error:
+              'Missing order id (sub_order_num / Sub Order No) in TCS Sales Report row',
           });
           return;
         }
@@ -340,7 +351,8 @@ export class MeeshoImportService {
           errors.push({
             sheetName: returnRow.__sheetName,
             rowNumber: returnRow.__rowNumber,
-            error: 'Missing order id (sub_order_num / Sub Order No) in TCS Sales Return row',
+            error:
+              'Missing order id (sub_order_num / Sub Order No) in TCS Sales Return row',
           });
           return;
         }

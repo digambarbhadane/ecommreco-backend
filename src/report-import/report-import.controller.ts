@@ -45,10 +45,7 @@ import { ImportSessionService } from './services/import-session.service';
 import { ImportWorkflowService } from './services/import-workflow.service';
 import { ImportJobService } from './services/import-job.service';
 import { ReconciliationService } from './services/reconciliation.service';
-import {
-  DeleteSlotDto,
-  WorkflowStatusDto,
-} from './dto/import-workflow.dto';
+import { DeleteSlotDto, WorkflowStatusDto } from './dto/import-workflow.dto';
 import {
   MarketplaceUploadKey,
   ReportUploadMultipart,
@@ -99,7 +96,9 @@ export class ReportImportController {
     @Query('marketplace') marketplace: string,
     @Body() dto: UploadReportDto,
   ) {
-    const key = (marketplace ?? '').trim().toLowerCase() as MarketplaceUploadKey;
+    const key = (marketplace ?? '')
+      .trim()
+      .toLowerCase() as MarketplaceUploadKey;
     if (!['flipkart', 'amazon', 'meesho', 'myntra'].includes(key)) {
       throw new BadRequestException('marketplace query is required');
     }
@@ -130,10 +129,15 @@ export class ReportImportController {
     if (!sellerId?.trim()) {
       throw new BadRequestException('sellerId is required');
     }
-    return this.importSessionService.addFile(sessionId, sellerId.trim(), slot.trim(), {
-      buffer: file.buffer,
-      originalname: file.originalname,
-    });
+    return this.importSessionService.addFile(
+      sessionId,
+      sellerId.trim(),
+      slot.trim(),
+      {
+        buffer: file.buffer,
+        originalname: file.originalname,
+      },
+    );
   }
 
   @Post('import-session/:sessionId/commit')
@@ -150,7 +154,11 @@ export class ReportImportController {
   }
 
   @Get('config')
-  @ApiOperation({ summary: 'Get import config', description: 'Returns required sheets and columns for a marketplace import.' })
+  @ApiOperation({
+    summary: 'Get import config',
+    description:
+      'Returns required sheets and columns for a marketplace import.',
+  })
   @Roles('seller', 'super_admin', 'accounts_manager')
   getConfig(@Query('marketplace') marketplace?: string) {
     const name = (marketplace ?? '').trim().toLowerCase();
@@ -159,7 +167,10 @@ export class ReportImportController {
         success: true,
         data: {
           marketplace: 'amazon',
-          requiredSheets: ['MTR B2B Report (single sheet)', 'MTR B2C Report (single sheet)'],
+          requiredSheets: [
+            'MTR B2B Report (single sheet)',
+            'MTR B2C Report (single sheet)',
+          ],
           requiredColumns: {
             'MTR B2C Report': [
               'Seller Gstin',
@@ -242,7 +253,10 @@ export class ReportImportController {
               'sgst_amt',
               'customer_delivery_state_code',
             ],
-            'MDirect Orders Report (optional)': ['order_release_id', 'seller_sku_code'],
+            'MDirect Orders Report (optional)': [
+              'order_release_id',
+              'seller_sku_code',
+            ],
             'Sales Revenue Packed B2C': [
               'Sale_Order_Code',
               'Invoice_Number',
@@ -502,10 +516,13 @@ export class ReportImportController {
 
   @Get('analytics/orders/export')
   @ApiOperation({
-    summary: 'Export analytics orders CSV',
-    description: 'Order-focused export without payment columns.',
+    summary: 'Export analytics orders Excel',
+    description:
+      'Order Report export matching the filtered table columns as .xlsx.',
   })
-  @ApiProduces('text/csv')
+  @ApiProduces(
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  )
   @Roles('seller', 'super_admin', 'accounts_manager')
   async exportAnalyticsOrders(
     @Query() query: ListAnalyticsOrdersDto,
@@ -514,11 +531,12 @@ export class ReportImportController {
     if (!query.sellerId?.trim()) {
       throw new BadRequestException('sellerId is required');
     }
-    const result = await this.reportImportService.exportAnalyticsOrdersCsv(query);
+    const result =
+      await this.reportImportService.exportAnalyticsOrdersCsv(query);
     res.setHeader('X-Export-Row-Count', String(result.rowCount));
     res.setHeader('Access-Control-Expose-Headers', 'X-Export-Row-Count');
     return new StreamableFile(result.buffer, {
-      type: 'text/csv; charset=utf-8',
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       disposition: `attachment; filename="${result.filename}"`,
     });
   }
@@ -586,7 +604,8 @@ export class ReportImportController {
   @Get('analytics/payments')
   @ApiOperation({
     summary: 'List analytics payments',
-    description: 'Paginated payment/settlement records (rows with payment data).',
+    description:
+      'Paginated payment/settlement records (rows with payment data).',
   })
   @Roles('seller', 'super_admin', 'accounts_manager')
   listAnalyticsPayments(@Query() query: ListAnalyticsPaymentsDto) {
@@ -689,7 +708,10 @@ export class ReportImportController {
   }
 
   @Get('rows')
-  @ApiOperation({ summary: 'List imported rows', description: 'Returns paginated list of imported report rows.' })
+  @ApiOperation({
+    summary: 'List imported rows',
+    description: 'Returns paginated list of imported report rows.',
+  })
   @Roles('seller', 'super_admin', 'accounts_manager')
   listRows(@Query() query: ListImportedRowsDto) {
     return this.reportImportService.listImportedRows(query);
@@ -768,7 +790,10 @@ export class ReportImportController {
   }
 
   @Get('summary')
-  @ApiOperation({ summary: 'Get import summary', description: 'Returns document type summary for imported reports.' })
+  @ApiOperation({
+    summary: 'Get import summary',
+    description: 'Returns document type summary for imported reports.',
+  })
   @Roles('seller', 'super_admin', 'accounts_manager')
   summary(@Query() query: ListImportedRowsDto) {
     return this.reportImportService.getDocumentTypeSummary(query);
@@ -832,7 +857,8 @@ export class ReportImportController {
   @Get('uploads/:uploadId/status')
   @ApiOperation({
     summary: 'Get import upload status',
-    description: 'Poll after Myntra/Meesho/Amazon upload while status is processing.',
+    description:
+      'Poll after Myntra/Meesho/Amazon upload while status is processing.',
   })
   @Roles('seller', 'super_admin', 'accounts_manager')
   uploadStatus(
@@ -929,7 +955,9 @@ export class ReportImportController {
   }
 
   @Get('workflow/upload-overview')
-  @ApiOperation({ summary: 'Seller-wide upload status by GST, month, and marketplace' })
+  @ApiOperation({
+    summary: 'Seller-wide upload status by GST, month, and marketplace',
+  })
   @Roles('seller', 'super_admin', 'accounts_manager')
   workflowUploadOverview(@Query('sellerId') sellerId: string) {
     if (!sellerId?.trim()) {
@@ -948,7 +976,12 @@ export class ReportImportController {
     @Query('marketplace') marketplace: string,
     @Query('reportMonth') reportMonth: string,
   ) {
-    if (!sellerId?.trim() || !gstId?.trim() || !marketplaceId?.trim() || !reportMonth?.trim()) {
+    if (
+      !sellerId?.trim() ||
+      !gstId?.trim() ||
+      !marketplaceId?.trim() ||
+      !reportMonth?.trim()
+    ) {
       throw new BadRequestException(
         'sellerId, gstId, marketplaceId, and reportMonth are required',
       );
@@ -1007,7 +1040,9 @@ export class ReportImportController {
     @Query('reportMonth') reportMonth?: string,
   ) {
     if (!sellerId?.trim() || !gstId?.trim() || !marketplace?.trim()) {
-      throw new BadRequestException('sellerId, gstId, and marketplace are required');
+      throw new BadRequestException(
+        'sellerId, gstId, and marketplace are required',
+      );
     }
     return this.reconciliationService.getAdjustmentNotifications({
       sellerId: sellerId.trim(),
@@ -1047,7 +1082,12 @@ export class ReportImportController {
     @Query('reportMonth') reportMonth: string,
     @Query('mode') mode?: string,
   ) {
-    if (!sellerId?.trim() || !gstId?.trim() || !marketplace?.trim() || !reportMonth?.trim()) {
+    if (
+      !sellerId?.trim() ||
+      !gstId?.trim() ||
+      !marketplace?.trim() ||
+      !reportMonth?.trim()
+    ) {
       throw new BadRequestException(
         'sellerId, gstId, marketplace, and reportMonth are required',
       );
@@ -1291,7 +1331,10 @@ export class ReportImportController {
   }
 
   @Get('errors-csv')
-  @ApiOperation({ summary: 'Download errors CSV', description: 'Returns CSV file of import errors for a given uploadId.' })
+  @ApiOperation({
+    summary: 'Download errors CSV',
+    description: 'Returns CSV file of import errors for a given uploadId.',
+  })
   @Roles('seller', 'super_admin', 'accounts_manager')
   @Header('Content-Type', 'text/csv')
   async errorsCsv(@Query('uploadId') uploadId: string) {

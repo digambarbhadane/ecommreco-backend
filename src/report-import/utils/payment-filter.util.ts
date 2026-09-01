@@ -61,7 +61,8 @@ export function applyPaymentFiltersToMongoFilter(
         query.paymentDateFrom;
     }
     if (query.paymentDateTo) {
-      (filter.paymentDate as Record<string, unknown>).$lte = query.paymentDateTo;
+      (filter.paymentDate as Record<string, unknown>).$lte =
+        query.paymentDateTo;
     }
   }
 }

@@ -1,8 +1,4 @@
-import {
-  BadRequestException,
-  Injectable,
-  Logger,
-} from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import ExcelJS from 'exceljs';
 import * as XLSX from 'xlsx';
 import { ExportSkuMasterQueryDto } from './dto/export-sku-master.query.dto';
@@ -80,7 +76,9 @@ export class SkuMasterExcelService {
     headerRow.alignment = { vertical: 'middle', horizontal: 'center' };
     headerRow.height = 22;
 
-    const gstin = String(gst?.gstNumber ?? '').trim().toUpperCase();
+    const gstin = String(gst?.gstNumber ?? '')
+      .trim()
+      .toUpperCase();
     const businessName = gst ? resolveGstDisplayName(gst) : '';
 
     for (const item of filtered) {
@@ -124,7 +122,9 @@ export class SkuMasterExcelService {
     instructions.addRow([
       '6. Leave Master SKU blank for rows you do not want to update yet.',
     ]);
-    instructions.addRow(['7. Save the file and upload it back on the SKU Master page.']);
+    instructions.addRow([
+      '7. Save the file and upload it back on the SKU Master page.',
+    ]);
 
     const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
     const gstSlug = query.gstId
@@ -247,8 +247,7 @@ export class SkuMasterExcelService {
       const matched =
         (gstin
           ? knownByGstin.get(`${gstin}:${marketplace}:${skuKey}`)
-          : undefined) ??
-        knownBySku.get(`${marketplace}:${skuKey}`);
+          : undefined) ?? knownBySku.get(`${marketplace}:${skuKey}`);
 
       if (!matched) {
         errors.push({
@@ -259,7 +258,8 @@ export class SkuMasterExcelService {
         continue;
       }
 
-      const masterSku = masterSkuFromFile || String(matched.masterSku ?? '').trim();
+      const masterSku =
+        masterSkuFromFile || String(matched.masterSku ?? '').trim();
       if (!masterSku) {
         errors.push({
           row: row.rowNumber,
@@ -290,7 +290,9 @@ export class SkuMasterExcelService {
         marketplaceSku,
         masterSku,
         ...(rate !== null ? { rate } : {}),
-        ...(categoryFromFile ? { category: categoryFromFile.slice(0, 120) } : {}),
+        ...(categoryFromFile
+          ? { category: categoryFromFile.slice(0, 120) }
+          : {}),
       });
     }
 
@@ -429,7 +431,9 @@ export class SkuMasterExcelService {
   }
 
   private normalizeMarketplace(value: string) {
-    return String(value ?? '').trim().toLowerCase();
+    return String(value ?? '')
+      .trim()
+      .toLowerCase();
   }
 
   private formatMarketplaceLabel(value: string) {

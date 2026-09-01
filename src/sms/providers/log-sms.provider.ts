@@ -12,7 +12,9 @@ export class LogSmsProvider implements SmsProvider {
   }
 
   async sendSms(mobile: string, message: string): Promise<SmsSendResult> {
-    this.logger.log(`SMS notification mobile=${mobile} messageLength=${message.length}`);
+    this.logger.log(
+      `SMS notification mobile=${mobile} messageLength=${message.length}`,
+    );
     return { sent: true, provider: this.name };
   }
 }

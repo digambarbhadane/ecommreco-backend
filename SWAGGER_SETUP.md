@@ -4,9 +4,9 @@
 
 | URL | Description |
 |-----|-------------|
-| http://localhost:5000/api/v1/docs | Swagger UI |
-| http://localhost:5000/api/v1/docs-json | OpenAPI 3 JSON spec |
-| http://localhost:5000/api/v1/docs-yaml | OpenAPI 3 YAML spec |
+| http://localhost:5001/api/v1/docs | Swagger UI |
+| http://localhost:5001/api/v1/docs-json | OpenAPI 3 JSON spec |
+| http://localhost:5001/api/v1/docs-yaml | OpenAPI 3 YAML spec |
 
 ## Enable / disable
 
@@ -22,7 +22,7 @@ cd ecommreco-backend
 npm run dev
 ```
 
-Open http://localhost:5000/api/v1/docs
+Open http://localhost:5001/api/v1/docs
 
 ## Validate spec (server must be running)
 
@@ -32,7 +32,7 @@ npm run docs:swagger
 
 ## Authentication in Swagger UI
 
-Server URLs in the spec include the `/api/v1` prefix. Operation paths are relative (e.g. `/auth/login`), so requests go to `http://localhost:5000/api/v1/auth/login` — not `/api/v1/api/v1/...`.
+Server URLs in the spec include the `/api/v1` prefix. Operation paths are relative (e.g. `/auth/login`), so requests go to `http://localhost:5001/api/v1/auth/login` — not `/api/v1/api/v1/...`.
 
 1. Call `POST /auth/login` with email and password.
 2. Copy `data.accessToken` from the response.

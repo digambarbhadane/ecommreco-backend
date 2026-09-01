@@ -35,9 +35,18 @@ import {
   type SubscriptionDisplaySnapshot,
 } from './utils/billing-subscription-display.util';
 import {
-  buildInvoiceHtml,
-  InvoiceDocument,
-} from './utils/invoice-html.util';
+  applyQuoteSnapshotToSellerFields,
+  buildSubscriptionPeriodFromMonths,
+  extractQuoteFromPaymentMetadata,
+  groupReportMonthsByFinancialYear,
+  normalizeReportMonths,
+  resolveMarketplaceSlotsInPlan,
+} from './utils/reconciliation-subscription.util';
+import {
+  PaymentOrder,
+  PaymentOrderDocument,
+} from '../payments/schemas/payment-order.schema';
+import { buildInvoiceHtml, InvoiceDocument } from './utils/invoice-html.util';
 import type { GstCheckoutSelection } from '../trial/subscription-checkout.pricing';
 import { getTrialAllowedReportMonthsForSeller } from '../trial/trial.constants';
 import {
@@ -94,7 +103,66 @@ export class BillingService {
     private readonly gstModel: Model<GstDocument>,
     @InjectModel(Marketplace.name)
     private readonly marketplaceModel: Model<MarketplaceDocument>,
+    @InjectModel(PaymentOrder.name)
+    private readonly paymentOrderModel: Model<PaymentOrderDocument>,
   ) {}
+
+  private async enrichSellerSubscriptionFromPaymentOrder(
+    seller: SellerDocument,
+  ) {
+    const existingMonths = normalizeReportMonths(seller.reconciliationMonths ?? []);
+    const needsOrderLookup =
+      !existingMonths.length || !seller.subscriptionPlanLabel;
+
+    if (needsOrderLookup) {
+      const order = await this.paymentOrderModel
+        .findOne({
+          'metadata.checkoutType': 'lead_conversion',
+          $or: [
+            ...(seller.leadId ? [{ 'metadata.leadLeadId': seller.leadId }] : []),
+          ],
+        })
+        .sort({ createdAt: -1 })
+        .lean()
+        .exec();
+
+      const quote = extractQuoteFromPaymentMetadata(
+        (order?.metadata ?? null) as Record<string, unknown> | null,
+      );
+      if (quote) {
+        applyQuoteSnapshotToSellerFields(seller, quote);
+      }
+    }
+
+    const finalMonths = normalizeReportMonths(seller.reconciliationMonths ?? []);
+    if (finalMonths.length) {
+      seller.reconciliationMonths = finalMonths;
+      const anchor =
+        seller.paymentCompletedAt ??
+        seller.paymentVerifiedAt ??
+        seller.paymentDate ??
+        seller.subscriptionStartsAt ??
+        new Date();
+      const period = buildSubscriptionPeriodFromMonths(
+        finalMonths,
+        new Date(anchor),
+      );
+      seller.subscriptionStartsAt = period.startsAt;
+      seller.subscriptionEndsAt = period.endsAt;
+    }
+
+    if (!seller.marketplaceSlotsPurchased) {
+      const marketplaceSlots = resolveMarketplaceSlotsInPlan({
+        marketplaceSlotsPurchased: seller.marketplaceSlotsPurchased,
+        subscriptionPlanType: seller.subscriptionPlanType,
+        gstSlots: seller.gstSlots,
+        gstSlotsPurchased: seller.gstSlotsPurchased,
+      });
+      if (marketplaceSlots > 0) {
+        seller.marketplaceSlotsPurchased = marketplaceSlots;
+      }
+    }
+  }
 
   private async resolveLiveSlotUsage(sellerId: string) {
     const gstRecords = await this.gstModel
@@ -107,7 +175,11 @@ export class BillingService {
     });
     const { gstUsed, panUsed } = computeSlotUsageFromGstRecords(gstRecords);
     const activeGstNumbers = gstRecords
-      .map((row) => String(row.gstNumber ?? '').trim().toUpperCase())
+      .map((row) =>
+        String(row.gstNumber ?? '')
+          .trim()
+          .toUpperCase(),
+      )
       .filter(Boolean);
 
     return {
@@ -150,7 +222,10 @@ export class BillingService {
   private getUserId(user?: RequestUser): string {
     const id = typeof user?.id === 'string' ? user.id.trim() : '';
     if (!id) {
-      throw new BadRequestException({ success: false, message: 'Invalid user' });
+      throw new BadRequestException({
+        success: false,
+        message: 'Invalid user',
+      });
     }
     return id;
   }
@@ -193,7 +268,10 @@ export class BillingService {
   private async getSellerForUser(user?: RequestUser) {
     const seller = await this.findSellerByUser(user);
     if (!seller) {
-      throw new NotFoundException({ success: false, message: 'Seller not found' });
+      throw new NotFoundException({
+        success: false,
+        message: 'Seller not found',
+      });
     }
     const sellerId =
       seller._id instanceof Types.ObjectId
@@ -219,7 +297,11 @@ export class BillingService {
     const isTrialAccount = isTrialSellerAccount(seller);
 
     if (isTrialAccount) {
-      if (seller.trialStatus === 'active' && trialEnd && trialEnd.getTime() >= now) {
+      if (
+        seller.trialStatus === 'active' &&
+        trialEnd &&
+        trialEnd.getTime() >= now
+      ) {
         return 'active';
       }
       if (
@@ -298,7 +380,9 @@ export class BillingService {
       invoiceNumber,
       type: 'subscription',
       description,
-      issueDate: issueDate ? new Date(issueDate).toISOString() : new Date().toISOString(),
+      issueDate: issueDate
+        ? new Date(issueDate).toISOString()
+        : new Date().toISOString(),
       amount: totalAmount,
       baseAmount,
       gstAmount,
@@ -315,7 +399,10 @@ export class BillingService {
     snapshot?: SubscriptionDisplaySnapshot,
   ): Promise<BillingInvoiceSummary[]> {
     const filter: Record<string, unknown> = {
-      $or: [{ sellerId }, ...(seller.leadId ? [{ leadId: seller.leadId }] : [])],
+      $or: [
+        { sellerId },
+        ...(seller.leadId ? [{ leadId: seller.leadId }] : []),
+      ],
     };
     const records = await this.subscriptionModel
       .find(filter)
@@ -470,16 +557,19 @@ export class BillingService {
       }
     }
     return Array.from(byNumber.values()).sort(
-      (a, b) => new Date(b.issueDate).getTime() - new Date(a.issueDate).getTime(),
+      (a, b) =>
+        new Date(b.issueDate).getTime() - new Date(a.issueDate).getTime(),
     );
   }
 
   async getSummary(user?: RequestUser) {
     const { userId, seller } = await this.getSellerForUser(user);
+    await this.enrichSellerSubscriptionFromPaymentOrder(seller);
 
     const reconciliationMonths = Array.isArray(seller.reconciliationMonths)
       ? [...seller.reconciliationMonths].sort()
       : [];
+    const financialYears = groupReportMonthsByFinancialYear(reconciliationMonths);
     const checkoutSelections = await this.resolveCheckoutSelectionsForSeller(
       userId,
       reconciliationMonths,
@@ -578,6 +668,7 @@ export class BillingService {
           subscriptionPlanType: seller.subscriptionPlanType,
           subscriptionPlanLabel: subscriptionSnapshot.planLabel,
           reconciliationMonths,
+          financialYears,
           allowedImportMonths,
           startsAt: validity.startsAt?.toISOString(),
           endsAt: validity.endsAt?.toISOString(),
@@ -638,6 +729,9 @@ export class BillingService {
           planLabel: subscriptionSnapshot.planLabel,
           planType: subscriptionSnapshot.planType,
           reconciliationMonths: subscriptionSnapshot.reconciliationMonths,
+          financialYears: groupReportMonthsByFinancialYear(
+            subscriptionSnapshot.reconciliationMonths,
+          ),
           billableMonthCount: subscriptionSnapshot.billableMonthCount,
           totalMonthlyRate: subscriptionSnapshot.totalMonthlyRate,
           gstProfilesInPlan: subscriptionSnapshot.gstProfilesInPlan,
@@ -650,7 +744,8 @@ export class BillingService {
           totalPaid,
           totalPending,
           invoiceCount: invoices.length,
-          lastPaymentDate: lastPaidInvoice?.paymentDate ?? lastPaidInvoice?.issueDate,
+          lastPaymentDate:
+            lastPaidInvoice?.paymentDate ?? lastPaidInvoice?.issueDate,
         },
         invoices,
       },
@@ -690,7 +785,9 @@ export class BillingService {
 
     const selections: GstCheckoutSelection[] = [];
     for (const record of gstRecords) {
-      const gstNumber = String(record.gstNumber ?? '').trim().toUpperCase();
+      const gstNumber = String(record.gstNumber ?? '')
+        .trim()
+        .toUpperCase();
       if (!gstNumber) {
         continue;
       }
@@ -809,7 +906,10 @@ export class BillingService {
 
   async buildInvoiceDownload(user?: RequestUser, invoiceId?: string) {
     if (!invoiceId?.trim()) {
-      throw new BadRequestException({ success: false, message: 'Invoice id required' });
+      throw new BadRequestException({
+        success: false,
+        message: 'Invoice id required',
+      });
     }
     const { userId, seller } = await this.getSellerForUser(user);
     const invoice = await this.resolveInvoiceDocument(

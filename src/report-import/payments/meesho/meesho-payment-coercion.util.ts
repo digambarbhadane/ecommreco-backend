@@ -9,10 +9,7 @@ export function coerceMeeshoString(value: unknown): string | null {
 export function coerceMeeshoNumber(value: unknown): number | null {
   if (value === null || value === undefined || value === '') return null;
   if (typeof value === 'number' && Number.isFinite(value)) return value;
-  const cleaned = String(value)
-    .replace(/[₹,]/g, '')
-    .replace(/\s+/g, '')
-    .trim();
+  const cleaned = String(value).replace(/[₹,]/g, '').replace(/\s+/g, '').trim();
   if (!cleaned) return null;
   if (/^#(n\/?a|ref!|value!|div\/0!)/i.test(cleaned)) return null;
   const parsed = Number(cleaned);

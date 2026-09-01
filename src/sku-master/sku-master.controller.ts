@@ -10,6 +10,7 @@ import {
   Body,
   Controller,
   Get,
+  Logger,
   Post,
   Put,
   Query,
@@ -28,9 +29,13 @@ import { MULTER_UPLOAD_LIMITS } from '../config/upload-limits';
 import { ListSkuMasterQueryDto } from './dto/list-sku-master.query.dto';
 import { ExportSkuMasterQueryDto } from './dto/export-sku-master.query.dto';
 import { UpsertSkuMasterDto } from './dto/upsert-sku-master.dto';
-import { BulkUpdateSkuMasterDto, BulkUpdateSkuMasterItemDto } from './dto/bulk-update-sku-master.dto';
+import {
+  BulkUpdateSkuMasterDto,
+  BulkUpdateSkuMasterItemDto,
+} from './dto/bulk-update-sku-master.dto';
 import { SkuMasterService } from './sku-master.service';
 import { SkuMasterExcelService } from './sku-master-excel.service';
+import { SkuMasterSyncService } from './sku-master-sync.service';
 
 type RequestUser = {
   id?: string;
@@ -48,10 +53,25 @@ type RequestWithUser = Request & {
 @UseGuards(AuthGuard('jwt'), RolesGuard)
 @Roles('seller')
 export class SkuMasterController {
+  private readonly logger = new Logger(SkuMasterController.name);
+
   constructor(
     private readonly skuMasterService: SkuMasterService,
     private readonly skuMasterExcelService: SkuMasterExcelService,
+    private readonly skuMasterSyncService: SkuMasterSyncService,
   ) {}
+
+  @Post('sync')
+  @ApiOperation({
+    summary:
+      'Ensure SKU Master rows exist for all marketplace SKUs in uploaded reports',
+  })
+  sync(@Query('gstId') gstId: string | undefined, @Req() req: RequestWithUser) {
+    return this.skuMasterSyncService.syncForScope(
+      gstId?.trim() || undefined,
+      req.user ?? {},
+    );
+  }
 
   @Get('export')
   @ApiOperation({ summary: 'Download SKU master mappings as Excel' })
@@ -110,10 +130,7 @@ export class SkuMasterController {
     @Body() body: BulkUpdateSkuMasterDto,
     @Req() req: RequestWithUser,
   ) {
-    return this.skuMasterExcelService.commitUpdates(
-      body.items,
-      req.user ?? {},
-    );
+    return this.skuMasterExcelService.commitUpdates(body.items, req.user ?? {});
   }
 
   @Post('import')
@@ -145,16 +162,31 @@ export class SkuMasterController {
     description:
       'Returns unique SKUs from import rows for the selected GST, merged with saved master SKU mappings.',
   })
-  list(@Query() query: ListSkuMasterQueryDto, @Req() req: RequestWithUser) {
+  async list(
+    @Query() query: ListSkuMasterQueryDto,
+    @Req() req: RequestWithUser,
+  ) {
+    // Ensure Flipkart/Myntra/Meesho/etc. SKUs from imports exist in
+    // sku_master_mapping before listing (throttled inside sync service).
+    try {
+      await this.skuMasterSyncService.syncForScope(
+        query.gstId?.trim() || undefined,
+        req.user ?? {},
+      );
+    } catch (err: unknown) {
+      const message =
+        err && typeof err === 'object' && 'message' in err
+          ? String((err as { message?: unknown }).message)
+          : String(err);
+      // Still return whatever mappings exist; do not fail the page.
+      this.logger.warn(`sync before list failed: ${message}`);
+    }
     return this.skuMasterService.list(query, req.user ?? {});
   }
 
   @Put('mapping')
   @ApiOperation({ summary: 'Save master SKU for a marketplace SKU' })
-  upsertMapping(
-    @Body() dto: UpsertSkuMasterDto,
-    @Req() req: RequestWithUser,
-  ) {
+  upsertMapping(@Body() dto: UpsertSkuMasterDto, @Req() req: RequestWithUser) {
     return this.skuMasterService.upsertMapping(dto, req.user ?? {});
   }
 

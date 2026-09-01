@@ -26,7 +26,11 @@ export class PlatformMarketplacesService implements OnModuleInit {
     await this.seedDefaults();
   }
 
-  private toView(item: PlatformMarketplaceDocument | (PlatformMarketplace & { _id?: unknown })) {
+  private toView(
+    item:
+      | PlatformMarketplaceDocument
+      | (PlatformMarketplace & { _id?: unknown }),
+  ) {
     const source = item as PlatformMarketplace & { _id?: unknown };
     return {
       ...source,
@@ -67,7 +71,10 @@ export class PlatformMarketplacesService implements OnModuleInit {
   }
 
   async getById(id: string) {
-    const marketplace = await this.platformMarketplaceModel.findById(id).lean().exec();
+    const marketplace = await this.platformMarketplaceModel
+      .findById(id)
+      .lean()
+      .exec();
     if (!marketplace) {
       throw new NotFoundException('Marketplace not found');
     }
@@ -93,7 +100,10 @@ export class PlatformMarketplacesService implements OnModuleInit {
       throw new BadRequestException('Unable to generate marketplace slug');
     }
 
-    const existing = await this.platformMarketplaceModel.findOne({ slug }).lean().exec();
+    const existing = await this.platformMarketplaceModel
+      .findOne({ slug })
+      .lean()
+      .exec();
     if (existing) {
       throw new BadRequestException('Marketplace already exists');
     }
@@ -107,7 +117,10 @@ export class PlatformMarketplacesService implements OnModuleInit {
       isActive: payload.status !== 'inactive',
     });
 
-    const saved = await this.platformMarketplaceModel.findById(created._id).lean().exec();
+    const saved = await this.platformMarketplaceModel
+      .findById(created._id)
+      .lean()
+      .exec();
     return {
       success: true,
       data: this.toView(saved as PlatformMarketplace & { _id?: unknown }),
@@ -124,7 +137,10 @@ export class PlatformMarketplacesService implements OnModuleInit {
       status: 'active' | 'inactive';
     }>,
   ) {
-    const current = await this.platformMarketplaceModel.findById(id).lean().exec();
+    const current = await this.platformMarketplaceModel
+      .findById(id)
+      .lean()
+      .exec();
     if (!current) {
       throw new NotFoundException('Marketplace not found');
     }
@@ -166,7 +182,10 @@ export class PlatformMarketplacesService implements OnModuleInit {
   }
 
   async remove(id: string) {
-    const removed = await this.platformMarketplaceModel.findByIdAndDelete(id).lean().exec();
+    const removed = await this.platformMarketplaceModel
+      .findByIdAndDelete(id)
+      .lean()
+      .exec();
     if (!removed) {
       throw new NotFoundException('Marketplace not found');
     }

@@ -142,6 +142,69 @@ describe('MyntraImportService', () => {
     );
   });
 
+  it('rewrites matched RTO orderID to the original sale Order Id when they differ', async () => {
+    const parsed = {
+      gstrReportPacked: {
+        headers: [
+          'order_id',
+          'seller_gstin',
+          'quantity',
+          'seller_price',
+          'base_value',
+          'igst_amt',
+        ],
+        rows: [
+          {
+            __sheetName: 'GSTR',
+            __rowNumber: 2,
+            order_id: '5698497068',
+            seller_gstin: '07AAXFB7609K1ZS',
+            quantity: 1,
+            seller_price: 1846,
+            base_value: 1564,
+            igst_amt: 282,
+          },
+        ],
+      },
+      mDirectOrders: { headers: [], rows: [] },
+      salesRevenueB2c: {
+        headers: ['Sale_Order_Code', 'Invoice_Number', 'Packing_Date'],
+        rows: [
+          {
+            __sheetName: 'Sales',
+            __rowNumber: 2,
+            Sale_Order_Code: '5698497068',
+            Invoice_Number: 'I2426MX000000365',
+            Packing_Date: '2025-05-12',
+          },
+        ],
+      },
+      gstrReportRto: {
+        headers: ['order_id', 'invoice_number', 'order_cancel_date'],
+        rows: [
+          {
+            __sheetName: 'RTO',
+            __rowNumber: 2,
+            order_id: '8846287633',
+            invoice_number: 'I2426MX000000365',
+            order_cancel_date: '2025-12-08',
+          },
+        ],
+      },
+      gstrReportRt: { headers: [], rows: [] },
+      mDirectReturns: { headers: [], rows: [] },
+    };
+
+    const result = await service.buildNormalizedRows(parsed, baseContext);
+    const sale = result.rows.find((row) => row.documentType === 'SALE');
+    const rto = result.rows.find((row) => row.documentType === 'RTO Return');
+    expect(sale?.orderID).toBe('5698497068');
+    expect(sale?.invoiceNo).toBe('I2426MX000000365');
+    expect(rto?.myntraReturnMatchStatus).toBe('MATCHED_CURRENT_MONTH');
+    expect(rto?.orderID).toBe('5698497068');
+    expect(rto?.invoiceAmount).toBe(-1846);
+  });
+
   it('infers igst_rate from RT amounts when rate column is missing', async () => {
     const parsed = {
       gstrReportPacked: { headers: [], rows: [] },
@@ -150,7 +213,7 @@ describe('MyntraImportService', () => {
       gstrReportRto: { headers: [], rows: [] },
       gstrReportRt: {
         headers: [
-          'order_id',
+          'shipment_id',
           'fr_refunded_date',
           'base_value',
           'seller_price',
@@ -161,7 +224,7 @@ describe('MyntraImportService', () => {
           {
             __sheetName: 'RT',
             __rowNumber: 2,
-            order_id: '5495127221',
+            shipment_id: '5495127221',
             fr_refunded_date: '2025-06-06',
             base_value: 1535.714286,
             seller_price: 1720,
@@ -179,11 +242,57 @@ describe('MyntraImportService', () => {
       gstin: '24ESNPK1432B1Z5',
     });
     const rt = result.rows.find((row) => row.documentType === 'Customer Return');
+    expect(rt?.orderID).toBe('5495127221');
     expect(rt?.myntraReturnMatchStatus).toBe('UNMATCHED_RETURN');
     mapping.normalizeTaxByState(rt!, ['Gujarat'], ['24ESNPK1432B1Z5']);
     expect(rt?.igstRate).toBe(12);
     expect(rt?.igstAmount).toBe(-184.28571432);
     expect(rt?.gstTransactionType).toBe('inter');
+  });
+
+  it('picks shipment_id as orderID for GSTR Report RT and ignores other order ID columns', async () => {
+    const parsed = {
+      gstrReportPacked: { headers: [], rows: [] },
+      mDirectOrders: { headers: [], rows: [] },
+      salesRevenueB2c: { headers: [], rows: [] },
+      gstrReportRto: { headers: [], rows: [] },
+      gstrReportRt: {
+        headers: [
+          'shipment_id',
+          'order_id',
+          'Order ID',
+          'order_release_id',
+          'sale_order_code',
+          'Sale_Order_Code',
+          'fr_refunded_date',
+          'base_value',
+          'seller_price',
+          'igst_amt',
+        ],
+        rows: [
+          {
+            __sheetName: 'RT',
+            __rowNumber: 2,
+            shipment_id: 'SHP-999888',
+            order_id: 'IGNORED-ORD-1',
+            'Order ID': 'IGNORED-ORD-2',
+            order_release_id: 'IGNORED-ORD-3',
+            sale_order_code: 'IGNORED-ORD-4',
+            Sale_Order_Code: 'IGNORED-ORD-5',
+            fr_refunded_date: '2025-06-06',
+            base_value: 1000,
+            seller_price: 1120,
+            igst_amt: 120,
+          },
+        ],
+      },
+      mDirectReturns: { headers: [], rows: [] },
+    };
+
+    const result = await service.buildNormalizedRows(parsed, baseContext);
+    const rt = result.rows.find((row) => row.documentType === 'Customer Return');
+    expect(rt).toBeDefined();
+    expect(rt?.orderID).toBe('SHP-999888');
   });
 
   it('parses percentage GST rate strings from RT file', async () => {

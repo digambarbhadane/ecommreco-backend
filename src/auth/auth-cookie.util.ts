@@ -12,36 +12,64 @@ function normalizeOrigin(value: string) {
   return value.trim().replace(/\/+$/, '').toLowerCase();
 }
 
-function sameSiteForConfiguredOrigins():
-  | CookieOptions['sameSite']
-  | undefined {
+function isLoopbackHost(hostname: string) {
+  const host = hostname.toLowerCase();
+  return (
+    host === 'localhost' ||
+    host === '127.0.0.1' ||
+    host === '::1' ||
+    host === '0.0.0.0'
+  );
+}
+
+/**
+ * True when the browser must call the API on a different site (e.g. dev.ecommreco.com
+ * → api-dev.ecommreco.com). Local Vite proxy (localhost:8080 → localhost:5001) is NOT
+ * cross-origin from the browser's perspective when cookies are set via the proxy.
+ */
+export function isCrossOriginAuthDeployment(): boolean {
   const apiPublicUrl = String(process.env.API_PUBLIC_URL ?? '').trim();
   const frontendUrl = String(process.env.FRONTEND_URL ?? '').trim();
-  if (!apiPublicUrl || !frontendUrl) return undefined;
+  if (!apiPublicUrl || !frontendUrl) return false;
   try {
-    const apiOrigin = normalizeOrigin(new URL(apiPublicUrl).origin);
-    const feOrigin = normalizeOrigin(new URL(frontendUrl).origin);
-    return apiOrigin === feOrigin ? 'lax' : 'none';
+    const api = new URL(apiPublicUrl);
+    const fe = new URL(frontendUrl);
+    const apiOrigin = normalizeOrigin(api.origin);
+    const feOrigin = normalizeOrigin(fe.origin);
+    if (apiOrigin === feOrigin) return false;
+
+    if (isLoopbackHost(api.hostname) && isLoopbackHost(fe.hostname)) {
+      return false;
+    }
+
+    return true;
   } catch {
-    return undefined;
+    return false;
   }
 }
 
 export function getRefreshCookieOptions(): CookieOptions {
   const nodeEnv = (process.env.NODE_ENV ?? 'development').toLowerCase();
   const isProd = nodeEnv === 'production';
+  const crossOrigin = isCrossOriginAuthDeployment();
   const sameSiteEnv = String(process.env.AUTH_COOKIE_SAMESITE ?? '')
     .trim()
     .toLowerCase();
   const sameSite: CookieOptions['sameSite'] =
     sameSiteEnv === 'none' || sameSiteEnv === 'lax' || sameSiteEnv === 'strict'
       ? sameSiteEnv
-      : sameSiteForConfiguredOrigins() ?? 'lax';
+      : crossOrigin
+        ? 'none'
+        : 'lax';
   const secureFromEnv = parseBooleanEnv(process.env.AUTH_COOKIE_SECURE);
   const secure =
-    secureFromEnv || isProd || sameSite === 'none';
+    crossOrigin || sameSite === 'none'
+      ? true
+      : secureFromEnv || isProd;
   const cookieDomain = String(process.env.AUTH_COOKIE_DOMAIN ?? '').trim();
-  const cookiePath = String(process.env.AUTH_COOKIE_PATH ?? '').trim() || DEFAULT_REFRESH_COOKIE_PATH;
+  const cookiePath =
+    String(process.env.AUTH_COOKIE_PATH ?? '').trim() ||
+    DEFAULT_REFRESH_COOKIE_PATH;
 
   return {
     httpOnly: true,

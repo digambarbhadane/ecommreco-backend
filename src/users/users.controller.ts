@@ -40,7 +40,11 @@ export class UsersController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'List all users', description: 'Returns paginated list of users. Supports limit, skip, and search filters.' })
+  @ApiOperation({
+    summary: 'List all users',
+    description:
+      'Returns paginated list of users. Supports limit, skip, and search filters.',
+  })
   list(
     @Query('limit') limit?: string,
     @Query('skip') skip?: string,
@@ -82,7 +86,10 @@ export class UsersController {
   }
 
   @Post(':id/reset-credentials')
-  @ApiOperation({ summary: 'Reset user credentials', description: 'Reset username and/or password for a user.' })
+  @ApiOperation({
+    summary: 'Reset user credentials',
+    description: 'Reset username and/or password for a user.',
+  })
   resetCredentials(
     @Param('id') id: string,
     @Body() dto: ResetCredentialsDto,

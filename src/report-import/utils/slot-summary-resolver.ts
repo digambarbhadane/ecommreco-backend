@@ -38,8 +38,14 @@ const FILENAME_SLOT_ORDER: Record<
     { slot: 'tcsSalesReturnFile', hashPrefix: 'tcsSalesReturn:' },
     { slot: 'orderReportFile', hashPrefix: 'order:' },
     { slot: 'returnInTransitReportFile', hashPrefix: 'returnInTransit:' },
-    { slot: 'returnOutForDeliveryReportFile', hashPrefix: 'returnOutForDelivery:' },
-    { slot: 'returnDeliveryCompleteReportFile', hashPrefix: 'returnDeliveryComplete:' },
+    {
+      slot: 'returnOutForDeliveryReportFile',
+      hashPrefix: 'returnOutForDelivery:',
+    },
+    {
+      slot: 'returnDeliveryCompleteReportFile',
+      hashPrefix: 'returnDeliveryComplete:',
+    },
     { slot: 'returnDeliveryCompleteReportFile', hashPrefix: 'return:' },
     { slot: 'paymentReportFile', hashPrefix: 'payment:' },
   ],
@@ -126,7 +132,7 @@ export function extractSlotFileName(
   const slotsInOrder = getUploadedSlotsInFilenameOrder(marketplace, fileHash);
   const idx = slotsInOrder.indexOf(slot);
   if (idx >= 0 && idx < parts.length) {
-    return parts[idx]!;
+    return parts[idx];
   }
 
   return combined;
@@ -200,7 +206,7 @@ export function resolveSlotSummary(input: {
     return {
       fileName,
       fileSize: slotRecord?.fileSize,
-      totalRecords: slotRecord!.totalRecords!,
+      totalRecords: slotRecord.totalRecords!,
       salesRecords: slotRecord?.salesRecords ?? 0,
       cashbackRecords: slotRecord?.cashbackRecords ?? 0,
       includeDbBreakdown: resolveSlotIncludeDbBreakdown(

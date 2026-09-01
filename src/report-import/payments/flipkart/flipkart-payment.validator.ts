@@ -14,7 +14,11 @@ const REQUIRED_FIELDS: Array<{
     column: 'Payment Date',
     reason: 'Payment Date is required',
   },
-  { field: 'sellerSku', column: 'Seller SKU', reason: 'Seller SKU is required' },
+  {
+    field: 'sellerSku',
+    column: 'Seller SKU',
+    reason: 'Seller SKU is required',
+  },
   { field: 'quantity', column: 'Quantity', reason: 'Quantity is required' },
 ];
 

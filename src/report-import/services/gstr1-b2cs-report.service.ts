@@ -71,7 +71,9 @@ export class Gstr1B2csReportService {
     const sellerAliases = await this.validationService.resolveSellerIdAliases(
       dto.sellerId,
     );
-    const gstin = String(dto.gstin ?? '').trim().toUpperCase();
+    const gstin = String(dto.gstin ?? '')
+      .trim()
+      .toUpperCase();
     const reportMonth = String(dto.reportMonth ?? '').trim();
 
     if (!gstin || !reportMonth) {
@@ -84,7 +86,7 @@ export class Gstr1B2csReportService {
       reportMonth,
     });
     if (dto.marketplace?.trim()) {
-      (baseFilter as Record<string, unknown>).marketplace = dto.marketplace.trim();
+      baseFilter.marketplace = dto.marketplace.trim();
     }
 
     const groupedRows = await this.rowModel
@@ -166,11 +168,7 @@ export class Gstr1B2csReportService {
     };
   }
 
-  private clearSheetCell(
-    sheet: XLSX.WorkSheet,
-    row: number,
-    col: number,
-  ) {
+  private clearSheetCell(sheet: XLSX.WorkSheet, row: number, col: number) {
     const ref = XLSX.utils.encode_cell({ r: row, c: col });
     if (sheet[ref]) {
       delete sheet[ref];
@@ -256,7 +254,9 @@ export class Gstr1B2csReportService {
   }> {
     const rows = await this.getRows(dto);
     if (!rows.length) {
-      throw new BadRequestException('No data found for selected GST and month.');
+      throw new BadRequestException(
+        'No data found for selected GST and month.',
+      );
     }
 
     const templatePath = this.resolveTemplatePath();
@@ -292,7 +292,12 @@ export class Gstr1B2csReportService {
       totalTaxable += item.taxableValue;
       totalCess += item.cessAmount;
       this.setSheetCellValue(b2csSheet, rowIdx, cols.typeCol, 'OE');
-      this.setSheetCellValue(b2csSheet, rowIdx, cols.posCol, item.placeOfSupply);
+      this.setSheetCellValue(
+        b2csSheet,
+        rowIdx,
+        cols.posCol,
+        item.placeOfSupply,
+      );
       this.setSheetCellValue(
         b2csSheet,
         rowIdx,
@@ -337,4 +342,3 @@ export class Gstr1B2csReportService {
     };
   }
 }
-

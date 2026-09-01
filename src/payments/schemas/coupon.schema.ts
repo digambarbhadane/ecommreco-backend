@@ -8,7 +8,13 @@ export type CouponType = (typeof COUPON_TYPES)[number];
 
 @Schema({ timestamps: true, collection: 'coupons' })
 export class Coupon {
-  @Prop({ required: true, unique: true, uppercase: true, trim: true, index: true })
+  @Prop({
+    required: true,
+    unique: true,
+    uppercase: true,
+    trim: true,
+    index: true,
+  })
   code: string;
 
   @Prop({ required: true, type: String, enum: COUPON_TYPES })

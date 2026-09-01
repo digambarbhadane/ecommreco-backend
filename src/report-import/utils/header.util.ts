@@ -39,7 +39,10 @@ export const rowLooksLikeHeaderRow = (normalizedCells: string[]): boolean => {
 };
 
 /** Match alias to a cell without treating data values (e.g. "Return") as column names. */
-export const headerAliasMatchesCell = (cell: string, alias: string): boolean => {
+export const headerAliasMatchesCell = (
+  cell: string,
+  alias: string,
+): boolean => {
   if (!cell || !alias) return false;
   if (cellLooksLikeDataValue(cell)) return false;
   if (cell === alias) return true;

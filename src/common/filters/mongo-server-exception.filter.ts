@@ -6,18 +6,32 @@ import {
   Logger,
 } from '@nestjs/common';
 import { Response } from 'express';
-import { MongoNotConnectedError, MongoServerError } from 'mongodb';
+import {
+  MongoNetworkError,
+  MongoNotConnectedError,
+  MongoServerError,
+  MongoServerSelectionError,
+} from 'mongodb';
 import {
   isMongoDisconnectedError,
   isMongoStorageQuotaError,
 } from '../utils/mongo-errors';
 
-@Catch(MongoServerError, MongoNotConnectedError)
+@Catch(
+  MongoServerError,
+  MongoNotConnectedError,
+  MongoServerSelectionError,
+  MongoNetworkError,
+)
 export class MongoServerExceptionFilter implements ExceptionFilter {
   private readonly logger = new Logger(MongoServerExceptionFilter.name);
 
   catch(
-    exception: MongoServerError | MongoNotConnectedError,
+    exception:
+      | MongoServerError
+      | MongoNotConnectedError
+      | MongoServerSelectionError
+      | MongoNetworkError,
     host: ArgumentsHost,
   ) {
     const ctx = host.switchToHttp();

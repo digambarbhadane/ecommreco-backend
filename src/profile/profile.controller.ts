@@ -1,8 +1,4 @@
-import {
-  ApiTags,
-  ApiOperation,
-  ApiBearerAuth,
-} from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import {
   Body,
   Controller,
@@ -59,7 +55,11 @@ export class ProfileController {
   }
 
   @Delete()
-  @ApiOperation({ summary: 'Delete current user profile', description: 'Soft-delete the current user account.', deprecated: true })
+  @ApiOperation({
+    summary: 'Delete current user profile',
+    description: 'Soft-delete the current user account.',
+    deprecated: true,
+  })
   remove(@Req() req: RequestWithUser) {
     return this.profileService.deleteProfile(req.user);
   }

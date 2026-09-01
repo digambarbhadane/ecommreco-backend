@@ -107,11 +107,7 @@ export function settlementCalculationStages(): PipelineStage[] {
         },
         returns: {
           $sum: {
-            $cond: [
-              { $eq: ['$calculationRole', 'return'] },
-              '$amount',
-              0,
-            ],
+            $cond: [{ $eq: ['$calculationRole', 'return'] }, '$amount', 0],
           },
         },
         expenses: {
@@ -125,11 +121,7 @@ export function settlementCalculationStages(): PipelineStage[] {
         },
         adjustments: {
           $sum: {
-            $cond: [
-              { $eq: ['$calculationRole', 'adjustment'] },
-              '$amount',
-              0,
-            ],
+            $cond: [{ $eq: ['$calculationRole', 'adjustment'] }, '$amount', 0],
           },
         },
         received: {
@@ -190,10 +182,7 @@ export function settlementCalculationStages(): PipelineStage[] {
       $set: {
         settlementId: { $arrayElemAt: ['$settlementIds', 0] },
         receivable: {
-          $add: [
-            { $subtract: ['$netSale', '$expenses'] },
-            '$adjustments',
-          ],
+          $add: [{ $subtract: ['$netSale', '$expenses'] }, '$adjustments'],
         },
       },
     },
@@ -232,12 +221,7 @@ export function settlementCalculationStages(): PipelineStage[] {
       },
     },
     {
-      $unset: [
-        '_id',
-        'settlementIdSets',
-        'disputed',
-        'fallbackOrderDate',
-      ],
+      $unset: ['_id', 'settlementIdSets', 'disputed', 'fallbackOrderDate'],
     },
   ];
 }

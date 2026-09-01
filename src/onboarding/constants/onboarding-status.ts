@@ -31,7 +31,8 @@ export const ONBOARDING_PAYMENT_STATUSES = [
   'EXPIRED',
 ] as const;
 
-export type OnboardingPaymentStatus = (typeof ONBOARDING_PAYMENT_STATUSES)[number];
+export type OnboardingPaymentStatus =
+  (typeof ONBOARDING_PAYMENT_STATUSES)[number];
 
 export const ONBOARDING_TIMELINE_EVENTS = {
   REGISTRATION_COMPLETED: 'REGISTRATION_COMPLETED',
@@ -49,7 +50,9 @@ export const ONBOARDING_TIMELINE_EVENTS = {
 export const ONBOARDING_CHECKOUT_TYPE = 'onboarding_trial';
 
 export function isOnboardingV2Enabled(env?: string): boolean {
-  return String(env ?? process.env.ONBOARDING_V2_ENABLED ?? '')
-    .trim()
-    .toLowerCase() === 'true';
+  return (
+    String(env ?? process.env.ONBOARDING_V2_ENABLED ?? '')
+      .trim()
+      .toLowerCase() === 'true'
+  );
 }

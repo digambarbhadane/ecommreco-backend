@@ -347,9 +347,13 @@ export class FileParserService {
     const salesHeaders = this.extractHeaders(sales, salesHeaderRowIndex, {
       gstColumns,
     });
-    const cashbackHeaders = this.extractHeaders(cashback, cashbackHeaderRowIndex, {
-      gstColumns,
-    });
+    const cashbackHeaders = this.extractHeaders(
+      cashback,
+      cashbackHeaderRowIndex,
+      {
+        gstColumns,
+      },
+    );
     const salesRowsHydrated = this.attachDetectedGstinToRows(
       salesRows,
       salesHeaders,
@@ -367,8 +371,11 @@ export class FileParserService {
     const gstinFromParsedRows = new Set([
       ...salesGstins,
       ...cashbackGstins,
-      ...extractGstinsFromRows(salesRowsHydrated, flipkartImportMapping, salesHeaders)
-        .values,
+      ...extractGstinsFromRows(
+        salesRowsHydrated,
+        flipkartImportMapping,
+        salesHeaders,
+      ).values,
       ...extractGstinsFromRows(
         cashbackRowsHydrated,
         flipkartImportMapping,
@@ -394,7 +401,9 @@ export class FileParserService {
       cellDates: true,
     });
     if (!workbook.SheetNames.length) {
-      throw new BadRequestException('Payment workbook does not contain any sheet');
+      throw new BadRequestException(
+        'Payment workbook does not contain any sheet',
+      );
     }
 
     const resolved = this.resolveFlipkartPaymentSheet(workbook);
@@ -425,7 +434,9 @@ export class FileParserService {
       cellText: true,
     });
     if (!workbook.SheetNames.length) {
-      throw new BadRequestException('Payment workbook does not contain any sheet');
+      throw new BadRequestException(
+        'Payment workbook does not contain any sheet',
+      );
     }
 
     const resolvedOrders = this.resolveFlipkartPaymentSheet(workbook);
@@ -501,7 +512,9 @@ export class FileParserService {
       cellDates: true,
     });
     if (!workbook.SheetNames.length) {
-      throw new BadRequestException('Return workbook does not contain any sheet');
+      throw new BadRequestException(
+        'Return workbook does not contain any sheet',
+      );
     }
 
     const resolved = this.resolveFlipkartReturnSheet(workbook);
@@ -525,7 +538,9 @@ export class FileParserService {
       cellDates: true,
     });
     if (!workbook.SheetNames.length) {
-      throw new BadRequestException('Return workbook does not contain any sheet');
+      throw new BadRequestException(
+        'Return workbook does not contain any sheet',
+      );
     }
 
     const resolved = this.resolveAmazonReturnSheet(workbook);
@@ -570,7 +585,9 @@ export class FileParserService {
       cellDates: true,
     });
     if (!workbook.SheetNames.length) {
-      throw new BadRequestException('Payment workbook does not contain any sheet');
+      throw new BadRequestException(
+        'Payment workbook does not contain any sheet',
+      );
     }
 
     const resolved = this.resolveMeeshoPaymentSheet(workbook);
@@ -602,12 +619,17 @@ export class FileParserService {
       cellDates: true,
     });
     if (!workbook.SheetNames.length) {
-      throw new BadRequestException('Payment workbook does not contain any sheet');
+      throw new BadRequestException(
+        'Payment workbook does not contain any sheet',
+      );
     }
 
     const sheets: ParsedMeeshoPaymentSheet[] = [];
     for (const def of MEESHO_PAYMENT_SHEETS) {
-      const sheetName = resolveMeeshoPaymentSheetName(workbook.SheetNames, def.kind);
+      const sheetName = resolveMeeshoPaymentSheetName(
+        workbook.SheetNames,
+        def.kind,
+      );
       if (!sheetName) {
         throw new BadRequestException(
           `Required sheet '${def.label}' not found.`,
@@ -682,7 +704,11 @@ export class FileParserService {
       MEESHO_PAYMENT_HEADER_ROW_INDEX + MEESHO_PAYMENT_DATA_START_OFFSET;
     const rows: unknown[][] = [];
 
-    for (let rowIndex = dataStart; rowIndex < matrixRows.length; rowIndex += 1) {
+    for (
+      let rowIndex = dataStart;
+      rowIndex < matrixRows.length;
+      rowIndex += 1
+    ) {
       const cells = matrixRows[rowIndex];
       if (!Array.isArray(cells)) continue;
       const isEmpty = cells.every(
@@ -706,7 +732,11 @@ export class FileParserService {
     const firstSheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[firstSheetName];
     const headerRowIndex = this.detectMyntraHeaderRowIndex(sheet, fileKind);
-    const rows = this.parseMyntraSheetData(sheet, firstSheetName, headerRowIndex);
+    const rows = this.parseMyntraSheetData(
+      sheet,
+      firstSheetName,
+      headerRowIndex,
+    );
     return {
       rows,
       headers: this.resolveHeaders(sheet, headerRowIndex, rows),
@@ -884,14 +914,20 @@ export class FileParserService {
       absorb(r, c);
     }
 
-    const dense = (sheet as XLSX.WorkSheet & { '!data'?: unknown[][] })['!data'];
+    const dense = (sheet as XLSX.WorkSheet & { '!data'?: unknown[][] })[
+      '!data'
+    ];
     if (dense?.length) {
       for (let r = 0; r < dense.length; r += 1) {
         const row = dense[r];
         if (!row?.length) continue;
         for (let c = 0; c < row.length; c += 1) {
           const cell = row[c];
-          if (cell === null || cell === undefined || String(cell).trim() === '') {
+          if (
+            cell === null ||
+            cell === undefined ||
+            String(cell).trim() === ''
+          ) {
             continue;
           }
           absorb(r, c);
@@ -964,7 +1000,11 @@ export class FileParserService {
 
     const dataStartRow =
       gstColumnsForDataStart.length > 0
-        ? this.resolveDataStartRow(matrix, headerRowIndex, gstColumnsForDataStart)
+        ? this.resolveDataStartRow(
+            matrix,
+            headerRowIndex,
+            gstColumnsForDataStart,
+          )
         : headerRowIndex + dataStartOffsetAfterHeader;
 
     const parsed: ParsedSheetRow[] = [];
@@ -1023,7 +1063,10 @@ export class FileParserService {
       absoluteHeaderRow,
       excelColumns,
     );
-    const previewForStartRow = this.sheetPreviewMatrix(sheet, headerRowIndex + 4);
+    const previewForStartRow = this.sheetPreviewMatrix(
+      sheet,
+      headerRowIndex + 4,
+    );
     const dataStartMatrixRow = this.resolveDataStartRow(
       previewForStartRow,
       headerRowIndex,
@@ -1034,8 +1077,14 @@ export class FileParserService {
 
     for (const colIndex of colIndices) {
       let lastGstin = '';
-      for (let row = dataStartAbsolute - 1; row >= absoluteHeaderRow; row -= 1) {
-        const seed = parseGstinFromCell(this.getCellValue(sheet, row, colIndex));
+      for (
+        let row = dataStartAbsolute - 1;
+        row >= absoluteHeaderRow;
+        row -= 1
+      ) {
+        const seed = parseGstinFromCell(
+          this.getCellValue(sheet, row, colIndex),
+        );
         if (seed) {
           lastGstin = seed;
           break;
@@ -1092,7 +1141,8 @@ export class FileParserService {
     for (const name of workbook.SheetNames) {
       const norm = normalizeHeader(name);
       const hit = normalizedAliases.some(
-        (alias) => norm === alias || norm.includes(alias) || alias.includes(norm),
+        (alias) =>
+          norm === alias || norm.includes(alias) || alias.includes(norm),
       );
       if (hit) {
         return { name, sheet: workbook.Sheets[name] };
@@ -1108,9 +1158,9 @@ export class FileParserService {
     row: number,
     col: number,
   ): XLSX.CellObject | null | undefined {
-    const dense = (sheet as XLSX.WorkSheet & { '!data'?: (XLSX.CellObject | null)[][] })[
-      '!data'
-    ];
+    const dense = (
+      sheet as XLSX.WorkSheet & { '!data'?: (XLSX.CellObject | null)[][] }
+    )['!data'];
     if (dense) {
       return dense[row]?.[col] ?? null;
     }
@@ -1156,10 +1206,7 @@ export class FileParserService {
   /**
    * Read only the first N rows for header detection (avoids building a full sheet matrix).
    */
-  private sheetPreviewMatrix(
-    sheet: XLSX.WorkSheet,
-    maxRows = 80,
-  ): unknown[][] {
+  private sheetPreviewMatrix(sheet: XLSX.WorkSheet, maxRows = 80): unknown[][] {
     const range = this.getSheetRange(sheet);
     const startRow = Math.max(0, range.s.r);
     const endRow = Math.min(
@@ -1252,11 +1299,7 @@ export class FileParserService {
       absoluteCol: number,
     ): unknown => {
       const matrixCol = absoluteCol - range.s.c;
-      if (
-        Array.isArray(cells) &&
-        matrixCol >= 0 &&
-        matrixCol < cells.length
-      ) {
+      if (Array.isArray(cells) && matrixCol >= 0 && matrixCol < cells.length) {
         const fromMatrix = cells[matrixCol];
         if (
           fromMatrix !== null &&
@@ -1331,7 +1374,10 @@ export class FileParserService {
     const range = this.getSheetRange(sheet);
     if (range.e.r < range.s.r) return [];
 
-    const previewForStartRow = this.sheetPreviewMatrix(sheet, headerRowIndex + 4);
+    const previewForStartRow = this.sheetPreviewMatrix(
+      sheet,
+      headerRowIndex + 4,
+    );
     const absoluteHeaderRow = this.toAbsoluteRow(sheet, headerRowIndex);
     const colIndices = this.resolveGstColumnIndicesFromSheet(
       sheet,
@@ -1348,8 +1394,14 @@ export class FileParserService {
 
     for (const colIndex of colIndices) {
       let lastGstin = '';
-      for (let row = dataStartAbsolute - 1; row >= absoluteHeaderRow; row -= 1) {
-        const seed = parseGstinFromCell(this.getCellValue(sheet, row, colIndex));
+      for (
+        let row = dataStartAbsolute - 1;
+        row >= absoluteHeaderRow;
+        row -= 1
+      ) {
+        const seed = parseGstinFromCell(
+          this.getCellValue(sheet, row, colIndex),
+        );
         if (seed) {
           lastGstin = seed;
           values.add(seed);
@@ -1415,7 +1467,9 @@ export class FileParserService {
 
     for (const rowIndex of rowsToScan) {
       for (let col = range.s.c; col <= range.e.c; col += 1) {
-        const label = String(this.getCellValue(sheet, rowIndex, col) ?? '').trim();
+        const label = String(
+          this.getCellValue(sheet, rowIndex, col) ?? '',
+        ).trim();
         if (!label) continue;
         if (!headerMatchesAnyExcelColumn(label, excelColumns)) continue;
 
@@ -1643,7 +1697,9 @@ export class FileParserService {
   }
 
   private flipkartPaymentRowHasAnchor(normalizedCells: string[]): boolean {
-    const headerLike = normalizedCells.filter((c) => !cellLooksLikeDataValue(c));
+    const headerLike = normalizedCells.filter(
+      (c) => !cellLooksLikeDataValue(c),
+    );
     if (!headerLike.length) return false;
 
     const hasOrderId = headerLike.some(
@@ -1661,10 +1717,9 @@ export class FileParserService {
   }
 
   private scoreFlipkartPaymentHeaderRow(normalizedCells: string[]): number {
-    return this.scoreMeeshoHeaderRow(
-      normalizedCells,
-      [...FLIPKART_PAYMENT_HEADER_ALIASES],
-    );
+    return this.scoreMeeshoHeaderRow(normalizedCells, [
+      ...FLIPKART_PAYMENT_HEADER_ALIASES,
+    ]);
   }
 
   /** Enrich Storage_Recall: forward-fill NEFT, compute SUM(J:K) when formula is blank. */
@@ -1766,10 +1821,7 @@ export class FileParserService {
     const detected = this.detectFlipkartSecondaryPaymentHeaderRowIndex(sheet);
     if (detected >= 0) return detected;
 
-    for (const candidate of [
-      FLIPKART_PAYMENT_SECONDARY_HEADER_ROW_INDEX,
-      0,
-    ]) {
+    for (const candidate of [FLIPKART_PAYMENT_SECONDARY_HEADER_ROW_INDEX, 0]) {
       const matrix = this.sheetPreviewMatrix(sheet, candidate + 1);
       const row = matrix[candidate];
       if (!Array.isArray(row)) continue;
@@ -1793,10 +1845,11 @@ export class FileParserService {
       .map(([, value]) => String(value ?? '').trim())
       .filter(Boolean);
     if (!values.length) return true;
-    const legendLike = values.filter((value) =>
-      /^[A-Z]{1,3}(?:\s*[+\-=].*)?$/i.test(value) ||
-      /^sum\(/i.test(value) ||
-      /^\([a-z0-9+\-\s]+\)$/i.test(value),
+    const legendLike = values.filter(
+      (value) =>
+        /^[A-Z]{1,3}(?:\s*[+\-=].*)?$/i.test(value) ||
+        /^sum\(/i.test(value) ||
+        /^\([a-z0-9+\-\s]+\)$/i.test(value),
     ).length;
     return legendLike >= Math.max(2, Math.ceil(values.length * 0.6));
   }
@@ -1814,9 +1867,12 @@ export class FileParserService {
       ...workbook.SheetNames.filter((name) => !namedCandidates.includes(name)),
     ];
 
-    let best:
-      | { sheetName: string; sheet: XLSX.WorkSheet; headerRowIndex: number; score: number }
-      | null = null;
+    let best: {
+      sheetName: string;
+      sheet: XLSX.WorkSheet;
+      headerRowIndex: number;
+      score: number;
+    } | null = null;
 
     for (const sheetName of scanOrder) {
       const sheet = workbook.Sheets[sheetName];
@@ -1860,7 +1916,9 @@ export class FileParserService {
   }
 
   private flipkartReturnRowHasAnchor(normalizedCells: string[]): boolean {
-    const headerLike = normalizedCells.filter((c) => !cellLooksLikeDataValue(c));
+    const headerLike = normalizedCells.filter(
+      (c) => !cellLooksLikeDataValue(c),
+    );
     if (!headerLike.length) return false;
 
     const hasOrderId = headerLike.some(
@@ -1877,10 +1935,9 @@ export class FileParserService {
   }
 
   private scoreFlipkartReturnHeaderRow(normalizedCells: string[]): number {
-    return this.scoreMeeshoHeaderRow(
-      normalizedCells,
-      [...FLIPKART_RETURN_HEADER_ALIASES],
-    );
+    return this.scoreMeeshoHeaderRow(normalizedCells, [
+      ...FLIPKART_RETURN_HEADER_ALIASES,
+    ]);
   }
 
   private detectFlipkartReturnHeaderRowIndex(sheet: XLSX.WorkSheet): number {
@@ -1924,9 +1981,12 @@ export class FileParserService {
       ...workbook.SheetNames.filter((name) => !namedCandidates.includes(name)),
     ];
 
-    let best:
-      | { sheetName: string; sheet: XLSX.WorkSheet; headerRowIndex: number; score: number }
-      | null = null;
+    let best: {
+      sheetName: string;
+      sheet: XLSX.WorkSheet;
+      headerRowIndex: number;
+      score: number;
+    } | null = null;
 
     for (const sheetName of scanOrder) {
       const sheet = workbook.Sheets[sheetName];
@@ -2021,9 +2081,12 @@ export class FileParserService {
       ...workbook.SheetNames.filter((name) => !namedCandidates.includes(name)),
     ];
 
-    let best:
-      | { sheetName: string; sheet: XLSX.WorkSheet; headerRowIndex: number; score: number }
-      | null = null;
+    let best: {
+      sheetName: string;
+      sheet: XLSX.WorkSheet;
+      headerRowIndex: number;
+      score: number;
+    } | null = null;
 
     for (const sheetName of scanOrder) {
       const sheet = workbook.Sheets[sheetName];
@@ -2067,7 +2130,9 @@ export class FileParserService {
   }
 
   private meeshoPaymentRowHasAnchor(normalizedCells: string[]): boolean {
-    const headerLike = normalizedCells.filter((c) => !cellLooksLikeDataValue(c));
+    const headerLike = normalizedCells.filter(
+      (c) => !cellLooksLikeDataValue(c),
+    );
     if (!headerLike.length) return false;
 
     const hasSubOrder = headerLike.some(
@@ -2087,10 +2152,9 @@ export class FileParserService {
   }
 
   private scoreMeeshoPaymentHeaderRow(normalizedCells: string[]): number {
-    return this.scoreMeeshoHeaderRow(
-      normalizedCells,
-      [...MEESHO_PAYMENT_HEADER_ALIASES],
-    );
+    return this.scoreMeeshoHeaderRow(normalizedCells, [
+      ...MEESHO_PAYMENT_HEADER_ALIASES,
+    ]);
   }
 
   private detectMeeshoPaymentHeaderRowIndex(sheet: XLSX.WorkSheet): number {
@@ -2121,9 +2185,11 @@ export class FileParserService {
     return bestIndex;
   }
 
-  private resolveMeeshoPaymentSheet(
-    workbook: XLSX.WorkBook,
-  ): { sheetName: string; sheet: XLSX.WorkSheet; headerRowIndex: number } | null {
+  private resolveMeeshoPaymentSheet(workbook: XLSX.WorkBook): {
+    sheetName: string;
+    sheet: XLSX.WorkSheet;
+    headerRowIndex: number;
+  } | null {
     const namedSheets = workbook.SheetNames.filter((name) =>
       this.isMeeshoPaymentSheetName(name),
     );
@@ -2132,9 +2198,12 @@ export class FileParserService {
       ...workbook.SheetNames.filter((name) => !namedSheets.includes(name)),
     ];
 
-    let best:
-      | { sheetName: string; sheet: XLSX.WorkSheet; headerRowIndex: number; score: number }
-      | null = null;
+    let best: {
+      sheetName: string;
+      sheet: XLSX.WorkSheet;
+      headerRowIndex: number;
+      score: number;
+    } | null = null;
 
     for (const sheetName of sheetOrder) {
       const sheet = workbook.Sheets[sheetName];
@@ -2172,7 +2241,9 @@ export class FileParserService {
     fileKind: MeeshoFileKind,
     normalizedCells: string[],
   ): boolean {
-    const headerLike = normalizedCells.filter((c) => !cellLooksLikeDataValue(c));
+    const headerLike = normalizedCells.filter(
+      (c) => !cellLooksLikeDataValue(c),
+    );
     if (!headerLike.length) return false;
 
     if (fileKind === 'tcsSales') {
@@ -2185,8 +2256,7 @@ export class FileParserService {
     }
     if (fileKind === 'tcsSalesReturn') {
       return headerLike.some(
-        (cell) =>
-          cell.includes('sub order') || cell.includes('cancel return'),
+        (cell) => cell.includes('sub order') || cell.includes('cancel return'),
       );
     }
     if (fileKind === 'orderReport') {
@@ -2228,19 +2298,25 @@ export class FileParserService {
     normalizedCells: string[],
     aliases: string[],
   ): number {
-    const headerLike = normalizedCells.filter((c) => !cellLooksLikeDataValue(c));
+    const headerLike = normalizedCells.filter(
+      (c) => !cellLooksLikeDataValue(c),
+    );
     return aliases.reduce(
       (acc, alias) =>
         acc +
-        (headerLike.some((cell) => headerAliasMatchesCell(cell, alias)) ? 1 : 0),
+        (headerLike.some((cell) => headerAliasMatchesCell(cell, alias))
+          ? 1
+          : 0),
       0,
     );
   }
 
   private meeshoLifecycleReportLabel(fileKind: MeeshoFileKind): string {
     if (fileKind === 'returnInTransit') return 'Return In-Transit Report';
-    if (fileKind === 'returnOutForDelivery') return 'Return Out for Delivery Report';
-    if (fileKind === 'returnDeliveryComplete') return 'Return Delivery Complete Report';
+    if (fileKind === 'returnOutForDelivery')
+      return 'Return Out for Delivery Report';
+    if (fileKind === 'returnDeliveryComplete')
+      return 'Return Delivery Complete Report';
     return 'Return Report';
   }
 
@@ -2274,7 +2350,9 @@ export class FileParserService {
           `Meesho ${label} is too short — expected column headers on row 8.`,
         );
       }
-      const fixedRowScore = evaluateRow(MEESHO_RETURN_LIFECYCLE_HEADER_ROW_INDEX);
+      const fixedRowScore = evaluateRow(
+        MEESHO_RETURN_LIFECYCLE_HEADER_ROW_INDEX,
+      );
       if (fixedRowScore >= minRequiredScore) {
         return MEESHO_RETURN_LIFECYCLE_HEADER_ROW_INDEX;
       }
@@ -2312,7 +2390,9 @@ export class FileParserService {
   private normalizePreviewRow(row: unknown[]): string[] {
     return row
       .map((item) =>
-        item === null || item === undefined ? '' : normalizeHeader(String(item)),
+        item === null || item === undefined
+          ? ''
+          : normalizeHeader(String(item)),
       )
       .filter((item) => item.length > 0);
   }
@@ -2321,7 +2401,9 @@ export class FileParserService {
     fileKind: MyntraFileKind,
     normalizedCells: string[],
   ): boolean {
-    const headerLike = normalizedCells.filter((c) => !cellLooksLikeDataValue(c));
+    const headerLike = normalizedCells.filter(
+      (c) => !cellLooksLikeDataValue(c),
+    );
     if (!headerLike.length) return false;
 
     if (fileKind === 'mDirectOrders') {
@@ -2365,9 +2447,7 @@ export class FileParserService {
       );
     }
     return headerLike.some(
-      (cell) =>
-        cell.includes('seller gstin') ||
-        cell.includes('order id'),
+      (cell) => cell.includes('seller gstin') || cell.includes('order id'),
     );
   }
 
@@ -2375,11 +2455,15 @@ export class FileParserService {
     normalizedCells: string[],
     aliases: string[],
   ): number {
-    const headerLike = normalizedCells.filter((c) => !cellLooksLikeDataValue(c));
+    const headerLike = normalizedCells.filter(
+      (c) => !cellLooksLikeDataValue(c),
+    );
     return aliases.reduce(
       (acc, alias) =>
         acc +
-        (headerLike.some((cell) => headerAliasMatchesCell(cell, alias)) ? 1 : 0),
+        (headerLike.some((cell) => headerAliasMatchesCell(cell, alias))
+          ? 1
+          : 0),
       0,
     );
   }
@@ -2394,11 +2478,7 @@ export class FileParserService {
     let bestScore = -1;
     const scanLimit = Math.min(matrix.length, 200);
     const minRequiredScore =
-      fileKind === 'mDirectReturns'
-        ? 1
-        : fileKind === 'mDirectOrders'
-          ? 2
-          : 1;
+      fileKind === 'mDirectReturns' ? 1 : fileKind === 'mDirectOrders' ? 2 : 1;
 
     const evaluateRow = (rowIndex: number): number => {
       const row = matrix[rowIndex];
@@ -2508,7 +2588,9 @@ export class FileParserService {
     return runParseInWorkerThread<ParsedWorkbook>('flipkart', buffer);
   }
 
-  parseAmazonWorkbookInWorker(buffer: Buffer): Promise<ParsedSingleSheetWorkbook> {
+  parseAmazonWorkbookInWorker(
+    buffer: Buffer,
+  ): Promise<ParsedSingleSheetWorkbook> {
     return runParseInWorkerThread<ParsedSingleSheetWorkbook>('amazon', buffer);
   }
 }

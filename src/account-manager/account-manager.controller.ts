@@ -1,8 +1,4 @@
-import {
-  ApiTags,
-  ApiOperation,
-  ApiBearerAuth,
-} from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import {
   Body,
   Controller,
@@ -62,7 +58,10 @@ export class AccountManagerController {
   }
 
   @Post('conversion-leads/create-seller')
-  @ApiOperation({ summary: 'Create seller from lead', description: 'Convert a lead into a seller account.' })
+  @ApiOperation({
+    summary: 'Create seller from lead',
+    description: 'Convert a lead into a seller account.',
+  })
   async createSellerFromLead(
     @Body() dto: CreateSellerFromLeadDto,
     @Req() req: RequestWithUser,
@@ -92,7 +91,10 @@ export class AccountManagerController {
   }
 
   @Post('verify-payment')
-  @ApiOperation({ summary: 'Verify payment', description: 'Verify payment via Cashfree.' })
+  @ApiOperation({
+    summary: 'Verify payment',
+    description: 'Verify payment via Cashfree.',
+  })
   async verifyPayment(
     @Body() dto: VerifyPaymentDto,
     @Req() req: RequestWithUser,
@@ -101,7 +103,10 @@ export class AccountManagerController {
   }
 
   @Post('create-account')
-  @ApiOperation({ summary: 'Create seller account', description: 'Create a seller account from account manager.' })
+  @ApiOperation({
+    summary: 'Create seller account',
+    description: 'Create a seller account from account manager.',
+  })
   async createAccount(
     @Body() dto: CreateAccountDto,
     @Req() req: RequestWithUser,
@@ -122,7 +127,10 @@ export class AccountManagerController {
   }
 
   @Post('request-admin-approval')
-  @ApiOperation({ summary: 'Request admin approval', description: 'Request super admin approval for an action.' })
+  @ApiOperation({
+    summary: 'Request admin approval',
+    description: 'Request super admin approval for an action.',
+  })
   async requestAdminApproval(
     @Body() dto: RequestAdminApprovalDto,
     @Req() req: RequestWithUser,

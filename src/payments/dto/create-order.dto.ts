@@ -7,7 +7,9 @@ export class CreatePaymentOrderDto {
 
   @IsOptional()
   @IsString()
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim().toUpperCase() : value))
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim().toUpperCase() : value,
+  )
   coupon_code?: string;
 
   @IsOptional()

@@ -1,10 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import {
-  IsString,
-  Matches,
-  MinLength,
-  MaxLength,
-} from 'class-validator';
+import { IsString, Matches, MinLength, MaxLength } from 'class-validator';
 
 export class ResetPasswordWithOtpDto {
   @ApiProperty({ example: '9876543210' })

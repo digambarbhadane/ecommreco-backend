@@ -12,6 +12,10 @@ import {
   UserSecurity,
   UserSecuritySchema,
 } from '../profile/schemas/user-security.schema';
+import {
+  PaymentOrder,
+  PaymentOrderSchema,
+} from '../payments/schemas/payment-order.schema';
 
 @Module({
   imports: [
@@ -20,6 +24,7 @@ import {
       { name: Seller.name, schema: SellerSchema },
       { name: User.name, schema: UserSchema },
       { name: UserSecurity.name, schema: UserSecuritySchema },
+      { name: PaymentOrder.name, schema: PaymentOrderSchema },
     ]),
     LeadsModule,
     NotificationsModule,

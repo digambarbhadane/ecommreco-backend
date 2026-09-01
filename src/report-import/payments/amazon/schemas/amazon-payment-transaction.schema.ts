@@ -61,8 +61,9 @@ export class AmazonPaymentTransaction {
   uploadedAt: Date;
 }
 
-export const AmazonPaymentTransactionSchema =
-  SchemaFactory.createForClass(AmazonPaymentTransaction);
+export const AmazonPaymentTransactionSchema = SchemaFactory.createForClass(
+  AmazonPaymentTransaction,
+);
 
 AmazonPaymentTransactionSchema.index(
   { sellerId: 1, marketplace: 1, reportMonth: 1, rowKey: 1 },
@@ -76,4 +77,3 @@ AmazonPaymentTransactionSchema.index(
   { sellerId: 1, marketplace: 1, settlementId: 1 },
   { name: 'amazon_payment_settlement_idx' },
 );
-

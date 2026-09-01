@@ -2,6 +2,7 @@ import {
   IsEmail,
   IsInt,
   IsNotEmpty,
+  IsNumber,
   IsOptional,
   IsString,
   Min,
@@ -43,7 +44,7 @@ export class CreateSellerFromLeadDto {
   durationYears?: number;
 
   @IsOptional()
-  @IsInt()
+  @IsNumber()
   @Min(0)
   amount?: number;
 

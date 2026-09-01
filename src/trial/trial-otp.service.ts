@@ -63,10 +63,7 @@ export class TrialOtpService {
           HttpStatus.TOO_MANY_REQUESTS,
         );
       }
-      if (
-        record.sendCount >= MAX_SEND_PER_WINDOW &&
-        elapsed < SEND_WINDOW_MS
-      ) {
+      if (record.sendCount >= MAX_SEND_PER_WINDOW && elapsed < SEND_WINDOW_MS) {
         throw new HttpException(
           'Too many OTP requests. Try again later.',
           HttpStatus.TOO_MANY_REQUESTS,
@@ -218,8 +215,12 @@ export class TrialOtpService {
     ]);
 
     return {
-      emailVerified: Boolean(emailRecord?.verifiedAt && emailRecord.verificationId),
-      mobileVerified: Boolean(mobileRecord?.verifiedAt && mobileRecord.verificationId),
+      emailVerified: Boolean(
+        emailRecord?.verifiedAt && emailRecord.verificationId,
+      ),
+      mobileVerified: Boolean(
+        mobileRecord?.verifiedAt && mobileRecord.verificationId,
+      ),
       emailVerificationId: emailRecord?.verificationId ?? null,
       mobileVerificationId: mobileRecord?.verificationId ?? null,
     };
@@ -242,10 +243,7 @@ export class TrialOtpService {
       })
       .exec();
 
-    if (
-      !emailRecord?.verifiedAt ||
-      emailRecord.verifiedAt.getTime() < cutoff
-    ) {
+    if (!emailRecord?.verifiedAt || emailRecord.verifiedAt.getTime() < cutoff) {
       throw new BadRequestException(
         'Email verification is required. Verify your email with OTP.',
       );
@@ -274,10 +272,7 @@ export class TrialOtpService {
       })
       .exec();
 
-    if (
-      !emailRecord?.verifiedAt ||
-      emailRecord.verifiedAt.getTime() < cutoff
-    ) {
+    if (!emailRecord?.verifiedAt || emailRecord.verifiedAt.getTime() < cutoff) {
       throw new BadRequestException(
         'Email verification is required. Verify your email with OTP.',
       );

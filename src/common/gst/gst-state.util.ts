@@ -166,7 +166,9 @@ export const resolveIndianStateCode = (value?: string | number): string => {
   return '';
 };
 
-export const getGstStateCodeFromGstin = (gstin?: string): string | undefined => {
+export const getGstStateCodeFromGstin = (
+  gstin?: string,
+): string | undefined => {
   if (!gstin) return undefined;
   const cleaned = gstin.trim().toUpperCase();
   if (cleaned.length < 2) return undefined;
@@ -262,7 +264,9 @@ const buildStateLabelToCodeSwitch = (inputExpr: MongoExpr): MongoExpr => {
   return { $switch: { branches, default: '' } };
 };
 
-const buildPaddedOrNamedStateCodeExpr = (rawFieldExpr: MongoExpr): MongoExpr => ({
+const buildPaddedOrNamedStateCodeExpr = (
+  rawFieldExpr: MongoExpr,
+): MongoExpr => ({
   $let: {
     vars: {
       raw: { $trim: { input: { $toString: rawFieldExpr } } },
@@ -303,6 +307,8 @@ export const buildCustomerIndianStateCodeExpr = (
   },
 });
 
-export const buildSellerGstStateCodeExpr = (gstinField = '$gstin'): MongoExpr => ({
+export const buildSellerGstStateCodeExpr = (
+  gstinField = '$gstin',
+): MongoExpr => ({
   $substr: [{ $toUpper: { $ifNull: [gstinField, ''] } }, 0, 2],
 });

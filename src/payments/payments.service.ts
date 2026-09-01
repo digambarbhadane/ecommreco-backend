@@ -112,7 +112,9 @@ export class PaymentsService {
         })
         .exec();
       if (existing?.paymentSessionId) {
-        const gatewayStatus = await this.gateway.getOrderStatus(existing.orderId);
+        const gatewayStatus = await this.gateway.getOrderStatus(
+          existing.orderId,
+        );
         if (
           gatewayStatus.paymentStatus === 'pending' ||
           gatewayStatus.paymentStatus === 'paid'
@@ -161,10 +163,13 @@ export class PaymentsService {
         .findOne({ _id: dto.plan_id, isActive: true })
         .exec();
       if (!pkg) {
-        throw new BadRequestException('Subscription plan not found or inactive');
+        throw new BadRequestException(
+          'Subscription plan not found or inactive',
+        );
       }
       plan = pkg;
-      const gstPercentage = quoteOverride.gstPercentage ?? pkg.gstPercentage ?? 18;
+      const gstPercentage =
+        quoteOverride.gstPercentage ?? pkg.gstPercentage ?? 18;
       pricing = {
         baseAmount: quoteOverride.basePrice ?? quoteOverride.totalPayable,
         discountAmount: 0,
@@ -336,7 +341,8 @@ export class PaymentsService {
     if (
       checkoutType === 'trial_upgrade' ||
       checkoutType === 'trial_registration' ||
-      checkoutType === 'subscription_renewal'
+      checkoutType === 'subscription_renewal' ||
+      checkoutType === 'lead_conversion'
     ) {
       order.paymentStatus = 'paid';
       order.orderStatus = 'paid';
@@ -454,7 +460,8 @@ export class PaymentsService {
         modulesEnabled: (() => {
           const plan = subscription?.planId;
           if (plan && typeof plan === 'object' && 'enabledModules' in plan) {
-            const modules = (plan as { enabledModules?: string[] }).enabledModules;
+            const modules = (plan as { enabledModules?: string[] })
+              .enabledModules;
             return Array.isArray(modules) ? modules : [];
           }
           return [];
@@ -548,9 +555,7 @@ export class PaymentsService {
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const yearStart = new Date(now.getFullYear(), 0, 1);
-    const renewalWindowEnd = new Date(
-      Date.now() + 30 * 24 * 60 * 60 * 1000,
-    );
+    const renewalWindowEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
     const paidSellerStatuses = ['paid', 'payment_completed'];
 
     const paidRevenueWindowMatch = (from: Date) => ({
@@ -642,12 +647,7 @@ export class PaymentsService {
           { $group: { _id: null, total: { $sum: '$totalAmount' } } },
         ])
         .exec(),
-      this.orderModel
-        .find()
-        .sort({ createdAt: -1 })
-        .limit(25)
-        .lean()
-        .exec(),
+      this.orderModel.find().sort({ createdAt: -1 }).limit(25).lean().exec(),
       this.sellerModel
         .countDocuments({
           isTrial: true,
@@ -716,7 +716,7 @@ export class PaymentsService {
 
     const recentPayments = recentOrders.map((order) => {
       const seller = sellerById.get(String(order.sellerId));
-      const metadata = (order.metadata ?? {}) as Record<string, unknown>;
+      const metadata = order.metadata ?? {};
       const paidAt =
         (order as { paidAt?: Date }).paidAt ??
         (order.paymentStatus === 'paid'

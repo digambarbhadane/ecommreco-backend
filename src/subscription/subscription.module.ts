@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { EmailModule } from '../email/email.module';
 import { LeadsModule } from '../leads/leads.module';
@@ -23,7 +23,7 @@ import { SubscriptionService } from './subscription.service';
       { name: Lead.name, schema: LeadSchema },
       { name: Seller.name, schema: SellerSchema },
     ]),
-    LeadsModule,
+    forwardRef(() => LeadsModule),
     EmailModule,
   ],
   controllers: [SubscriptionController],

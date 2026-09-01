@@ -114,8 +114,7 @@ export class PerioneGstVerificationService {
       if (!saved) {
         throw new ServiceUnavailableException({
           success: false,
-          message:
-            'Unable to save GST verification result. Please try again.',
+          message: 'Unable to save GST verification result. Please try again.',
           errorCode: 'VERIFICATION_SAVE_FAILED',
         });
       }
@@ -149,7 +148,8 @@ export class PerioneGstVerificationService {
     if (!record || !record.valid) {
       throw new BadRequestException({
         success: false,
-        message: 'GST verification expired. Please verify the GST number again.',
+        message:
+          'GST verification expired. Please verify the GST number again.',
         errorCode: 'VERIFICATION_NOT_FOUND',
       });
     }
@@ -166,13 +166,11 @@ export class PerioneGstVerificationService {
     const verifiedAt = record.lastVerifiedAt
       ? new Date(record.lastVerifiedAt)
       : null;
-    if (
-      !verifiedAt ||
-      Date.now() - verifiedAt.getTime() > 30 * 60 * 1000
-    ) {
+    if (!verifiedAt || Date.now() - verifiedAt.getTime() > 30 * 60 * 1000) {
       throw new BadRequestException({
         success: false,
-        message: 'GST verification expired. Please verify the GST number again.',
+        message:
+          'GST verification expired. Please verify the GST number again.',
         errorCode: 'VERIFICATION_EXPIRED',
       });
     }
@@ -270,9 +268,9 @@ export class PerioneGstVerificationService {
               client_secret: credentials.clientSecret,
               env: credentials.env,
             },
-            timeout: 15000,
+            timeout: 15001,
           })
-          .pipe(timeout(15000)),
+          .pipe(timeout(15001)),
       );
       return response.data;
     } catch (error: unknown) {
@@ -334,7 +332,9 @@ export class PerioneGstVerificationService {
 
   private parsePerioneResponse(raw: unknown, gstin: string) {
     const root =
-      raw && typeof raw === 'object' ? (raw as PerioneRecord) : ({} as PerioneRecord);
+      raw && typeof raw === 'object'
+        ? (raw as PerioneRecord)
+        : ({} as PerioneRecord);
     const statusCd = String(root.status_cd ?? root.statusCd ?? '').trim();
 
     if (statusCd && statusCd !== '1' && statusCd.toLowerCase() !== 'success') {
@@ -351,12 +351,9 @@ export class PerioneGstVerificationService {
     const payload = this.unwrapPayload(raw);
     const record = this.pickRecord(payload, gstin);
 
-    const gstNumber = this.readString(record, [
-      'gstin',
-      'GSTIN',
-      'gst_number',
-      'gstNumber',
-    ]) || gstin;
+    const gstNumber =
+      this.readString(record, ['gstin', 'GSTIN', 'gst_number', 'gstNumber']) ||
+      gstin;
     const businessName = this.readString(record, [
       'lgnm',
       'legal_name',
@@ -472,7 +469,11 @@ export class PerioneGstVerificationService {
     if (typeof errorValue === 'string' && errorValue.trim()) {
       return errorValue.trim();
     }
-    if (errorValue && typeof errorValue === 'object' && !Array.isArray(errorValue)) {
+    if (
+      errorValue &&
+      typeof errorValue === 'object' &&
+      !Array.isArray(errorValue)
+    ) {
       return this.readString(errorValue as PerioneRecord, [
         'message',
         'error_message',
@@ -515,28 +516,42 @@ export class PerioneGstVerificationService {
       const pradrRecord = pradr as PerioneRecord;
       const addr = pradrRecord.addr ?? pradrRecord;
       if (addr && typeof addr === 'object' && !Array.isArray(addr)) {
-        const addrRecord = addr as PerioneRecord;
-        const parts = [
-          this.readString(addrRecord, ['bnm', 'bno', 'st', 'loc', 'flno']),
-          this.readString(addrRecord, ['dst', 'city', 'landmark']),
-          this.readString(addrRecord, ['stcd', 'state']),
-          this.readString(addrRecord, ['pncd', 'pincode']),
-        ].filter(Boolean);
-        if (parts.length > 0) return parts.join(', ');
+        return this.formatStructuredAddress(addr as PerioneRecord);
       }
     }
 
     const addr = record.address;
     if (addr && typeof addr === 'object' && !Array.isArray(addr)) {
-      const parts = [
-        this.readString(addr as PerioneRecord, ['bnm', 'bno', 'st', 'loc']),
-        this.readString(addr as PerioneRecord, ['dst', 'city']),
-        this.readString(addr as PerioneRecord, ['stcd', 'state']),
-        this.readString(addr as PerioneRecord, ['pncd', 'pincode']),
-      ].filter(Boolean);
-      if (parts.length > 0) return parts.join(', ');
+      return this.formatStructuredAddress(addr as PerioneRecord);
     }
     return '';
+  }
+
+  /** Join every GST address component (not just the first matching key). */
+  private formatStructuredAddress(addrRecord: PerioneRecord) {
+    const parts = [
+      this.readString(addrRecord, ['bnm', 'building', 'buildingName']),
+      this.readString(addrRecord, ['bno', 'buildingNo', 'building_number']),
+      this.readString(addrRecord, ['flno', 'floor', 'floorNumber']),
+      this.readString(addrRecord, ['st', 'street', 'road']),
+      this.readString(addrRecord, ['loc', 'location', 'locality']),
+      this.readString(addrRecord, ['landmark']),
+      this.readString(addrRecord, ['dst', 'city', 'district']),
+      this.readString(addrRecord, ['stcd', 'state', 'stateName']),
+      this.readString(addrRecord, ['pncd', 'pincode', 'pin']),
+    ].filter(Boolean);
+
+    // De-dupe consecutive identical parts (APIs sometimes repeat values).
+    const unique: string[] = [];
+    for (const part of parts) {
+      if (
+        unique.length === 0 ||
+        unique[unique.length - 1]!.toLowerCase() !== part.toLowerCase()
+      ) {
+        unique.push(part);
+      }
+    }
+    return unique.join(', ');
   }
 
   private readString(record: PerioneRecord, keys: string[]) {

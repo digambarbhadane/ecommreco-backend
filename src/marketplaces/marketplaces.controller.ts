@@ -1,8 +1,4 @@
-import {
-  ApiTags,
-  ApiOperation,
-  ApiBearerAuth,
-} from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import {
   Body,
   Controller,
@@ -38,7 +34,10 @@ export class MarketplacesController {
   ) {}
 
   @Get()
-  @ApiOperation({ summary: 'List marketplaces', description: 'List platform or seller-specific marketplaces.' })
+  @ApiOperation({
+    summary: 'List marketplaces',
+    description: 'List platform or seller-specific marketplaces.',
+  })
   @Roles(
     'super_admin',
     'sales_manager',
@@ -83,10 +82,19 @@ export class MarketplacesController {
   @Delete(':id')
   @ApiOperation({ summary: 'Remove marketplace integration' })
   @Roles('super_admin', 'accounts_manager', 'seller')
-  remove(@Param('id') id: string, @Req() req: RequestWithUser) {
+  remove(
+    @Param('id') id: string,
+    @Body() body: DeleteMarketplaceDto,
+    @Req() req: RequestWithUser,
+  ) {
+    const isPermanent =
+      String(body?.confirmation ?? '').trim().toUpperCase() === 'DELETE';
     return this.marketplacesService.remove(id, {
       requesterId: req.user?.id,
       requesterRole: req.user?.role,
+      permanentDelete: isPermanent,
+      confirmedGstNumber: body?.gstNumber,
+      confirmationText: body?.confirmation,
       ipAddress: req.ip,
       userAgent: Array.isArray(req.headers?.['user-agent'])
         ? req.headers?.['user-agent']?.[0]
@@ -95,7 +103,9 @@ export class MarketplacesController {
   }
 
   @Delete(':id/permanent')
-  @ApiOperation({ summary: 'Permanently disconnect marketplace with cascade delete' })
+  @ApiOperation({
+    summary: 'Permanently disconnect marketplace with cascade delete',
+  })
   @Roles('super_admin', 'accounts_manager', 'seller')
   removePermanently(
     @Param('id') id: string,

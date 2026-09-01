@@ -26,8 +26,12 @@ import {
   UserActivityLog,
   UserActivityLogDocument,
 } from '../profile/schemas/user-activity-log.schema';
-import { getMongoStorageMode, isInMemoryMongo } from '../config/mongo-connection';
+import {
+  getMongoStorageMode,
+  isInMemoryMongo,
+} from '../config/mongo-connection';
 import { evaluateSellerLogin } from '../trial/trial-login.policy';
+import { isMongoDisconnectedError } from '../common/utils/mongo-errors';
 import { SessionRevocationService } from './session-revocation.service';
 import { OtpService } from '../otp/otp.service';
 import { OTP_PURPOSE } from '../otp/otp.constants';
@@ -100,6 +104,27 @@ export class AuthService implements OnModuleInit {
   }
 
   async login(dto: LoginDto, req: Request) {
+    try {
+      return await this.authenticateLogin(dto, req);
+    } catch (error: unknown) {
+      if (isMongoDisconnectedError(error)) {
+        this.logger.error(
+          `Login aborted — MongoDB unavailable: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        throw new ServiceUnavailableException({
+          success: false,
+          statusCode: 503,
+          errorCode: 'DATABASE_UNAVAILABLE',
+          message: 'Database is reconnecting. Please retry in a moment.',
+        });
+      }
+      throw error;
+    }
+  }
+
+  private async authenticateLogin(dto: LoginDto, req: Request) {
     this.logger.log(`Login attempt for identifier: ${dto.email}`);
     const rawIdentifier =
       typeof dto.email === 'string' ? dto.email.trim() : String(dto.email);
@@ -479,9 +504,13 @@ export class AuthService implements OnModuleInit {
       .updateOne({ userId: payload.sub }, { $push: pushUpdate })
       .exec();
 
-    const account = await this.loadActiveAuthAccount(payload.sub, payload.role, {
-      enforceLoginPolicy: false,
-    });
+    const account = await this.loadActiveAuthAccount(
+      payload.sub,
+      payload.role,
+      {
+        enforceLoginPolicy: false,
+      },
+    );
 
     if (sessionActive && req) {
       await this.userSecurityModel.updateOne(
@@ -552,7 +581,9 @@ export class AuthService implements OnModuleInit {
     }
 
     if (Object.keys(pull).length) {
-      await this.userSecurityModel.updateOne({ userId }, { $pull: pull }).exec();
+      await this.userSecurityModel
+        .updateOne({ userId }, { $pull: pull })
+        .exec();
     }
 
     return { success: true, message: 'Logged out' };
@@ -731,7 +762,7 @@ export class AuthService implements OnModuleInit {
         name: String(sellerUser.fullName ?? sellerUser.email ?? ''),
         email: String(sellerUser.email ?? ''),
         role: 'seller',
-        status: (sellerUser.status ?? 'approved') as AuthUser['status'],
+        status: sellerUser.status ?? 'approved',
         profileCompleted: Boolean(sellerUser.profileCompleted),
         companyName: String(sellerUser.companyName ?? ''),
         mobile: String(sellerUser.mobile ?? ''),
@@ -762,7 +793,7 @@ export class AuthService implements OnModuleInit {
       name: String(user.fullName ?? user.email ?? ''),
       email: String(user.email ?? ''),
       role: String(user.role ?? ''),
-      status: (user.status ?? 'approved') as AuthUser['status'],
+      status: user.status ?? 'approved',
       profileCompleted: Boolean(user.profileCompleted),
       companyName: String(user.companyName ?? ''),
       mobile: String(user.mobile ?? ''),
@@ -1121,7 +1152,10 @@ export class AuthService implements OnModuleInit {
         updates.profileCompleted = true;
       }
       if (Object.keys(updates).length > 0) {
-        await this.userModel.updateOne({ _id: existingByEmail._id }, { $set: updates });
+        await this.userModel.updateOne(
+          { _id: existingByEmail._id },
+          { $set: updates },
+        );
         this.logger.log(
           `Synced ${nodeEnv} dev super admin credentials for ${email}`,
         );
@@ -1222,7 +1256,9 @@ export class AuthService implements OnModuleInit {
     confirmPassword: string;
   }) {
     if (input.newPassword !== input.confirmPassword) {
-      throw new BadRequestException('Password and confirm password do not match.');
+      throw new BadRequestException(
+        'Password and confirm password do not match.',
+      );
     }
 
     const mobile = normalizeIndianMobile(input.mobile);
@@ -1233,7 +1269,9 @@ export class AuthService implements OnModuleInit {
 
     const hashed = await bcrypt.hash(input.newPassword, 10);
     const user = await this.userModel.findOne({ mobile }).exec();
-    const seller = await this.sellerModel.findOne({ contactNumber: mobile }).exec();
+    const seller = await this.sellerModel
+      .findOne({ contactNumber: mobile })
+      .exec();
 
     if (!user && !seller) {
       throw new BadRequestException('No account found for this mobile number.');
@@ -1255,7 +1293,8 @@ export class AuthService implements OnModuleInit {
 
     return {
       success: true,
-      message: 'Password updated successfully. You can sign in with your new password.',
+      message:
+        'Password updated successfully. You can sign in with your new password.',
     };
   }
 

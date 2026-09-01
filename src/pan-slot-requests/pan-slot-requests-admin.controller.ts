@@ -14,11 +14,21 @@ import { Request } from 'express';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { GeneratePaymentLinkDto } from './dto/generate-payment-link.dto';
-import { AdminRemarksDto, UpdatePricingDto, VerifyPaymentDto } from './dto/admin-action.dto';
+import {
+  AdminRemarksDto,
+  UpdatePricingDto,
+  VerifyPaymentDto,
+} from './dto/admin-action.dto';
 import { PanSlotRequestsService } from './pan-slot-requests.service';
 
 type RequestWithUser = Request & {
-  user?: { id?: string; role?: string; email?: string; fullName?: string; name?: string };
+  user?: {
+    id?: string;
+    role?: string;
+    email?: string;
+    fullName?: string;
+    name?: string;
+  };
 };
 
 @ApiTags('PAN Slot Requests (Admin)')
@@ -26,7 +36,9 @@ type RequestWithUser = Request & {
 @Controller('admin/pan-slot-requests')
 @UseGuards(AuthGuard('jwt'), RolesGuard)
 export class PanSlotRequestsAdminController {
-  constructor(private readonly panSlotRequestsService: PanSlotRequestsService) {}
+  constructor(
+    private readonly panSlotRequestsService: PanSlotRequestsService,
+  ) {}
 
   @Get()
   @Roles('super_admin')
@@ -75,7 +87,11 @@ export class PanSlotRequestsAdminController {
     @Body() body: AdminRemarksDto,
     @Req() req: RequestWithUser,
   ) {
-    return this.panSlotRequestsService.adminApprove(id, req.user ?? {}, body.adminRemarks);
+    return this.panSlotRequestsService.adminApprove(
+      id,
+      req.user ?? {},
+      body.adminRemarks,
+    );
   }
 
   @Put(':id/reject')
@@ -86,7 +102,11 @@ export class PanSlotRequestsAdminController {
     @Body() body: AdminRemarksDto,
     @Req() req: RequestWithUser,
   ) {
-    return this.panSlotRequestsService.adminReject(id, req.user ?? {}, body.adminRemarks);
+    return this.panSlotRequestsService.adminReject(
+      id,
+      req.user ?? {},
+      body.adminRemarks,
+    );
   }
 
   @Put(':id/generate-payment-link')
@@ -97,7 +117,11 @@ export class PanSlotRequestsAdminController {
     @Body() dto: GeneratePaymentLinkDto,
     @Req() req: RequestWithUser,
   ) {
-    return this.panSlotRequestsService.adminGeneratePaymentLink(id, req.user ?? {}, dto);
+    return this.panSlotRequestsService.adminGeneratePaymentLink(
+      id,
+      req.user ?? {},
+      dto,
+    );
   }
 
   @Put(':id/verify-payment')
@@ -108,7 +132,11 @@ export class PanSlotRequestsAdminController {
     @Body() body: VerifyPaymentDto,
     @Req() req: RequestWithUser,
   ) {
-    return this.panSlotRequestsService.adminVerifyPayment(id, req.user ?? {}, body);
+    return this.panSlotRequestsService.adminVerifyPayment(
+      id,
+      req.user ?? {},
+      body,
+    );
   }
 
   @Put(':id/assign-slots')
@@ -119,7 +147,11 @@ export class PanSlotRequestsAdminController {
     @Body() body: AdminRemarksDto,
     @Req() req: RequestWithUser,
   ) {
-    return this.panSlotRequestsService.adminAssignSlots(id, req.user ?? {}, body.adminRemarks);
+    return this.panSlotRequestsService.adminAssignSlots(
+      id,
+      req.user ?? {},
+      body.adminRemarks,
+    );
   }
 }
 
@@ -128,7 +160,9 @@ export class PanSlotRequestsAdminController {
 @Controller('admin/pan-slot-transactions')
 @UseGuards(AuthGuard('jwt'), RolesGuard)
 export class PanSlotTransactionsAdminController {
-  constructor(private readonly panSlotRequestsService: PanSlotRequestsService) {}
+  constructor(
+    private readonly panSlotRequestsService: PanSlotRequestsService,
+  ) {}
 
   @Get()
   @Roles('super_admin')
@@ -157,7 +191,9 @@ export class PanSlotTransactionsAdminController {
 @Controller('admin/pan-slot-pricing')
 @UseGuards(AuthGuard('jwt'), RolesGuard)
 export class PanSlotPricingAdminController {
-  constructor(private readonly panSlotRequestsService: PanSlotRequestsService) {}
+  constructor(
+    private readonly panSlotRequestsService: PanSlotRequestsService,
+  ) {}
 
   @Get()
   @Roles('super_admin')
@@ -169,7 +205,10 @@ export class PanSlotPricingAdminController {
   @Put(':durationType')
   @Roles('super_admin')
   @ApiOperation({ summary: 'Update pricing for a duration tier' })
-  update(@Param('durationType') durationType: string, @Body() body: UpdatePricingDto) {
+  update(
+    @Param('durationType') durationType: string,
+    @Body() body: UpdatePricingDto,
+  ) {
     return this.panSlotRequestsService.updatePricing(durationType, body);
   }
 }

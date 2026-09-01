@@ -7,10 +7,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import {
-  OTP_CONFIG_KEY,
-  type OtpConfigValues,
-} from './otp.config';
+import { OTP_CONFIG_KEY, type OtpConfigValues } from './otp.config';
 import {
   OTP_LOG_EVENT,
   type OtpLogEvent,
@@ -62,18 +59,20 @@ export class OtpService {
   ) {}
 
   private getConfig(): OtpConfigValues {
-    return this.configService.get<OtpConfigValues>(OTP_CONFIG_KEY, {
-      infer: true,
-    }) ?? {
-      otpLength: 6,
-      otpExpiryMinutes: 5,
-      maxVerifyAttempts: 5,
-      maxSendAttempts: 3,
-      sendWindowMinutes: 15,
-      blockMinutes: 15,
-      resendIntervalSeconds: 30,
-      verificationProofMinutes: 15,
-    };
+    return (
+      this.configService.get<OtpConfigValues>(OTP_CONFIG_KEY, {
+        infer: true,
+      }) ?? {
+        otpLength: 6,
+        otpExpiryMinutes: 5,
+        maxVerifyAttempts: 5,
+        maxSendAttempts: 3,
+        sendWindowMinutes: 15,
+        blockMinutes: 15,
+        resendIntervalSeconds: 30,
+        verificationProofMinutes: 15,
+      }
+    );
   }
 
   private normalizeMobileOrThrow(mobileInput: string): string {
@@ -116,15 +115,19 @@ export class OtpService {
     return config;
   }
 
-  private canDeliverLocalSms(): boolean {
-    if (this.isNonProduction()) {
+  private canUseLocalOtpFallback(): boolean {
+    const explicit = this.configService
+      .get<string>('MSG91_ALLOW_LOCAL_FALLBACK')
+      ?.trim()
+      .toLowerCase();
+    if (explicit === '1' || explicit === 'true' || explicit === 'yes') {
       return true;
     }
-    const authKey = this.msg91WidgetService.getAuthKey();
-    const flowId =
-      this.configService.get<string>('MSG91_FLOW_ID')?.trim() ||
-      this.configService.get<string>('MSG91_OTP_TEMPLATE_ID')?.trim();
-    return Boolean(authKey && flowId);
+    if (explicit === '0' || explicit === 'false' || explicit === 'no') {
+      return false;
+    }
+    // Default: never fake SMS success when MSG91 widget is configured.
+    return !this.msg91WidgetService.isWidgetConfigured();
   }
 
   private async sendOtpViaMsg91Widget(
@@ -133,59 +136,56 @@ export class OtpService {
     otp: string,
     otpHash: string,
     captchaToken?: string,
-  ): Promise<void> {
+  ): Promise<'msg91' | 'local'> {
     const skipCaptcha = this.isCaptchaSkipped();
     const widgetConfig = skipCaptcha
       ? { captchaRequired: false }
       : await this.msg91WidgetService.getWidgetConfig();
 
-    if (
-      widgetConfig.captchaRequired &&
-      !captchaToken?.trim() &&
-      !this.canDeliverLocalSms()
-    ) {
-      throw new BadRequestException(
-        'Captcha verification is required before sending OTP.',
-      );
-    }
-
-    const fallbackToLocalOtp = async (reason: string) => {
-      if (!this.canDeliverLocalSms()) {
+    const fallbackToLocalOtp = async (reason: string): Promise<'local'> => {
+      if (!this.canUseLocalOtpFallback()) {
         this.logger.error(
-          `${reason}; MSG91 widget failed and SMS fallback is not configured mobile=${mobile}`,
+          `${reason}; MSG91 widget failed and local fallback is disabled mobile=${mobile}`,
         );
         throw new BadRequestException(
-          'Unable to send OTP via MSG91. Ensure captcha is enabled or configure MSG91 SMS credentials.',
+          reason.includes('captcha')
+            ? 'MSG91 captcha is required. In the MSG91 OTP widget settings, turn OFF "Captcha Validation" for local/server API testing (MSG91 server APIs do not support captcha), or set MSG91_ALLOW_LOCAL_FALLBACK=true to use server-log OTP in development.'
+            : `${reason}. Check MSG91 OTP Widget logs, SMS template/DLT, wallet balance, and that Mobile Integration is OFF for web.`,
         );
       }
       this.logger.warn(`${reason}; using local OTP fallback mobile=${mobile}`);
       await this.repository.setLocalOtpHash(record, otpHash);
       await this.deliverLocalOtp(mobile, otp);
+      return 'local';
     };
 
-    if (skipCaptcha) {
-      await fallbackToLocalOtp('MSG91 captcha skipped for this environment');
-      return;
-    }
-
-    if (widgetConfig.captchaRequired && !captchaToken?.trim()) {
-      await fallbackToLocalOtp('MSG91 captcha token was not provided');
-      return;
+    if (
+      widgetConfig.captchaRequired &&
+      !skipCaptcha &&
+      !captchaToken?.trim()
+    ) {
+      return fallbackToLocalOtp('MSG91 captcha token was not provided');
     }
 
     try {
       const widgetSend = await this.msg91WidgetService.sendOtp(
         mobile,
+        // Always forward a captcha token when the client obtained one.
+        // MSG91_SKIP_CAPTCHA only skips *requiring* captcha locally; it must not
+        // strip a valid token if the MSG91 widget still has captcha enabled.
         captchaToken,
       );
+      this.logger.log(
+        `MSG91 sendOtp raw=${JSON.stringify(widgetSend.raw).slice(0, 500)}`,
+      );
       if (!widgetSend.reqId) {
-        await fallbackToLocalOtp('MSG91 did not return an OTP session id');
-        return;
+        return fallbackToLocalOtp('MSG91 did not return an OTP session id (reqId)');
       }
       await this.repository.setMsg91Session(record, widgetSend.reqId);
       this.logger.log(
         `MSG91 widget OTP session created mobile=${mobile} reqId=${widgetSend.reqId}`,
       );
+      return 'msg91';
     } catch (error: unknown) {
       if (
         error instanceof HttpException &&
@@ -202,14 +202,14 @@ export class OtpService {
 
       if (
         this.msg91WidgetService.isCaptchaError(reason) &&
-        !this.canDeliverLocalSms()
+        !this.canUseLocalOtpFallback()
       ) {
         throw new BadRequestException(
-          'MSG91 captcha verification failed. Refresh the page and try again.',
+          'MSG91 captcha verification failed. Turn OFF Captcha Validation on the MSG91 OTP widget (server APIs do not support captcha), then retry.',
         );
       }
 
-      await fallbackToLocalOtp(reason);
+      return fallbackToLocalOtp(reason);
     }
   }
 
@@ -222,9 +222,7 @@ export class OtpService {
     } catch (error: unknown) {
       const message =
         error instanceof Error ? error.message : 'SMS delivery failed';
-      this.logger.warn(
-        `SMS OTP delivery failed mobile=${mobile}: ${message}`,
-      );
+      this.logger.warn(`SMS OTP delivery failed mobile=${mobile}: ${message}`);
     }
   }
 
@@ -248,6 +246,13 @@ export class OtpService {
     return error.message;
   }
 
+  private isClientOtpMode(): boolean {
+    return (
+      this.configService.get<string>('MSG91_OTP_MODE')?.trim().toLowerCase() ===
+      'client'
+    );
+  }
+
   async sendOtp(
     mobileInput: string,
     purpose: OtpPurpose,
@@ -258,6 +263,26 @@ export class OtpService {
     const mobile = this.normalizeMobileOrThrow(mobileInput);
     this.logEvent(OTP_LOG_EVENT.REQUESTED, mobile, purpose, context);
 
+    let record = await this.repository.findByMobileAndPurpose(mobile, purpose);
+
+    // Don't wipe a valid verification proof if send is triggered again mid-flow.
+    if (this.isRecordVerified(record)) {
+      return {
+        success: true,
+        message: 'Mobile number is already verified.',
+        expiresIn: record?.verificationProofExpiresAt
+          ? Math.max(
+              0,
+              Math.ceil(
+                (record.verificationProofExpiresAt.getTime() - Date.now()) /
+                  1000,
+              ),
+            )
+          : config.verificationProofMinutes * 60,
+        resendAfter: 0,
+      };
+    }
+
     const blocked = await this.assertNotBlocked(mobile, purpose, config);
     if (blocked) {
       this.logEvent(OTP_LOG_EVENT.BLOCKED, mobile, purpose, context);
@@ -266,8 +291,6 @@ export class OtpService {
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
-
-    let record = await this.repository.findByMobileAndPurpose(mobile, purpose);
 
     if (record?.lastSentAt) {
       const resendAt = computeResendAvailableAt(
@@ -285,9 +308,7 @@ export class OtpService {
 
     const windowStart = Date.now() - config.sendWindowMinutes * 60 * 1000;
     const sendsInWindow =
-      record &&
-      record.lastSentAt &&
-      record.lastSentAt.getTime() >= windowStart
+      record && record.lastSentAt && record.lastSentAt.getTime() >= windowStart
         ? record.requestCount
         : 0;
 
@@ -307,7 +328,9 @@ export class OtpService {
     const otpHash = await hashOtpCode(otp);
     const expiresAt = computeOtpExpiry(config.otpExpiryMinutes);
     const now = new Date();
-    const useMsg91Widget = this.msg91WidgetService.isWidgetConfigured();
+    const clientMode = this.isClientOtpMode();
+    const useMsg91Widget =
+      !clientMode && this.msg91WidgetService.isWidgetConfigured();
 
     if (!record) {
       record = await this.repository.create({
@@ -320,7 +343,9 @@ export class OtpService {
         requestedUserAgent: context.userAgent,
         requestCount: 1,
         lastSentAt: now,
-        ...(useMsg91Widget ? {} : { otpHash }),
+        // Client mode: MSG91 issues the OTP; server only tracks the session.
+        // Server widget mode: MSG91 session id is stored after send.
+        ...(useMsg91Widget || clientMode ? {} : { otpHash }),
       });
     } else {
       record.attempts = 0;
@@ -336,16 +361,40 @@ export class OtpService {
       record.requestedIp = context.ip ?? record.requestedIp;
       record.requestedUserAgent =
         context.userAgent ?? record.requestedUserAgent;
-      if (!useMsg91Widget) {
+      if (!useMsg91Widget && !clientMode) {
         record.otpHash = otpHash;
+        record.msg91ReqId = undefined;
+      } else {
+        record.otpHash = undefined;
         record.msg91ReqId = undefined;
       }
       await this.repository.save(record);
     }
 
+    // Client widget mode: browser sends OTP via widgetId/tokenAuth.
+    // Backend only rate-limits / stores session; authkey is used on verify.
+    if (clientMode) {
+      if (!this.msg91WidgetService.getAuthKey()) {
+        throw new ServiceUnavailableException(
+          'MSG91_AUTH_KEY is required on the backend for client OTP verification.',
+        );
+      }
+      this.logEvent(OTP_LOG_EVENT.SENT, mobile, purpose, context);
+      this.logger.log(
+        `OTP session prepared for client MSG91 widget mobile=${mobile}`,
+      );
+      return {
+        success: true,
+        message: 'OTP sent successfully to your mobile number.',
+        expiresIn: config.otpExpiryMinutes * 60,
+        resendAfter: config.resendIntervalSeconds,
+      };
+    }
+
+    let deliveryChannel: 'msg91' | 'local' | 'sms' = 'sms';
     try {
       if (useMsg91Widget) {
-        await this.sendOtpViaMsg91Widget(
+        deliveryChannel = await this.sendOtpViaMsg91Widget(
           record,
           mobile,
           otp,
@@ -358,7 +407,10 @@ export class OtpService {
       this.logEvent(OTP_LOG_EVENT.SENT, mobile, purpose, context);
     } catch (error: unknown) {
       this.logEvent(OTP_LOG_EVENT.FAILED, mobile, purpose, context, error);
-      if (error instanceof BadRequestException || error instanceof HttpException) {
+      if (
+        error instanceof BadRequestException ||
+        error instanceof HttpException
+      ) {
         throw error;
       }
       throw new ServiceUnavailableException(
@@ -368,7 +420,10 @@ export class OtpService {
 
     return {
       success: true,
-      message: 'OTP sent successfully to your mobile number.',
+      message:
+        deliveryChannel === 'local'
+          ? 'OTP generated for development (check backend logs). SMS was not sent via MSG91.'
+          : 'OTP sent successfully to your mobile number.',
       expiresIn: config.otpExpiryMinutes * 60,
       resendAfter: config.resendIntervalSeconds,
     };
@@ -384,8 +439,16 @@ export class OtpService {
     const mobile = this.normalizeMobileOrThrow(mobileInput);
     this.logEvent(OTP_LOG_EVENT.RESENT, mobile, purpose, context);
 
+    // Client mode: browser retries via otp-provider.js; backend only re-prepares session.
+    if (this.isClientOtpMode()) {
+      return this.sendOtp(mobileInput, purpose, context, captchaToken);
+    }
+
     if (this.msg91WidgetService.isWidgetConfigured()) {
-      const record = await this.repository.findByMobileAndPurpose(mobile, purpose);
+      const record = await this.repository.findByMobileAndPurpose(
+        mobile,
+        purpose,
+      );
       if (record?.msg91ReqId) {
         const blocked = await this.assertNotBlocked(mobile, purpose, config);
         if (blocked) {
@@ -421,7 +484,10 @@ export class OtpService {
           this.logEvent(OTP_LOG_EVENT.SENT, mobile, purpose, context);
         } catch (error: unknown) {
           this.logEvent(OTP_LOG_EVENT.FAILED, mobile, purpose, context, error);
-          if (error instanceof BadRequestException || error instanceof HttpException) {
+          if (
+            error instanceof BadRequestException ||
+            error instanceof HttpException
+          ) {
             throw error;
           }
           throw new ServiceUnavailableException(
@@ -455,7 +521,10 @@ export class OtpService {
       throw new BadRequestException('Enter a valid 6-digit OTP.');
     }
 
-    const record = await this.repository.findByMobileAndPurpose(mobile, purpose);
+    const record = await this.repository.findByMobileAndPurpose(
+      mobile,
+      purpose,
+    );
     if (!record) {
       throw new BadRequestException('Request an OTP first.');
     }
@@ -592,9 +661,8 @@ export class OtpService {
     const config = this.getConfig();
     const mobile = this.normalizeMobileOrThrow(mobileInput);
 
-    const widgetResult = await this.msg91WidgetService.verifyAccessToken(
-      accessToken,
-    );
+    const widgetResult =
+      await this.msg91WidgetService.verifyAccessToken(accessToken);
 
     if (widgetResult.mobile && widgetResult.mobile !== mobile) {
       this.logEvent(OTP_LOG_EVENT.INVALID, mobile, purpose, context);
@@ -631,22 +699,48 @@ export class OtpService {
     };
   }
 
-  async isMobileVerified(mobileInput: string, purpose: OtpPurpose): Promise<boolean> {
+  async isMobileVerified(
+    mobileInput: string,
+    purpose: OtpPurpose,
+  ): Promise<boolean> {
     const mobile = this.normalizeMobileOrThrow(mobileInput);
-    const record = await this.repository.findByMobileAndPurpose(mobile, purpose);
+    const record = await this.repository.findByMobileAndPurpose(
+      mobile,
+      purpose,
+    );
     return this.isRecordVerified(record);
   }
 
-  async assertMobileVerified(mobileInput: string, purpose: OtpPurpose): Promise<void> {
+  async assertMobileVerified(
+    mobileInput: string,
+    purpose: OtpPurpose,
+  ): Promise<void> {
     const mobile = this.normalizeMobileOrThrow(mobileInput);
-    const record = await this.repository.findByMobileAndPurpose(mobile, purpose);
+    const record = await this.repository.findByMobileAndPurpose(
+      mobile,
+      purpose,
+    );
 
-    if (!this.isRecordVerified(record)) {
-      throw new BadRequestException('Mobile number not verified.');
+    if (!record?.verified || !record.verifiedAt) {
+      throw new BadRequestException(
+        'Mobile number not verified. Please verify OTP and try again.',
+      );
+    }
+
+    if (
+      record.verificationProofExpiresAt &&
+      record.verificationProofExpiresAt.getTime() < Date.now()
+    ) {
+      throw new BadRequestException(
+        'Mobile OTP verification expired. Please verify your mobile number again.',
+      );
     }
   }
 
-  async consumeVerification(mobileInput: string, purpose: OtpPurpose): Promise<void> {
+  async consumeVerification(
+    mobileInput: string,
+    purpose: OtpPurpose,
+  ): Promise<void> {
     const mobile = this.normalizeMobileOrThrow(mobileInput);
     await this.repository.deleteVerifiedProof(mobile, purpose);
   }
@@ -654,7 +748,10 @@ export class OtpService {
   async getStatus(mobileInput: string, purpose: OtpPurpose) {
     const config = this.getConfig();
     const mobile = this.normalizeMobileOrThrow(mobileInput);
-    const record = await this.repository.findByMobileAndPurpose(mobile, purpose);
+    const record = await this.repository.findByMobileAndPurpose(
+      mobile,
+      purpose,
+    );
     const resendAt = computeResendAvailableAt(
       record?.lastSentAt,
       config.resendIntervalSeconds,
@@ -694,7 +791,10 @@ export class OtpService {
     purpose: OtpPurpose,
     config: OtpConfigValues,
   ): Promise<boolean> {
-    const record = await this.repository.findByMobileAndPurpose(mobile, purpose);
+    const record = await this.repository.findByMobileAndPurpose(
+      mobile,
+      purpose,
+    );
     if (!record?.blockedUntil) {
       return false;
     }

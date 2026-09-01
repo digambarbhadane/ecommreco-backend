@@ -70,7 +70,12 @@ export class MyntraPgRepository {
     }
     const uploadId = String(rows[0]?.uploadId ?? '').trim();
     if (!uploadId) {
-      return { inserted: 0, updated: 0, skipped: rows.length, duplicateRows: 0 };
+      return {
+        inserted: 0,
+        updated: 0,
+        skipped: rows.length,
+        duplicateRows: 0,
+      };
     }
     return this.replaceByUploadId(uploadId, rows);
   }
@@ -306,6 +311,16 @@ export class MyntraPgRepository {
     return { rows, sheetBreakdown };
   }
 
+  async existsByFilter(query: {
+    sellerIds: string[];
+    gstin?: string;
+    marketplace?: string;
+  }): Promise<boolean> {
+    const match = this.buildPayoutMatch(query);
+    const doc = await this.model.exists(match).exec();
+    return Boolean(doc);
+  }
+
   async countByFilter(query: {
     sellerIds: string[];
     gstin?: string;
@@ -313,6 +328,91 @@ export class MyntraPgRepository {
   }): Promise<number> {
     const match = this.buildPayoutMatch(query);
     return this.model.countDocuments(match).exec();
+  }
+
+  /** Load PG settlement rows for Order Wise Payments enrichment. */
+  async findBySeller(query: {
+    sellerIds: string[];
+    gstin?: string;
+    marketplace?: string;
+    paymentDateFrom?: string;
+    paymentDateTo?: string;
+    orderId?: string;
+    search?: string;
+    limit?: number;
+  }): Promise<Array<Record<string, unknown>>> {
+    const match = this.buildPayoutMatch(query);
+    const orderId = String(query.orderId ?? '').trim();
+    const search = String(query.search ?? '').trim();
+    if (orderId) {
+      match.$or = [
+        { orderReleaseId: orderId },
+        { sellerOrderId: orderId },
+        { orderLineId: orderId },
+        { packetId: orderId },
+      ];
+    } else if (search) {
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp(escaped, 'i');
+      match.$or = [
+        { orderReleaseId: regex },
+        { sellerOrderId: regex },
+        { orderLineId: regex },
+        { skuCode: regex },
+        { invoiceNumber: regex },
+      ];
+    }
+
+    // Analytics only needs mapper fields. Full `rowData` blobs dominate transfer
+    // time (~10KB/row); project only keys used by fee/UTR/date resolution.
+    // Skip Mongo sort — `dedupeMyntraPgSettlementDocs` prefers later uploadedAt.
+    const rows = await this.model
+      .find(match)
+      .select({
+        _id: 1,
+        reportKind: 1,
+        rowKey: 1,
+        orderReleaseId: 1,
+        orderLineId: 1,
+        sellerOrderId: 1,
+        skuCode: 1,
+        returnId: 1,
+        returnType: 1,
+        invoiceNumber: 1,
+        sellerProductAmount: 1,
+        totalCommission: 1,
+        totalLogisticsDeduction: 1,
+        tcsAmount: 1,
+        tdsAmount: 1,
+        totalSettlement: 1,
+        totalActualSettlement: 1,
+        settlementDate: 1,
+        gstin: 1,
+        marketplace: 1,
+        reportMonth: 1,
+        uploadedAt: 1,
+        'rowData.total_commission': 1,
+        'rowData.tcs_amount': 1,
+        'rowData.tds_amount': 1,
+        'rowData.total_logistics_deduction': 1,
+        'rowData.total_commission_plus_tcs_tds_deduction': 1,
+        'rowData.invoice_number': 1,
+        'rowData.invoice_no': 1,
+        'rowData.bank_utr_no_prepaid_payment': 1,
+        'rowData.bank_utr_no_postpaid_payment': 1,
+        'rowData.bank_utr_no_prepaid_comm_deduction': 1,
+        'rowData.bank_utr_no_postpaid_comm_deduction': 1,
+        'rowData.settlement_date_prepaid_payment': 1,
+        'rowData.settlement_date_postpaid_payment': 1,
+        'rowData.settlement_date_prepaid_comm_deduction': 1,
+        'rowData.settlement_date_postpaid_comm_deduction': 1,
+        'rowData.total_actual_settlement': 1,
+      })
+      .limit(Math.min(query.limit ?? 100_000, 100_000))
+      .lean()
+      .exec();
+
+    return rows as unknown as Array<Record<string, unknown>>;
   }
 
   async aggregatePayoutsByNeft(
@@ -418,10 +518,7 @@ export class MyntraPgRepository {
       match.$expr = { $eq: [utrExpr, neftId] };
     } else if (neftId === 'Unassigned UTR') {
       match.$expr = {
-        $or: [
-          { $eq: [utrExpr, ''] },
-          { $eq: [utrExpr, null] },
-        ],
+        $or: [{ $eq: [utrExpr, ''] }, { $eq: [utrExpr, null] }],
       };
     }
 
@@ -568,10 +665,13 @@ export class MyntraPgRepository {
         const result = await this.model.insertMany(batch, { ordered: false });
         inserted += result.length;
       } catch (error) {
-        const writeErrors = (error as { writeErrors?: Array<{ code?: number }> })
-          ?.writeErrors;
+        const writeErrors = (
+          error as { writeErrors?: Array<{ code?: number }> }
+        )?.writeErrors;
         if (!writeErrors?.length) throw error;
-        duplicateRows += writeErrors.filter((item) => item.code === 11000).length;
+        duplicateRows += writeErrors.filter(
+          (item) => item.code === 11000,
+        ).length;
         inserted += batch.length - duplicateRows;
       }
     }

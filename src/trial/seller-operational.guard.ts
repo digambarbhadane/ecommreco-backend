@@ -1,8 +1,4 @@
-import {
-  CanActivate,
-  ExecutionContext,
-  Injectable,
-} from '@nestjs/common';
+import { CanActivate, ExecutionContext, Injectable } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
@@ -67,9 +63,7 @@ export class SellerOperationalGuard implements CanActivate {
       return true;
     }
 
-    const sellerId = String(
-      user.sellerId ?? user.sub ?? user.id ?? '',
-    ).trim();
+    const sellerId = String(user.sellerId ?? user.sub ?? user.id ?? '').trim();
     if (!sellerId) {
       return true;
     }

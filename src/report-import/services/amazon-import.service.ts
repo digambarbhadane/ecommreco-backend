@@ -42,7 +42,9 @@ export class AmazonImportService {
     }
     const parsed = this.parseReturnFile(file);
     if (!parsed.rows.length) {
-      throw new BadRequestException('Return report does not contain any data rows');
+      throw new BadRequestException(
+        'Return report does not contain any data rows',
+      );
     }
     return parsed;
   }
@@ -66,7 +68,9 @@ export class AmazonImportService {
     for (const group of AMAZON_RETURN_REQUIRED_HEADER_GROUPS) {
       const hasColumn = group.some((alias) =>
         headers.some((header) => {
-          const normalized = String(header ?? '').trim().toLowerCase();
+          const normalized = String(header ?? '')
+            .trim()
+            .toLowerCase();
           const target = String(alias).trim().toLowerCase();
           return normalized === target || normalized.includes(target);
         }),
@@ -83,7 +87,9 @@ export class AmazonImportService {
     return AMAZON_RETURN_ORDER_ID_HEADER_GROUPS.some((group) =>
       group.some((alias) =>
         headers.some((header) => {
-          const normalized = String(header ?? '').trim().toLowerCase();
+          const normalized = String(header ?? '')
+            .trim()
+            .toLowerCase();
           const target = String(alias).trim().toLowerCase();
           return normalized === target || normalized.includes(target);
         }),

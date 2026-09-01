@@ -18,6 +18,45 @@ describe('repair-legacy-date.util', () => {
     expect(repairDateToIso('2026-03-31')).toBe('2026-03-31');
   });
 
+  it('parses DMY strings without MDY reversal', () => {
+    expect(repairDateToIso('12-06-2026')).toBe('2026-06-12');
+  });
+
+  it('prefers order_packed_date as invoiceDate when present', () => {
+    const row = repairImportRowDates({
+      invoiceNo: 'I2427MX000000699',
+      invoiceDate: '2026-12-06',
+      order_packed_date: '12-06-2026',
+      reportMonth: '2026-06',
+    });
+    expect(row.order_packed_date).toBe('2026-06-12');
+    expect(row.invoiceDate).toBe('2026-06-12');
+  });
+
+  it('maps RTO Return invoiceDate from orderCancelDate', () => {
+    const row = repairImportRowDates({
+      documentType: 'RTO Return',
+      invoiceDate: '2026-01-01',
+      orderCancelDate: '30-06-2026',
+      order_packed_date: '01-01-2026',
+      reportMonth: '2026-06',
+    });
+    expect(row.orderCancelDate).toBe('2026-06-30');
+    expect(row.invoiceDate).toBe('2026-06-30');
+  });
+
+  it('maps Customer Return invoiceDate from frRefundedDate', () => {
+    const row = repairImportRowDates({
+      documentType: 'Customer Return',
+      invoiceDate: '2026-01-01',
+      frRefundedDate: '05-12-2025',
+      order_packed_date: '01-01-2026',
+      reportMonth: '2025-12',
+    });
+    expect(row.frRefundedDate).toBe('2025-12-05');
+    expect(row.invoiceDate).toBe('2025-12-05');
+  });
+
   it('repairs invoiceDate on import rows', () => {
     const row = repairImportRowDates({
       invoiceDate: '2036-09-15',

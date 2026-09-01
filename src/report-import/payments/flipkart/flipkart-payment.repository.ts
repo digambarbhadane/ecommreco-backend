@@ -33,10 +33,53 @@ export type FlipkartPaymentListQuery = {
   sortOrder?: 'asc' | 'desc';
   /** Skip countDocuments — used when callers only need the page of rows. */
   skipTotal?: boolean;
+  /** Skip Mongo sort — analytics loads full sets and sorts order-wise in memory. */
+  skipSort?: boolean;
 };
 
 /** High enough for full CSV export of filtered analytics payment sets. */
 const FLIPKART_PAYMENT_LIST_MAX_LIMIT = 100_000;
+
+/** Fields required by `mapFlipkartPaymentToAnalyticsRow` / fee aggregation. */
+const FLIPKART_ANALYTICS_SELECT = {
+  _id: 1,
+  orderId: 1,
+  orderItemId: 1,
+  neftId: 1,
+  neftType: 1,
+  paymentDate: 1,
+  bankSettlementValue: 1,
+  saleAmount: 1,
+  saleAmountSummary: 1,
+  commission: 1,
+  refund: 1,
+  returnType: 1,
+  sellerSku: 1,
+  quantity: 1,
+  invoiceId: 1,
+  invoiceDate: 1,
+  gstin: 1,
+  reportMonth: 1,
+  marketplaceFee: 1,
+  fixedFee: 1,
+  collectionFee: 1,
+  pickAndPackFee: 1,
+  shippingFee: 1,
+  reverseShippingFee: 1,
+  installationFee: 1,
+  techVisitFee: 1,
+  uninstallationAndPackagingFee: 1,
+  customerAddonsAmountRecovery: 1,
+  franchiseFee: 1,
+  shopsyMarketingFee: 1,
+  productCancellationFee: 1,
+  noCostEmiFeeReimbursement: 1,
+  gstOnMarketplaceFees: 1,
+  totalDiscountInMarketplaceFee: 1,
+  discountInMarketplaceFee: 1,
+  tcs: 1,
+  tds: 1,
+} as const;
 
 @Injectable()
 export class FlipkartPaymentRepository implements OnModuleInit {
@@ -51,7 +94,9 @@ export class FlipkartPaymentRepository implements OnModuleInit {
     await this.renameLegacyOrderCollectionIfNeeded();
 
     try {
-      await this.model.collection.dropIndex('flipkart_payment_order_unique_idx');
+      await this.model.collection.dropIndex(
+        'flipkart_payment_order_unique_idx',
+      );
       this.logger.log('Dropped legacy flipkart_payment_order_unique_idx');
     } catch (error) {
       const code = (error as { code?: number; codeName?: string })?.code;
@@ -193,20 +238,25 @@ export class FlipkartPaymentRepository implements OnModuleInit {
       Math.max(1, query.limit ?? 50),
       FLIPKART_PAYMENT_LIST_MAX_LIMIT,
     );
-    const sortField = query.sortBy?.trim() || 'paymentDate';
-    const sortDir = query.sortOrder === 'asc' ? 1 : -1;
-    const sort: Record<string, 1 | -1> = { [sortField]: sortDir };
-    if (sortField !== 'orderId') {
-      sort.orderId = 1;
+
+    let findQuery = this.model.find(filter);
+    // Order Wise Payments loads full filtered sets — project analytics columns only.
+    if (query.skipSort && query.skipTotal) {
+      findQuery = findQuery.select(
+        FLIPKART_ANALYTICS_SELECT,
+      ) as typeof findQuery;
+    }
+    if (!query.skipSort) {
+      const sortField = query.sortBy?.trim() || 'paymentDate';
+      const sortDir = query.sortOrder === 'asc' ? 1 : -1;
+      const sort: Record<string, 1 | -1> = { [sortField]: sortDir };
+      if (sortField !== 'orderId') {
+        sort.orderId = 1;
+      }
+      findQuery = findQuery.sort(sort);
     }
 
-    const dataPromise = this.model
-      .find(filter)
-      .sort(sort)
-      .skip(skip)
-      .limit(limit)
-      .lean()
-      .exec();
+    const dataPromise = findQuery.skip(skip).limit(limit).lean().exec();
 
     if (query.skipTotal) {
       const data = await dataPromise;
@@ -240,7 +290,14 @@ export class FlipkartPaymentRepository implements OnModuleInit {
   async countByFilter(
     query: Pick<
       FlipkartPaymentListQuery,
-      'sellerId' | 'sellerIds' | 'gstin' | 'marketplace' | 'reportMonth' | 'paymentDateFrom' | 'paymentDateTo' | 'search'
+      | 'sellerId'
+      | 'sellerIds'
+      | 'gstin'
+      | 'marketplace'
+      | 'reportMonth'
+      | 'paymentDateFrom'
+      | 'paymentDateTo'
+      | 'search'
     >,
   ): Promise<number> {
     return this.model.countDocuments(this.buildFilter(query)).exec();
@@ -249,14 +306,24 @@ export class FlipkartPaymentRepository implements OnModuleInit {
   async aggregateAnalyticsSummary(
     query: Pick<
       FlipkartPaymentListQuery,
-      'sellerId' | 'sellerIds' | 'gstin' | 'marketplace' | 'reportMonth' | 'paymentDateFrom' | 'paymentDateTo'
+      | 'sellerId'
+      | 'sellerIds'
+      | 'gstin'
+      | 'marketplace'
+      | 'reportMonth'
+      | 'paymentDateFrom'
+      | 'paymentDateTo'
     >,
   ): Promise<{
     totalRows: number;
     totalSettlementAmount: number;
     uniqueNeftCount: number;
     rowsWithNeftType: number;
-    byNeftType: Array<{ paymentMode: string; count: number; settlement: number }>;
+    byNeftType: Array<{
+      paymentMode: string;
+      count: number;
+      settlement: number;
+    }>;
   }> {
     const filter = this.buildFilter(query);
     const facetResult = await this.model
@@ -292,7 +359,9 @@ export class FlipkartPaymentRepository implements OnModuleInit {
                           $gt: [
                             {
                               $strLenCP: {
-                                $trim: { input: { $ifNull: ['$neftType', ''] } },
+                                $trim: {
+                                  input: { $ifNull: ['$neftType', ''] },
+                                },
                               },
                             },
                             0,
@@ -414,12 +483,14 @@ export class FlipkartPaymentRepository implements OnModuleInit {
     }>
   > {
     const rows = await this.aggregatePayoutsByNeft(query);
-    return rows.map(({ neftId, bankSettlementTotal, salesCount, returnsCount }) => ({
-      neftId,
-      bankSettlementTotal,
-      salesCount,
-      returnsCount,
-    }));
+    return rows.map(
+      ({ neftId, bankSettlementTotal, salesCount, returnsCount }) => ({
+        neftId,
+        bankSettlementTotal,
+        salesCount,
+        returnsCount,
+      }),
+    );
   }
 
   async aggregatePayoutsByNeft(
@@ -459,7 +530,9 @@ export class FlipkartPaymentRepository implements OnModuleInit {
           $group: {
             _id: { $trim: { input: { $ifNull: ['$neftId', ''] } } },
             marketplace: { $first: { $ifNull: ['$marketplace', 'flipkart'] } },
-            bankSettlementTotal: { $sum: { $ifNull: ['$bankSettlementValue', 0] } },
+            bankSettlementTotal: {
+              $sum: { $ifNull: ['$bankSettlementValue', 0] },
+            },
             orderCount: { $sum: 1 },
             paymentDate: { $max: { $ifNull: ['$paymentDate', ''] } },
             netSales: { $sum: { $ifNull: ['$saleAmount', 0] } },

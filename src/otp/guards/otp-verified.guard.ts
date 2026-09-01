@@ -18,10 +18,8 @@ export type OtpVerifiedMetadata = {
   mobileField?: string;
 };
 
-export const OtpVerified = (
-  purpose: OtpPurpose,
-  mobileField = 'mobile',
-) => SetMetadata(OTP_VERIFIED_KEY, { purpose, mobileField });
+export const OtpVerified = (purpose: OtpPurpose, mobileField = 'mobile') =>
+  SetMetadata(OTP_VERIFIED_KEY, { purpose, mobileField });
 
 @Injectable()
 export class OtpVerifiedGuard implements CanActivate {

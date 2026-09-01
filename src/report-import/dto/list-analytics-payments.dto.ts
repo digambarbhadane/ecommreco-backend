@@ -97,4 +97,9 @@ export class ListAnalyticsPaymentsDto {
   @IsString()
   @IsIn(['due', 'overdue', 'settled', 'dispute'])
   paymentStatus?: 'due' | 'overdue' | 'settled' | 'dispute';
+
+  /** Exact Order ID — returns every payment/settlement row for that order. */
+  @IsOptional()
+  @IsString()
+  orderId?: string;
 }

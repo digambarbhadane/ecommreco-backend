@@ -9,12 +9,7 @@ import { Msg91WidgetService } from './providers/msg91-widget.service';
 @Module({
   imports: [ConfigModule],
   controllers: [SmsController],
-  providers: [
-    SmsService,
-    LogSmsProvider,
-    Msg91SmsProvider,
-    Msg91WidgetService,
-  ],
+  providers: [SmsService, LogSmsProvider, Msg91SmsProvider, Msg91WidgetService],
   exports: [SmsService, Msg91WidgetService],
 })
 export class SmsModule {}

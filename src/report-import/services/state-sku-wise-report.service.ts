@@ -165,9 +165,13 @@ export class StateSkuWiseReportService {
       : 'master_sku';
   }
 
-  private async resolveContext(query: StateWiseExportDto): Promise<ReportContext> {
+  private async resolveContext(
+    query: StateWiseExportDto,
+  ): Promise<ReportContext> {
     const sellerId = String(query.sellerId ?? '').trim();
-    const gstin = String(query.gstin ?? '').trim().toUpperCase();
+    const gstin = String(query.gstin ?? '')
+      .trim()
+      .toUpperCase();
     if (!sellerId) {
       throw new BadRequestException('sellerId is required');
     }
@@ -190,7 +194,9 @@ export class StateSkuWiseReportService {
     const scope = new Set<string>();
     for (const record of records) {
       if (record?._id) scope.add(String(record._id));
-      const number = String(record?.gstNumber ?? '').trim().toUpperCase();
+      const number = String(record?.gstNumber ?? '')
+        .trim()
+        .toUpperCase();
       if (number) scope.add(number);
     }
     return Array.from(scope);
@@ -200,7 +206,9 @@ export class StateSkuWiseReportService {
     gstin: string,
     sellerAliases: string[],
   ): Promise<string[]> {
-    const normalizedGstin = String(gstin ?? '').trim().toUpperCase();
+    const normalizedGstin = String(gstin ?? '')
+      .trim()
+      .toUpperCase();
     const scope = new Set<string>([normalizedGstin]);
     const gstRecord = await this.gstModel
       .findOne({
@@ -365,9 +373,9 @@ export class StateSkuWiseReportService {
     const id =
       preferredId && matchKeys.includes(preferredId)
         ? preferredId
-        : group.registeredLinkIds[0] ??
+        : (group.registeredLinkIds[0] ??
           group.rowMarketplaceIds[0] ??
-          group.platformId;
+          group.platformId);
     return { id, name: group.name, matchKeys };
   }
 
@@ -420,7 +428,10 @@ export class StateSkuWiseReportService {
 
     if (idsFromQuery.length) {
       const selectedDocs = await this.marketplaceModel
-        .find({ _id: { $in: idsFromQuery }, sellerId: { $in: ctx.sellerAliases } })
+        .find({
+          _id: { $in: idsFromQuery },
+          sellerId: { $in: ctx.sellerAliases },
+        })
         .lean()
         .exec();
       const platformIds = new Set(
@@ -536,8 +547,7 @@ export class StateSkuWiseReportService {
     );
     const includeFlipkart =
       !selectedMarketplace || selectedNames.has('flipkart');
-    const includeMeesho =
-      !selectedMarketplace || selectedNames.has('meesho');
+    const includeMeesho = !selectedMarketplace || selectedNames.has('meesho');
     const importRows = await this.rowModel
       .find(salesFilter)
       .select({
@@ -735,7 +745,8 @@ export class StateSkuWiseReportService {
     for (const row of rows) {
       const stateName = this.normalizeState(row.stateName);
       const marketplaceSku = String(row.skuID ?? '').trim() || 'N/A';
-      const masterSku = masterByMarketplaceSku.get(marketplaceSku) ?? 'UNMAPPED';
+      const masterSku =
+        masterByMarketplaceSku.get(marketplaceSku) ?? 'UNMAPPED';
       const skuLabel =
         skuGrouping === 'marketplace_sku' ? marketplaceSku : masterSku;
       const gstRate = this.gstRateForRow(row);
@@ -838,7 +849,11 @@ export class StateSkuWiseReportService {
     }> = [];
 
     for (const target of targets) {
-      const stateGroups = await this.aggregateForMarketplace(ctx, target, query);
+      const stateGroups = await this.aggregateForMarketplace(
+        ctx,
+        target,
+        query,
+      );
       const skuCount = stateGroups.reduce((sum, g) => sum + g.skus.length, 0);
       marketplaces.push({
         id: target.id,
@@ -1011,7 +1026,8 @@ export class StateSkuWiseReportService {
     if (skuGrouping === 'marketplace_sku') {
       const bySku = new Map<string, AnalyticsRow>();
       for (const item of mappings) {
-        const marketplaceSku = String(item.marketplaceSku ?? '').trim() || 'N/A';
+        const marketplaceSku =
+          String(item.marketplaceSku ?? '').trim() || 'N/A';
         const masterSku = String(item.masterSku ?? '').trim() || 'UNMAPPED';
         const rowKey = `${String(item.marketplace ?? '')}::${marketplaceSku}`;
         const metrics = metricByKey.get(marketplaceSku);
@@ -1235,7 +1251,10 @@ export class StateSkuWiseReportService {
       row.invoiceAmount,
     ]);
     // Keep SKU labels right-aligned for easier visual scanning.
-    detailRow.getCell(1).alignment = { horizontal: 'right', vertical: 'middle' };
+    detailRow.getCell(1).alignment = {
+      horizontal: 'right',
+      vertical: 'middle',
+    };
   }
 
   private addStateHeaderRow(sheet: ExcelJS.Worksheet, group: StateGroup) {

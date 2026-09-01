@@ -6,7 +6,9 @@ import { ConfigService } from '@nestjs/config';
 import { IoAdapter } from '@nestjs/platform-socket.io';
 import * as express from 'express';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const compression = require('compression') as () => ReturnType<typeof import('compression')>;
+const compression = require('compression') as () => ReturnType<
+  typeof import('compression')
+>;
 import { AppModule } from './app.module';
 import {
   buildSwaggerConfig,
@@ -63,6 +65,10 @@ const isLocalOrPrivateHostname = (hostname: string) => {
     host === '0.0.0.0' ||
     host === '::'
   ) {
+    return true;
+  }
+  // Windows/LAN machine names (e.g. http://Diku:8080) and mDNS (.local).
+  if (!host.includes('.') || host.endsWith('.local')) {
     return true;
   }
   if (/^10\./.test(host) || /^192\.168\./.test(host)) {
@@ -178,9 +184,7 @@ async function bootstrap() {
     if (whitelist.has(normalizedOrigin)) {
       return origin;
     }
-    Logger.warn(
-      `CORS: origin not in whitelist (${origin}); denying.`,
-    );
+    Logger.warn(`CORS: origin not in whitelist (${origin}); denying.`);
     return false;
   };
 
@@ -226,19 +230,14 @@ async function bootstrap() {
   const port =
     typeof parsedPort === 'number' && Number.isFinite(parsedPort)
       ? parsedPort
-      : 5000;
+      : 5001;
 
   const swaggerEnabled =
-    nodeEnv !== 'production' ||
-    config.get<string>('ENABLE_SWAGGER') === 'true';
+    nodeEnv !== 'production' || config.get<string>('ENABLE_SWAGGER') === 'true';
   if (swaggerEnabled) {
     const swaggerConfig = buildSwaggerConfig();
     const document = normalizeSwaggerDocument(
-      SwaggerModule.createDocument(
-        app,
-        swaggerConfig,
-        createDocumentOptions(),
-      ),
+      SwaggerModule.createDocument(app, swaggerConfig, createDocumentOptions()),
     );
 
     SwaggerModule.setup('api/v1/docs', app, document, {
@@ -265,10 +264,22 @@ async function bootstrap() {
 
   await app.listen(port, '0.0.0.0');
   Logger.log(`API running on http://0.0.0.0:${port}`);
-  Logger.log(`Health: http://0.0.0.0:${port}/ and http://0.0.0.0:${port}/api/v1/health`);
+  Logger.log(
+    `Health: http://0.0.0.0:${port}/ and http://0.0.0.0:${port}/api/v1/health`,
+  );
   Logger.log(
     `CORS: allowAll=${allowAllOrigins} env=${nodeEnv} whitelist=${whitelist.size} origins`,
   );
 }
 
-void bootstrap();
+void bootstrap().catch((error: NodeJS.ErrnoException) => {
+  if (error?.code === 'EADDRINUSE') {
+    const port = process.env.PORT || '5001';
+    Logger.error(
+      `Port ${port} is already in use. Stop the existing API process (Task Manager / \`npx kill-port ${port}\`) and run \`npm run dev\` again.`,
+    );
+  } else {
+    Logger.error('Failed to start API', error?.stack ?? error);
+  }
+  process.exit(1);
+});

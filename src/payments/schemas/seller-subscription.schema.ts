@@ -42,6 +42,7 @@ export class SellerSubscription {
   planId: Types.ObjectId;
 
   @Prop({
+    type: String,
     required: true,
     enum: SUBSCRIPTION_TYPES,
     default: 'monthly',
@@ -59,6 +60,7 @@ export class SellerSubscription {
   renewalDate?: Date;
 
   @Prop({
+    type: String,
     required: true,
     enum: SUBSCRIPTION_STATUSES,
     default: 'pending',

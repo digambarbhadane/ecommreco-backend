@@ -29,10 +29,7 @@ import {
   ONBOARDING_CHECKOUT_TYPE,
   ONBOARDING_TIMELINE_EVENTS,
 } from '../constants/onboarding-status';
-import {
-  computeTrialPayable,
-  TRIAL_PRICE,
-} from '../../trial/trial.constants';
+import { computeTrialPayable, TRIAL_PRICE } from '../../trial/trial.constants';
 import { OnboardingTimelineService } from './onboarding-timeline.service';
 
 @Injectable()
@@ -83,8 +80,7 @@ export class OnboardingPaymentService {
     }
 
     const pricing = computeTrialPayable(TRIAL_PRICE);
-    const attemptNumber =
-      (await this.countAttempts(input.userId)) + 1;
+    const attemptNumber = (await this.countAttempts(input.userId)) + 1;
     const orderId = `ECO-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
     const returnPath = `/seller/register?mode=trial&order_id=${orderId}`;
 

@@ -52,7 +52,8 @@ export class VerifyOtpDto {
 
   @ApiProperty({
     required: false,
-    description: 'MSG91 OTP Widget access token (legacy server-side verification)',
+    description:
+      'MSG91 OTP Widget access token (legacy server-side verification)',
   })
   @ValidateIf((dto: VerifyOtpDto) => !dto.otp && !dto.reqId)
   @IsOptional()
