@@ -643,6 +643,126 @@ export class ImportWorkflowService {
     return { success: true, data };
   }
 
+  /**
+   * One-query GST-scoped matrix: marketplace rows × month columns with
+   * per-report status from existing slot records + report definitions.
+   */
+  async getImportStatusMatrix(query: {
+    sellerId: string;
+    gstId: string;
+    marketplaces: Array<{
+      marketplaceId: string;
+      marketplaceKey: MarketplaceUploadKey;
+    }>;
+    months?: string[];
+  }) {
+    const sellerId = String(query.sellerId ?? '').trim();
+    const gstId = String(query.gstId ?? '').trim();
+    if (!sellerId) {
+      throw new BadRequestException('sellerId is required');
+    }
+    if (!gstId) {
+      throw new BadRequestException('gstId is required');
+    }
+
+    const marketplaceRefs = (query.marketplaces ?? [])
+      .map((mp) => ({
+        marketplaceId: String(mp.marketplaceId ?? '').trim(),
+        marketplaceKey: mp.marketplaceKey,
+      }))
+      .filter(
+        (mp) =>
+          mp.marketplaceId && isSupportedMarketplaceKey(mp.marketplaceKey),
+      );
+
+    if (!marketplaceRefs.length) {
+      return {
+        success: true,
+        data: { gstId, months: [] as string[], marketplaces: [] },
+      };
+    }
+
+    const sellerAliases =
+      await this.validationService.resolveSellerIdAliases(sellerId);
+
+    const records = await this.slotRecordModel
+      .find({
+        sellerId: { $in: sellerAliases },
+        gstId,
+        status: { $in: ['completed', 'processing'] },
+      })
+      .sort({ updatedAt: -1 })
+      .lean()
+      .exec();
+
+    const monthSet = new Set<string>();
+    for (const record of records) {
+      const month = String(record.reportMonth ?? '').trim();
+      if (/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) monthSet.add(month);
+    }
+    for (const month of query.months ?? []) {
+      const trimmed = String(month ?? '').trim();
+      if (/^\d{4}-(0[1-9]|1[0-2])$/.test(trimmed)) monthSet.add(trimmed);
+    }
+
+    const months = [...monthSet].sort((a, b) => a.localeCompare(b));
+
+    const recordsByMpMonth = new Map<string, typeof records>();
+    for (const record of records) {
+      const key = `${record.marketplaceId}:${record.reportMonth}`;
+      const bucket = recordsByMpMonth.get(key) ?? [];
+      bucket.push(record);
+      recordsByMpMonth.set(key, bucket);
+    }
+
+    const marketplaces = marketplaceRefs.map(
+      ({ marketplaceId, marketplaceKey }) => {
+        const cells = months.map((reportMonth) => {
+          const group =
+            recordsByMpMonth.get(`${marketplaceId}:${reportMonth}`) ?? [];
+          const built = this.buildMarketplaceStatus(
+            marketplaceKey,
+            marketplaceId,
+            group.map((record) => ({
+              slot: record.slot,
+              uploadId: record.uploadId,
+              fileName: record.fileName,
+              fileSize: record.fileSize,
+              uploadedBy: record.uploadedBy,
+              updatedAt: (record as { updatedAt?: Date }).updatedAt,
+              status: record.status,
+              importBatchId: record.importBatchId,
+            })),
+          );
+          return {
+            reportMonth,
+            status: built.status,
+            isComplete: built.isComplete,
+            uploadedRequired: built.uploadedRequired,
+            totalRequired: built.totalRequired,
+            progressPercent: built.progressPercent,
+            reports: built.reports,
+          };
+        });
+
+        return {
+          marketplaceId,
+          marketplaceKey,
+          cells,
+        };
+      },
+    );
+
+    return {
+      success: true,
+      data: {
+        gstId,
+        months,
+        marketplaces,
+      },
+    };
+  }
+
   async getImportHistory(query: {
     sellerId: string;
     gstId?: string;

@@ -986,6 +986,10 @@ export class StateSkuWiseReportService {
       cgst: number;
       sgst: number;
       invoiceAmount: number;
+      salesQty: number;
+      returnQty: number;
+      grossSales: number;
+      returnAmount: number;
       netPcs: number;
       netSales: number;
       bankPayout: number;
@@ -998,6 +1002,10 @@ export class StateSkuWiseReportService {
     const attachFinance = (
       row: Omit<
         AnalyticsRow,
+        | 'salesQty'
+        | 'returnQty'
+        | 'grossSales'
+        | 'returnAmount'
         | 'netPcs'
         | 'netSales'
         | 'bankPayout'
@@ -1011,6 +1019,10 @@ export class StateSkuWiseReportService {
       const finance = financeByKey.get(financeKey) ?? this.emptyFinance();
       return {
         ...row,
+        salesQty: finance.salesQty,
+        returnQty: finance.returnQty,
+        grossSales: finance.grossSales,
+        returnAmount: finance.returnAmount,
         netPcs: finance.netPcs,
         netSales: finance.netSales,
         bankPayout: finance.bankPayout,
@@ -1210,6 +1222,14 @@ export class StateSkuWiseReportService {
       ),
       invoiceAmount: this.roundMoney(
         rows.reduce((sum, r) => sum + r.invoiceAmount, 0),
+      ),
+      salesQty: this.roundMoney(rows.reduce((sum, r) => sum + r.salesQty, 0)),
+      returnQty: this.roundMoney(rows.reduce((sum, r) => sum + r.returnQty, 0)),
+      grossSales: this.roundMoney(
+        rows.reduce((sum, r) => sum + r.grossSales, 0),
+      ),
+      returnAmount: this.roundMoney(
+        rows.reduce((sum, r) => sum + r.returnAmount, 0),
       ),
       netSales: this.roundMoney(rows.reduce((sum, r) => sum + r.netSales, 0)),
       netPcs: this.roundMoney(rows.reduce((sum, r) => sum + r.netPcs, 0)),

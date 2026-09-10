@@ -58,7 +58,7 @@ describe('payment-reconciliation.util', () => {
     expect(getPaymentDifference(row)).toBe(100);
   });
 
-  it('does not mark full-return zero-bank orders as settled from Diff alone', () => {
+  it('marks full-return zero-bank orders as settled when net sales and bank are zero', () => {
     const rows = [
       {
         orderId: 'OD-ZERO',
@@ -79,11 +79,112 @@ describe('payment-reconciliation.util', () => {
       },
     ];
     const lifecycle = aggregateOrderPaymentLifecycle(rows);
+    expect(lifecycle.netSales).toBe(0);
+    expect(lifecycle.bankPayout).toBe(0);
     expect(lifecycle.difference).toBe(0);
-    expect(getOrderReconciliationStatus(rows)).toBe('dispute');
+    expect(getOrderReconciliationStatus(rows)).toBe('settled');
     const summary = summarizePaymentRecords(rows);
-    expect(summary.settledCount).toBe(0);
+    expect(summary.settledCount).toBe(1);
     expect(summary.disputeCount).toBe(0);
+    expect(summary.overdueCount).toBe(0);
+  });
+
+  it('Net Sales = Sales + Returns when amounts differ and bank matches sale settlement', () => {
+    const lifecycle = aggregateOrderPaymentLifecycle([
+      {
+        orderId: 'SUB-PARTIAL-NET',
+        source: 'meesho_order_payments',
+        marketplace: 'meesho',
+        sellerSku: 'SKU-A',
+        saleAmount: 0,
+        refund: -482,
+        bankSettlementValue: 0,
+        marketplaceFee: 0,
+      },
+      {
+        orderId: 'SUB-PARTIAL-NET',
+        source: 'meesho_order_payments',
+        marketplace: 'meesho',
+        sellerSku: 'SKU-A',
+        saleAmount: 533.76,
+        refund: 0,
+        bankSettlementValue: 514.57,
+        marketplaceFee: -19.19,
+      },
+    ]);
+    expect(lifecycle.sales).toBeCloseTo(533.76, 2);
+    expect(lifecycle.returns).toBe(-482);
+    expect(lifecycle.netSales).toBeCloseTo(51.76, 2);
+    expect(lifecycle.difference).toBe(0);
+  });
+
+  it('prefers Amazon payment settlements over GST import_rows for amounts', () => {
+    const lifecycle = aggregateOrderPaymentLifecycle([
+      {
+        _id: 'gst-sale',
+        orderId: '403-AMZ-1',
+        source: 'import_rows',
+        marketplace: 'amazon',
+        documentType: 'SALE',
+        saleAmount: 1000,
+        invoiceAmount: 1000,
+        bankSettlementValue: 0,
+      },
+      {
+        _id: 'amz-settle',
+        orderId: '403-AMZ-1',
+        source: 'amazon_payment_transactions',
+        marketplace: 'amazon',
+        neftId: 'SETTLE-1',
+        transactionId: 'SETTLE-1',
+        saleAmount: 500,
+        refund: 0,
+        marketplaceFee: -50,
+        commission: -30,
+        bankSettlementValue: 420,
+      },
+    ]);
+    expect(lifecycle.sales).toBe(500);
+    expect(lifecycle.returns).toBe(0);
+    expect(lifecycle.netSales).toBe(500);
+    expect(lifecycle.marketplaceFees).toBeCloseTo(-80, 2);
+    expect(lifecycle.bankPayout).toBe(420);
+    expect(lifecycle.difference).toBe(0);
+  });
+
+  it('sums Amazon sales across distinct settlements (not max-per-invoice)', () => {
+    const lifecycle = aggregateOrderPaymentLifecycle([
+      {
+        orderId: '403-MULTI',
+        source: 'amazon_payment_transactions',
+        marketplace: 'amazon',
+        neftId: 'S1',
+        transactionId: 'S1',
+        invoiceId: 'INV-SHARED',
+        sellerSku: 'SKU-1',
+        saleAmount: 400,
+        bankSettlementValue: 350,
+        marketplaceFee: -30,
+        commission: -20,
+      },
+      {
+        orderId: '403-MULTI',
+        source: 'amazon_payment_transactions',
+        marketplace: 'amazon',
+        neftId: 'S2',
+        transactionId: 'S2',
+        invoiceId: 'INV-SHARED',
+        sellerSku: 'SKU-1',
+        saleAmount: 200,
+        bankSettlementValue: 170,
+        marketplaceFee: -20,
+        commission: -10,
+      },
+    ]);
+    expect(lifecycle.sales).toBe(600);
+    expect(lifecycle.bankPayout).toBe(520);
+    expect(lifecycle.marketplaceFees).toBeCloseTo(-80, 2);
+    expect(lifecycle.difference).toBe(0);
   });
 
   it('aggregates full return lifecycle without double-counting mirrored sales', () => {
@@ -238,7 +339,7 @@ describe('payment-reconciliation.util', () => {
     expect(matchesPaymentStatus(statusRow, 'overdue', now)).toBe(false);
   });
 
-  it('does not mark Amazon zero-bank full return as Settled via Flipkart rule', () => {
+  it('marks Amazon zero-bank full return as Settled via zero net/bank rule (not Flipkart rule)', () => {
     const now = Date.parse('2026-08-21T12:00:00.000Z');
     const row = {
       marketplace: 'amazon',
@@ -250,8 +351,8 @@ describe('payment-reconciliation.util', () => {
       invoiceDate: '2025-05-12',
     };
     expect(isFlipkartCompletedReturnSettlement(row)).toBe(false);
-    expect(isPaymentSettled(row)).toBe(false);
-    expect(isPaymentOverdue(row, now)).toBe(true);
+    expect(isPaymentSettled(row)).toBe(true);
+    expect(isPaymentOverdue(row, now)).toBe(false);
   });
 
   it('marks Myntra zero-net zero-bank full return as Settled (not Overdue)', () => {

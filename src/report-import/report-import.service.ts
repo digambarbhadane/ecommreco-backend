@@ -165,13 +165,26 @@ export class ReportImportService {
   ) {
     const filter: Record<string, unknown> = {};
     await this.applySellerIdToFilter(filter, query.sellerId);
-    if (query.gstin) filter.gstin = query.gstin.trim().toUpperCase();
+    const gstin = String(query.gstin ?? '')
+      .trim()
+      .toUpperCase();
+    if (gstin) filter.gstin = gstin;
     if (query.marketplace) {
+      let gstId: string | undefined;
+      if (gstin) {
+        const gst = await this.gstModel
+          .findOne({ gstNumber: gstin })
+          .select({ _id: 1 })
+          .lean()
+          .exec();
+        gstId = gst?._id ? String(gst._id) : undefined;
+      }
       await applyImportRowMarketplaceFilter(
         filter,
         this.marketplaceModel,
         readSellerAliasesFromFilter(filter),
         query.marketplace,
+        gstId,
       );
     }
     if (query.documentTypes) {

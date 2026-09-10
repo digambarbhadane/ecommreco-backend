@@ -45,7 +45,11 @@ import { ImportSessionService } from './services/import-session.service';
 import { ImportWorkflowService } from './services/import-workflow.service';
 import { ImportJobService } from './services/import-job.service';
 import { ReconciliationService } from './services/reconciliation.service';
-import { DeleteSlotDto, WorkflowStatusDto } from './dto/import-workflow.dto';
+import {
+  DeleteSlotDto,
+  ImportStatusMatrixDto,
+  WorkflowStatusDto,
+} from './dto/import-workflow.dto';
 import {
   MarketplaceUploadKey,
   ReportUploadMultipart,
@@ -964,6 +968,16 @@ export class ReportImportController {
       throw new BadRequestException('sellerId is required');
     }
     return this.importWorkflowService.getSellerUploadOverview(sellerId.trim());
+  }
+
+  @Post('workflow/import-status-matrix')
+  @ApiOperation({
+    summary:
+      'GST-scoped marketplace × month import status matrix with per-report status',
+  })
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  workflowImportStatusMatrix(@Body() body: ImportStatusMatrixDto) {
+    return this.importWorkflowService.getImportStatusMatrix(body);
   }
 
   @Get('workflow/month-summary')

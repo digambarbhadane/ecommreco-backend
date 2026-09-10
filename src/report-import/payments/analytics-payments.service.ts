@@ -22,6 +22,7 @@ import {
   mapMeeshoOrderPaymentToAnalyticsRow,
   normalizeFlipkartImportSku,
   selectUncoveredFlipkartGstReturnRows,
+  dedupeMeeshoDuplicatePaymentTransactions,
   type FlipkartGstReturnInvoiceMeta,
   type PaymentAnalyticsRow,
 } from './payment-analytics.types';
@@ -416,11 +417,28 @@ export class AnalyticsPaymentsService {
     const includeFlipkart = hasFlipkart;
     const includeAmazon = hasAmazon;
     const includeMyntraPg = hasMyntraPg;
+    // Meesho-scoped + dedicated meesho_order_payments: skip legacy import_rows
+    // for list views (avoids Return ≈ 2× Sales). When a specific orderId is
+    // requested (Order Details), keep legacy so every related transaction loads;
+    // lifecycle prefers meesho_order_payments amounts when both sources exist.
+    const skipLegacyForMeeshoCollection =
+      isMarketplaceScoped &&
+      targetSlug === 'meesho' &&
+      hasMeesho &&
+      !String(query.orderId ?? '').trim();
+    // Amazon-scoped + dedicated amazon_payment_transactions: never merge Amazon
+    // GST import_rows as financial rows. Those SALE invoices inflate Sales while
+    // Bank/Fees come from settlement components → mass Mismatch. SKU/invoice/qty
+    // still attach via attachAmazonSkusFromImportRows (display-only).
+    const skipLegacyForAmazonCollection =
+      isMarketplaceScoped && targetSlug === 'amazon' && hasAmazon;
     const includeLegacy =
-      !isMarketplaceScoped ||
-      isMyntraTarget ||
-      isOtherTarget ||
-      useLegacyFlipkart;
+      !skipLegacyForMeeshoCollection &&
+      !skipLegacyForAmazonCollection &&
+      (!isMarketplaceScoped ||
+        isMyntraTarget ||
+        isOtherTarget ||
+        useLegacyFlipkart);
 
     if (
       !includeMeesho &&
@@ -560,12 +578,14 @@ export class AnalyticsPaymentsService {
         doc as Parameters<typeof mapFlipkartPaymentToAnalyticsRow>[0],
       ),
     );
-    const mapped: PaymentAnalyticsRow[] = [
-      ...flipkartMapped,
-      ...meeshoRows.map((doc) => mapMeeshoOrderPaymentToAnalyticsRow(doc)),
-      ...amazonRows,
-      ...legacyRows,
-    ];
+    const mapped: PaymentAnalyticsRow[] = dedupeMeeshoDuplicatePaymentTransactions(
+      [
+        ...flipkartMapped,
+        ...meeshoRows.map((doc) => mapMeeshoOrderPaymentToAnalyticsRow(doc)),
+        ...amazonRows,
+        ...legacyRows,
+      ],
+    );
     const withMyntra = enrichMyntraPaymentAnalyticsRows(
       mapped,
       myntraPgDocs as Parameters<typeof enrichMyntraPaymentAnalyticsRows>[1],
