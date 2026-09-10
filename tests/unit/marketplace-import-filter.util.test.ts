@@ -82,5 +82,40 @@ describe('marketplace-import-filter.util', () => {
     );
 
     expect(ids).toEqual(['mp-flipkart']);
+    expect(marketplaceModel.find).toHaveBeenCalledWith({
+      sellerId: { $in: ['seller-1'] },
+    });
+  });
+
+  it('scopes slug resolution to a specific GST when gstId is provided', async () => {
+    const marketplaceModel = {
+      find: jest.fn().mockReturnValue({
+        populate: jest.fn().mockReturnValue({
+          select: jest.fn().mockReturnValue({
+            lean: jest.fn().mockReturnValue({
+              exec: jest.fn().mockResolvedValue([
+                {
+                  _id: 'mp-amazon-gst-a',
+                  platformMarketplaceId: { slug: 'amazon', name: 'Amazon' },
+                },
+              ]),
+            }),
+          }),
+        }),
+      }),
+    };
+
+    const ids = await resolveSellerMarketplaceLinkIds(
+      marketplaceModel as never,
+      ['seller-1'],
+      'amazon',
+      '674b0f6f2f8f9b0011223355',
+    );
+
+    expect(ids).toEqual(['mp-amazon-gst-a']);
+    expect(marketplaceModel.find).toHaveBeenCalledWith({
+      sellerId: { $in: ['seller-1'] },
+      gstId: '674b0f6f2f8f9b0011223355',
+    });
   });
 });

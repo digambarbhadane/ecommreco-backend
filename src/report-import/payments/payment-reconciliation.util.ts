@@ -35,6 +35,9 @@ export type PaymentAmountFields = {
   marketplace?: string;
   /** Analytics row source collection (e.g. flipkart_payment_order_reports). */
   source?: string;
+  /** Settlement / payment transaction id when present. */
+  transactionId?: string;
+  neftId?: string;
 };
 
 function signed(value: unknown): number {
@@ -58,6 +61,16 @@ export function getGrossSales(row: PaymentAmountFields): number {
 export function getReturnDeduction(row: PaymentAmountFields): number {
   const fromRefund = Math.abs(signed(row.refund));
   if (fromRefund > 0) return fromRefund;
+  // Meesho Live Order Status (Returned / Cancelled / RTO) is not a Flipkart
+  // return document — never invent return magnitude from saleAmount.
+  const source = String(row.source ?? '')
+    .trim()
+    .toLowerCase();
+  if (source === 'meesho_order_payments') return 0;
+  const marketplace = String(row.marketplace ?? '')
+    .trim()
+    .toLowerCase();
+  if (marketplace === 'meesho' || marketplace.includes('meesho')) return 0;
   if (isReturnDocumentType(row.documentType)) {
     return Math.abs(getGrossSales(row));
   }
@@ -85,6 +98,43 @@ export function getNetSales(row: PaymentAmountFields): number {
 
 export function getBankPayout(row: PaymentAmountFields): number {
   return signed(row.bankSettlementValue ?? row.finalSettlementAmount);
+}
+
+/**
+ * Sum bank payouts once per payment/NEFT identity.
+ * Identical reprints of the same settlement amount on the same payment id are
+ * kept once; genuinely different amounts on the same id are summed.
+ * Rows without a payment id still contribute individually.
+ */
+export function aggregateUniqueBankPayout(
+  rows: PaymentAmountFields[],
+): number {
+  const byPayment = new Map<string, number[]>();
+  let unkeyed = 0;
+  for (const row of rows) {
+    const bank = getBankPayout(row);
+    if (!bank) continue;
+    const key = String(row.neftId || row.transactionId || '')
+      .trim()
+      .toLowerCase();
+    if (!key) {
+      unkeyed += bank;
+      continue;
+    }
+    const bucket = byPayment.get(key);
+    if (bucket) bucket.push(bank);
+    else byPayment.set(key, [bank]);
+  }
+  let total = unkeyed;
+  for (const amounts of byPayment.values()) {
+    const first = amounts[0];
+    if (amounts.every((value) => Math.abs(value - first) < 0.005)) {
+      total += first;
+    } else {
+      total += amounts.reduce((sum, value) => sum + value, 0);
+    }
+  }
+  return total;
 }
 
 export function getCommissionAmount(row: PaymentAmountFields): number {
@@ -196,6 +246,69 @@ function isMyntraMarketplaceRow(row: PaymentAmountFields): boolean {
   return doc === 'customer return' || doc === 'rto return';
 }
 
+function isMeeshoMarketplaceRow(row: PaymentAmountFields): boolean {
+  const marketplace = String(row.marketplace ?? '')
+    .trim()
+    .toLowerCase();
+  if (marketplace.includes('meesho')) return true;
+  return String(row.source ?? '').trim().toLowerCase() === 'meesho_order_payments';
+}
+
+/**
+ * Explicit Meesho RTO marker from order/payment status fields.
+ * Do NOT treat a generic Return amount as RTO.
+ */
+export function isMeeshoRtoIndicator(row: PaymentAmountFields): boolean {
+  if (!isMeeshoMarketplaceRow(row)) return false;
+  const values = [row.documentType, row.returnType];
+  return values.some((value) => {
+    const upper = String(value ?? '')
+      .trim()
+      .toUpperCase();
+    if (!upper) return false;
+    return /\bRTO\b/.test(upper) || upper.includes('RETURN TO ORIGIN');
+  });
+}
+
+/** True when a Meesho payment/settlement transaction record exists for the order. */
+export function hasMeeshoPaymentTransaction(
+  row: PaymentAmountFields,
+): boolean {
+  if (!isMeeshoMarketplaceRow(row)) return false;
+  if (String(row.source ?? '').trim().toLowerCase() === 'meesho_order_payments') {
+    return Boolean(
+      String(row.transactionId || row.neftId || row._id || '').trim(),
+    );
+  }
+  return Boolean(String(row.transactionId || row.neftId || '').trim());
+}
+
+/**
+ * Meesho RTO completed settlement:
+ * RTO marker + payment transaction record + Net Sales ≈ 0 + Bank Pay-out ≈ 0.
+ */
+export function isMeeshoCompletedRtoSettlement(
+  row: PaymentAmountFields,
+): boolean {
+  if (!isMeeshoRtoIndicator(row)) return false;
+  if (!hasMeeshoPaymentTransaction(row)) return false;
+  if (Math.abs(getNetSales(row)) > PAYMENT_DIFFERENCE_TOLERANCE) return false;
+  if (Math.abs(getBankPayout(row)) > PAYMENT_DIFFERENCE_TOLERANCE) return false;
+  return true;
+}
+
+/**
+ * Generic completed offset: final Net Sales ≈ ₹0 and total Bank Pay-out ≈ ₹0.
+ * No outstanding sale balance and no bank movement — treat as Settled (not Due/Overdue).
+ */
+export function isZeroNetZeroBankSettlement(
+  row: PaymentAmountFields,
+): boolean {
+  if (Math.abs(getNetSales(row)) > PAYMENT_DIFFERENCE_TOLERANCE) return false;
+  if (Math.abs(getBankPayout(row)) > PAYMENT_DIFFERENCE_TOLERANCE) return false;
+  return true;
+}
+
 /**
  * Flipkart-only completed return settlement:
  * Net Sales ≈ 0, aggregated bank payout ≈ 0, Difference within ±₹1,
@@ -234,15 +347,17 @@ export function isMyntraCompletedZeroSettlement(
 
 /**
  * SETTLED: payment received AND |difference| ≤ ±₹1.
- * Diff alone (e.g. unpaid expected≠0, or zero-bank full return) is not Settled —
- * except Flipkart completed return settlements (Net Sales ≈ 0, bank ≈ 0).
+ * Also Settled when final Net Sales ≈ 0 and Bank Pay-out ≈ 0 (no outstanding
+ * sale balance / bank movement), including completed marketplace-specific offsets.
  */
 export function isPaymentSettled(row: PaymentAmountFields): boolean {
   if (hasPaymentReceived(row)) {
     return isIgnoredPaymentDifference(getPaymentDifference(row));
   }
+  if (isZeroNetZeroBankSettlement(row)) return true;
   if (isFlipkartCompletedReturnSettlement(row)) return true;
   if (isMyntraCompletedZeroSettlement(row)) return true;
+  if (isMeeshoCompletedRtoSettlement(row)) return true;
   return false;
 }
 
@@ -266,6 +381,9 @@ export function toOrderPaymentStatusRow(
     .sort();
   const flipkart = rows.some((row) => isFlipkartMarketplaceRow(row));
   const myntra = rows.some((row) => isMyntraMarketplaceRow(row));
+  const meesho = rows.some((row) => isMeeshoMarketplaceRow(row));
+  const meeshoRto = rows.some((row) => isMeeshoRtoIndicator(row));
+  const meeshoPaymentTxn = rows.find((row) => hasMeeshoPaymentTransaction(row));
   return {
     isOrderGroup: true,
     saleAmount: lifecycle.sales,
@@ -275,21 +393,36 @@ export function toOrderPaymentStatusRow(
     commission: 0,
     invoiceDate: dates[0],
     paymentDate: dates[dates.length - 1],
-    // Bind status to the same final Expected − Actual value shown in the table.
-    orderPaymentDifference: getOrderPaymentReconciliationDifference({
-      saleAmount: lifecycle.sales,
-      refund: lifecycle.returns,
-      bankSettlementValue: lifecycle.bankPayout,
-      marketplaceFee: lifecycle.marketplaceFees,
-      commission: 0,
-    }),
+    // Bind status to the same final lifecycle Difference shown in the table.
+    orderPaymentDifference: lifecycle.difference,
     // Any non-zero bank settlement (credit or reversal) counts as payment received.
     hasReceivedBankPayment: rows.some((row) => getBankPayout(row) !== 0),
     ...(flipkart
       ? { marketplace: 'flipkart', source: 'flipkart_payment_order_reports' }
       : myntra
         ? { marketplace: 'myntra', source: 'myntra_pg_settlement_rows' }
-        : {}),
+        : meesho
+          ? {
+              marketplace: 'meesho',
+              source: 'meesho_order_payments',
+              ...(meeshoRto
+                ? { documentType: 'RTO', returnType: 'RTO' }
+                : {}),
+              ...(meeshoPaymentTxn
+                ? {
+                    transactionId:
+                      meeshoPaymentTxn.transactionId ||
+                      meeshoPaymentTxn.neftId ||
+                      meeshoPaymentTxn._id,
+                    neftId:
+                      meeshoPaymentTxn.neftId ||
+                      meeshoPaymentTxn.transactionId ||
+                      meeshoPaymentTxn._id,
+                    _id: meeshoPaymentTxn._id,
+                  }
+                : {}),
+            }
+          : {}),
   };
 }
 
@@ -355,8 +488,10 @@ export function isPaymentDue(
   nowMs?: number,
 ): boolean {
   if (hasPaymentReceived(row)) return false;
+  if (isZeroNetZeroBankSettlement(row)) return false;
   if (isFlipkartCompletedReturnSettlement(row)) return false;
   if (isMyntraCompletedZeroSettlement(row)) return false;
+  if (isMeeshoCompletedRtoSettlement(row)) return false;
   const age = getInvoiceAgeDays(row, nowMs);
   // Undated unpaid orders still need exactly one status bucket.
   if (age == null) return true;
@@ -369,8 +504,10 @@ export function isPaymentOverdue(
   nowMs?: number,
 ): boolean {
   if (hasPaymentReceived(row)) return false;
+  if (isZeroNetZeroBankSettlement(row)) return false;
   if (isFlipkartCompletedReturnSettlement(row)) return false;
   if (isMyntraCompletedZeroSettlement(row)) return false;
+  if (isMeeshoCompletedRtoSettlement(row)) return false;
   const age = getInvoiceAgeDays(row, nowMs);
   return age != null && age >= PAYMENT_DUE_WINDOW_DAYS;
 }
@@ -393,12 +530,31 @@ export function matchesPaymentStatus(
   return true;
 }
 
+function isAmazonPaymentAnalyticsRow(row: PaymentAmountFields): boolean {
+  return (
+    String(row.source ?? '')
+      .trim()
+      .toLowerCase() === 'amazon_payment_transactions'
+  );
+}
+
 /**
  * Identity for payment-only sale de-dupe (no GST Sale rows present).
  * Prefer orderItemId (distinct Flipkart line items can share a SKU), then
  * invoice id, then SKU.
+ *
+ * Amazon settlements are already one row per (orderId, settlementId). Do not
+ * collapse them via shared GST invoice/SKU enrichment — that undercounts Sales
+ * while Bank/Fees still sum across settlements.
  */
 function salesItemKey(row: PaymentAmountFields, index: number): string {
+  if (isAmazonPaymentAnalyticsRow(row)) {
+    const settlementId = String(row.neftId || row.transactionId || '').trim();
+    if (settlementId) return `amazon-settlement:${settlementId}`;
+    const rowId = String(row._id ?? '').trim();
+    if (rowId) return `amazon-row:${rowId}`;
+    return `amazon-row:${index}`;
+  }
   const itemId = String(row.orderItemId ?? '').trim();
   if (itemId) return `item:${itemId}`;
   const invoiceId = String(row.invoiceId ?? '').trim();
@@ -475,6 +631,32 @@ export function aggregateDistinctItemSales(
   return sales;
 }
 
+/**
+ * Meesho Total Sale Return is an order-level amount reprinted on every
+ * settlement line. Summing it per row doubles Returns; take the max once per
+ * sub-order (+ SKU when present), same idea as {@link aggregateDistinctItemSales}.
+ */
+export function aggregateDistinctMeeshoReturns(
+  rows: PaymentAmountFields[],
+): number {
+  const byKey = new Map<string, number>();
+  rows.forEach((row, index) => {
+    const orderId = String(row.orderId || row.orderID || '').trim();
+    const sku = String(row.sellerSku ?? '')
+      .trim()
+      .toLowerCase();
+    const key = orderId
+      ? `${orderId}::${sku || 'item'}`
+      : `row:${String(row._id ?? index)}`;
+    const deduction = getReturnDeduction(row);
+    byKey.set(key, Math.max(byKey.get(key) ?? 0, deduction));
+  });
+  return [...byKey.values()].reduce(
+    (sum, amount) => sum + (amount > 0 ? -amount : 0),
+    0,
+  );
+}
+
 export function isFlipkartCreditNoteDocumentType(
   documentType?: string | null,
 ): boolean {
@@ -520,6 +702,29 @@ export function isFlipkartSalesCancellationDocumentType(
   return /CANCEL/.test(upper);
 }
 
+/**
+ * Flipkart GST note/cancellation document-type rules apply only to Flipkart
+ * (and generic import_rows for Flipkart GST). Meesho Live Order Status values
+ * like "Cancelled" must not be treated as Flipkart Sales Cancellation notes.
+ */
+export function isFlipkartGstDocumentContext(
+  row: PaymentAmountFields,
+): boolean {
+  if (isMeeshoMarketplaceRow(row)) return false;
+  if (isMyntraMarketplaceRow(row)) return false;
+  const source = String(row.source ?? '')
+    .trim()
+    .toLowerCase();
+  if (
+    source === 'meesho_order_payments' ||
+    source === 'amazon_payment_transactions' ||
+    source === 'myntra_pg_settlement_rows'
+  ) {
+    return false;
+  }
+  return true;
+}
+
 /** Flipkart payment reports mark returns via returnType even when refund is 0. */
 export function isFlipkartReturnType(returnType?: string | null): boolean {
   const upper = String(returnType ?? '')
@@ -553,6 +758,7 @@ export function isPaymentReturnRecord(row: PaymentAmountFields): boolean {
 }
 
 function isFlipkartNoteRow(row: PaymentAmountFields): boolean {
+  if (!isFlipkartGstDocumentContext(row)) return false;
   return (
     isFlipkartCreditNoteDocumentType(row.documentType) ||
     isFlipkartDebitNoteDocumentType(row.documentType) ||
@@ -590,8 +796,41 @@ function shouldSkipPaymentReportReturnAmount(
 export function aggregateOrderPaymentLifecycle<T extends PaymentAmountFields>(
   rows: T[],
 ) {
-  const noteRows = rows.filter((row) => isFlipkartNoteRow(row));
-  const baseRows = rows.filter((row) => !isFlipkartNoteRow(row));
+  // When Meesho payment-report rows are present alongside import_rows for the
+  // same Order ID (Order Details), prefer meesho_order_payments for amounts so
+  // Return/Sales are not double-counted — UI still lists every transaction.
+  const hasMeeshoPaymentSource = rows.some(
+    (row) =>
+      String(row.source ?? '')
+        .trim()
+        .toLowerCase() === 'meesho_order_payments',
+  );
+  // Amazon: prefer amazon_payment_transactions over GST import_rows so Sales
+  // are not taken from SALE invoices while Bank comes from settlements.
+  const hasAmazonPaymentSource = rows.some(
+    (row) =>
+      String(row.source ?? '')
+        .trim()
+        .toLowerCase() === 'amazon_payment_transactions',
+  );
+  const financialRows = hasMeeshoPaymentSource
+    ? rows.filter(
+        (row) =>
+          String(row.source ?? '')
+            .trim()
+            .toLowerCase() === 'meesho_order_payments',
+      )
+    : hasAmazonPaymentSource
+      ? rows.filter(
+          (row) =>
+            String(row.source ?? '')
+              .trim()
+              .toLowerCase() === 'amazon_payment_transactions',
+        )
+      : rows;
+
+  const noteRows = financialRows.filter((row) => isFlipkartNoteRow(row));
+  const baseRows = financialRows.filter((row) => !isFlipkartNoteRow(row));
   const creditNoteRows = noteRows.filter((row) =>
     isFlipkartCreditNoteDocumentType(row.documentType),
   );
@@ -620,10 +859,12 @@ export function aggregateOrderPaymentLifecycle<T extends PaymentAmountFields>(
       sum + Math.abs(getGrossSales(row) || signed(row.invoiceAmount)),
     0,
   );
-  const originalReturns = baseRows.reduce((sum, row) => {
-    if (shouldSkipPaymentReportReturnAmount(row, hasGstReturns)) return sum;
-    return sum + getReturnAmount(row);
-  }, 0);
+  const originalReturns = hasMeeshoPaymentSource
+    ? aggregateDistinctMeeshoReturns(baseRows)
+    : baseRows.reduce((sum, row) => {
+        if (shouldSkipPaymentReportReturnAmount(row, hasGstReturns)) return sum;
+        return sum + getReturnAmount(row);
+      }, 0);
   // Flipkart Debit Notes are stored negative in import_rows; keep as return outflow.
   const debitNotes = debitNoteRows.reduce((sum, row) => {
     if (getReturnDeduction(row) > 0) return sum + getReturnAmount(row);
@@ -645,9 +886,24 @@ export function aggregateOrderPaymentLifecycle<T extends PaymentAmountFields>(
     (sum, row) => sum + getMarketplaceFeesAmount(row),
     0,
   );
-  const bankPayout = baseRows.reduce((sum, row) => sum + getBankPayout(row), 0);
-  const expectedBankPayout = netSales + marketplaceFees;
-  const difference = expectedBankPayout - bankPayout;
+  const bankPayout = aggregateUniqueBankPayout(baseRows);
+  let expectedBankPayout = netSales + marketplaceFees;
+  let difference = expectedBankPayout - bankPayout;
+
+  // Sale settlement matched (Actual Bank ≈ Sales + Fees) while return rows
+  // carry no bank clawback. Expected uses Net Sales + Fees, so Expected −
+  // Actual collapses to the Return amount (full or partial). When the sale
+  // payout itself reconciled, that gap is not an unreconciled Difference.
+  // Net Sales stays Sales + Returns (e.g. 674 + (−634) = 40).
+  if (
+    sales > PAYMENT_DIFFERENCE_TOLERANCE &&
+    Math.abs(returns) > PAYMENT_DIFFERENCE_TOLERANCE &&
+    Math.abs(bankPayout - (sales + marketplaceFees)) <=
+      PAYMENT_DIFFERENCE_TOLERANCE
+  ) {
+    expectedBankPayout = bankPayout;
+    difference = 0;
+  }
 
   return {
     originalSales,

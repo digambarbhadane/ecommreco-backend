@@ -368,7 +368,491 @@ export function mapMeeshoOrderPaymentToAnalyticsRow(
     gstin: doc.gstin,
     marketplace: 'meesho',
     reportMonth: doc.reportMonth,
+    // Live Order Status drives RTO detection and document classification.
+    documentType: doc.liveOrderStatus
+      ? String(doc.liveOrderStatus).trim()
+      : undefined,
+    returnType: (() => {
+      const status = String(doc.liveOrderStatus ?? '')
+        .trim()
+        .toUpperCase();
+      if (!status) return undefined;
+      if (/\bRTO\b/.test(status) || status.includes('RETURN TO ORIGIN')) {
+        return String(doc.liveOrderStatus).trim();
+      }
+      return undefined;
+    })(),
   };
+}
+
+/**
+ * Meesho Order Payments sheets often store fee components (Marketplace Fee,
+ * TDS, shipping, …) as separate physical rows that share the same Sub Order +
+ * Transaction ID. Merge those into one analytics row so Order Details does not
+ * treat each fee line as a separate sale / invoice / quantity.
+ *
+ * Repeated sale/return/bank/qty values that are copied onto every fee line are
+ * kept once; complementary fee amounts are summed and feeComponents unioned by key.
+ */
+function mergeRepeatedOrSum(values: Array<number | undefined>): number | undefined {
+  const nums = values
+    .map((v) => (v == null || Number.isNaN(Number(v)) ? null : Number(v)))
+    .filter((v): v is number => v != null);
+  if (!nums.length) return undefined;
+  const nonzero = nums.filter((v) => v !== 0);
+  if (!nonzero.length) return 0;
+  const first = nonzero[0];
+  if (nonzero.every((v) => Math.abs(v - first) < 0.005)) return first;
+  return nonzero.reduce((sum, v) => sum + v, 0);
+}
+
+function mergeMeeshoFeeComponents(
+  rows: PaymentAnalyticsRow[],
+): PaymentFeeComponent[] | undefined {
+  const byKey = new Map<
+    string,
+    {
+      label: string;
+      category: PaymentFeeComponent['category'];
+      amounts: number[];
+    }
+  >();
+  for (const row of rows) {
+    for (const component of row.feeComponents ?? []) {
+      const key = String(component.key || '').trim();
+      if (!key) continue;
+      const amount = Number(component.amount) || 0;
+      if (!amount) continue;
+      const existing = byKey.get(key);
+      if (existing) existing.amounts.push(amount);
+      else {
+        byKey.set(key, {
+          label: component.label,
+          category: component.category,
+          amounts: [amount],
+        });
+      }
+    }
+  }
+  const merged: PaymentFeeComponent[] = [];
+  for (const [key, entry] of byKey) {
+    const amount = mergeRepeatedOrSum(entry.amounts);
+    if (amount == null || amount === 0) continue;
+    merged.push({
+      key,
+      label: entry.label,
+      amount,
+      category: entry.category,
+    });
+  }
+  return merged.length ? merged : undefined;
+}
+
+function mergeMeeshoPaymentAnalyticsRows(
+  group: PaymentAnalyticsRow[],
+): PaymentAnalyticsRow {
+  if (group.length === 1) return group[0];
+
+  // Prefer the richest settlement line as the base identity/metadata.
+  const ranked = [...group].sort((a, b) => {
+    const score = (row: PaymentAnalyticsRow) =>
+      (row.feeComponents?.length ?? 0) * 10 +
+      (Math.abs(Number(row.bankSettlementValue ?? row.finalSettlementAmount ?? 0)) >
+      0
+        ? 5
+        : 0) +
+      (Math.abs(Number(row.saleAmount ?? 0)) > 0 ? 2 : 0) +
+      (Math.abs(Number(row.refund ?? 0)) > 0 ? 1 : 0);
+    return score(b) - score(a);
+  });
+  const base = ranked[0];
+
+  const saleAmount = mergeRepeatedOrSum(group.map((r) => r.saleAmount));
+  const refund = mergeRepeatedOrSum(group.map((r) => r.refund));
+  const bank = mergeRepeatedOrSum(
+    group.map((r) => r.bankSettlementValue ?? r.finalSettlementAmount),
+  );
+  const quantity = mergeRepeatedOrSum(group.map((r) => r.quantity));
+  const marketplaceFee = mergeRepeatedOrSum(group.map((r) => r.marketplaceFee));
+  const commission = mergeRepeatedOrSum(group.map((r) => r.commission));
+  const tcs = mergeRepeatedOrSum(group.map((r) => r.tcs));
+  const tds = mergeRepeatedOrSum(group.map((r) => r.tds));
+  const feeComponents = mergeMeeshoFeeComponents(group);
+
+  return {
+    ...base,
+    saleAmount,
+    refund,
+    bankSettlementValue: bank,
+    finalSettlementAmount: bank,
+    quantity,
+    marketplaceFee,
+    commission,
+    tcs,
+    tds,
+    feeComponents,
+    sellerSku:
+      group.map((r) => String(r.sellerSku ?? '').trim()).find(Boolean) ||
+      base.sellerSku,
+    documentType:
+      group.map((r) => String(r.documentType ?? '').trim()).find(Boolean) ||
+      base.documentType,
+    returnType:
+      group.map((r) => String(r.returnType ?? '').trim()).find(Boolean) ||
+      base.returnType,
+    paymentDate:
+      group.map((r) => String(r.paymentDate ?? '').trim()).find(Boolean) ||
+      base.paymentDate,
+  };
+}
+
+/**
+ * Meesho-only: merge fee-split `meesho_order_payments` rows that share the same
+ * Order ID + Transaction/NEFT id, and drop matching legacy `import_rows`.
+ *
+ * Other marketplaces are untouched. Rows without a transaction id are kept.
+ */
+export function dedupeMeeshoDuplicatePaymentTransactions(
+  rows: PaymentAnalyticsRow[],
+): PaymentAnalyticsRow[] {
+  const paymentGroups = new Map<string, PaymentAnalyticsRow[]>();
+  const paymentTxnByOrder = new Map<string, Set<string>>();
+
+  for (const row of rows) {
+    if (row.source !== 'meesho_order_payments') continue;
+    const orderId = String(row.orderId ?? '').trim();
+    const txn = String(row.neftId || row.transactionId || '')
+      .trim()
+      .toLowerCase();
+    if (!orderId || !txn) continue;
+    const key = `${orderId}::${txn}`;
+    const bucket = paymentGroups.get(key);
+    if (bucket) bucket.push(row);
+    else paymentGroups.set(key, [row]);
+    const set = paymentTxnByOrder.get(orderId) ?? new Set<string>();
+    set.add(txn);
+    paymentTxnByOrder.set(orderId, set);
+  }
+
+  const emittedPaymentKeys = new Set<string>();
+  const afterPaymentMerge: PaymentAnalyticsRow[] = [];
+
+  for (const row of rows) {
+    if (row.source !== 'meesho_order_payments') {
+      afterPaymentMerge.push(row);
+      continue;
+    }
+    const orderId = String(row.orderId ?? '').trim();
+    const txn = String(row.neftId || row.transactionId || '')
+      .trim()
+      .toLowerCase();
+    if (!orderId || !txn) {
+      afterPaymentMerge.push(row);
+      continue;
+    }
+    const key = `${orderId}::${txn}`;
+    if (emittedPaymentKeys.has(key)) continue;
+    emittedPaymentKeys.add(key);
+    afterPaymentMerge.push(
+      mergeMeeshoPaymentAnalyticsRows(paymentGroups.get(key) ?? [row]),
+    );
+  }
+
+  if (!paymentTxnByOrder.size) {
+    return normalizeMeeshoMirroredSaleReturnSettlements(afterPaymentMerge);
+  }
+
+  const withoutLegacyMirrors = afterPaymentMerge.filter((row) => {
+    if (row.source !== 'import_rows') return true;
+    const marketplace = String(row.marketplace ?? '')
+      .trim()
+      .toLowerCase();
+    // Only strip Meesho legacy duplicates — never touch other marketplaces.
+    if (marketplace && marketplace !== 'meesho') return true;
+    const orderId = String(row.orderId ?? '').trim();
+    const txn = String(row.neftId || row.transactionId || '')
+      .trim()
+      .toLowerCase();
+    if (!orderId || !txn) return true;
+    return !paymentTxnByOrder.get(orderId)?.has(txn);
+  });
+
+  return normalizeMeeshoMirroredSaleReturnSettlements(withoutLegacyMirrors);
+}
+
+function roundMeeshoAmount(value: number): string {
+  return (Math.round(Math.abs(value) * 100) / 100).toFixed(2);
+}
+
+/** Preserve sign — sale payout (+X) and return clawback (−X) are different events. */
+function roundMeeshoSignedAmount(value: number): string {
+  return (Math.round(value * 100) / 100).toFixed(2);
+}
+
+function meeshoSaleReturnMirrorKey(row: PaymentAnalyticsRow): string | null {
+  const sale = Math.abs(Number(row.saleAmount) || 0);
+  const refund = Math.abs(Number(row.refund) || 0);
+  if (sale <= 0 || refund <= 0) return null;
+  const orderId = String(row.orderId ?? '').trim();
+  if (!orderId) return null;
+  // Key by sub-order + stamped sale/return totals only. SKU/qty often differ
+  // across fee vs settlement reprints of the same Meesho sub-order.
+  return `${orderId}::${roundMeeshoAmount(sale)}::${roundMeeshoAmount(refund)}`;
+}
+
+function meeshoPaymentSortTime(row: PaymentAnalyticsRow): number {
+  const raw = String(row.paymentDate ?? '').trim();
+  if (!raw) return Number.MAX_SAFE_INTEGER;
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) ? ms : Number.MAX_SAFE_INTEGER;
+}
+
+function meeshoTxnIdentity(row: PaymentAnalyticsRow): string {
+  return String(row.neftId || row.transactionId || row._id || '')
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Meesho reprints Final Settlement / fee totals onto every settlement line.
+ * When several distinct Transaction IDs carry the identical signed amount,
+ * keep that amount on the earliest payment row only.
+ * Opposite signs (payout vs clawback / fee vs fee reversal) are kept separate.
+ */
+function clearMeeshoIdenticalAmountStamps(
+  next: PaymentAnalyticsRow[],
+  indexes: number[],
+  readAmount: (row: PaymentAnalyticsRow) => number,
+  writeZero: (row: PaymentAnalyticsRow) => PaymentAnalyticsRow,
+): void {
+  const byAmount = new Map<string, number[]>();
+  const seenTxnForAmount = new Map<string, Set<string>>();
+
+  for (const index of indexes) {
+    const amount = readAmount(next[index]);
+    if (!amount) continue;
+    const amountKey = roundMeeshoSignedAmount(amount);
+    const txn = meeshoTxnIdentity(next[index]) || `idx:${index}`;
+    const seen = seenTxnForAmount.get(amountKey) ?? new Set<string>();
+    if (seen.has(txn)) continue;
+    seen.add(txn);
+    seenTxnForAmount.set(amountKey, seen);
+    const bucket = byAmount.get(amountKey);
+    if (bucket) bucket.push(index);
+    else byAmount.set(amountKey, [index]);
+  }
+
+  for (const stampedIndexes of byAmount.values()) {
+    if (stampedIndexes.length < 2) continue;
+    stampedIndexes.sort(
+      (a, b) => meeshoPaymentSortTime(next[a]) - meeshoPaymentSortTime(next[b]),
+    );
+    for (const index of stampedIndexes.slice(1)) {
+      next[index] = writeZero(next[index]);
+    }
+  }
+}
+
+function clearMeeshoIdenticalFeeComponentStamps(
+  next: PaymentAnalyticsRow[],
+  indexes: number[],
+): void {
+  const amountsByFeeKey = new Map<string, Map<string, number[]>>();
+  const seenTxn = new Map<string, Set<string>>();
+
+  for (const index of indexes) {
+    const txn = meeshoTxnIdentity(next[index]) || `idx:${index}`;
+    for (const component of next[index].feeComponents ?? []) {
+      const feeKey = String(component.key || '').trim();
+      const amount = Number(component.amount) || 0;
+      if (!feeKey || !amount) continue;
+      const amountKey = `${feeKey}::${roundMeeshoSignedAmount(amount)}`;
+      const seen = seenTxn.get(amountKey) ?? new Set<string>();
+      if (seen.has(txn)) continue;
+      seen.add(txn);
+      seenTxn.set(amountKey, seen);
+      const byAmount = amountsByFeeKey.get(feeKey) ?? new Map<string, number[]>();
+      const signedKey = roundMeeshoSignedAmount(amount);
+      const bucket = byAmount.get(signedKey);
+      if (bucket) bucket.push(index);
+      else byAmount.set(signedKey, [index]);
+      amountsByFeeKey.set(feeKey, byAmount);
+    }
+  }
+
+  for (const [feeKey, byAmount] of amountsByFeeKey) {
+    for (const stampedIndexes of byAmount.values()) {
+      if (stampedIndexes.length < 2) continue;
+      stampedIndexes.sort(
+        (a, b) =>
+          meeshoPaymentSortTime(next[a]) - meeshoPaymentSortTime(next[b]),
+      );
+      for (const index of stampedIndexes.slice(1)) {
+        const components = (next[index].feeComponents ?? []).filter(
+          (component) => String(component.key || '').trim() !== feeKey,
+        );
+        next[index] = {
+          ...next[index],
+          feeComponents: components.length ? components : undefined,
+        };
+      }
+    }
+  }
+}
+
+/**
+ * Meesho reprints order-level Total Sale + Total Sale Return on every
+ * settlement Transaction ID for the same sub-order. When multiple different
+ * payment IDs carry that identical stamp, keep each Transaction ID but assign
+ * business roles: earliest → Sale, latest → Return, middle → payment/fees only.
+ *
+ * Also clears reprinted Final Settlement / fee totals so bank & fees are not
+ * summed once per settlement line.
+ *
+ * Single stamped settlements (one txn with sale+return) are left unchanged.
+ */
+function normalizeMeeshoMirroredSaleReturnSettlements(
+  rows: PaymentAnalyticsRow[],
+): PaymentAnalyticsRow[] {
+  const meeshoIndexesByOrder = new Map<string, number[]>();
+  rows.forEach((row, index) => {
+    if (row.source !== 'meesho_order_payments') return;
+    const orderId = String(row.orderId ?? '').trim();
+    if (!orderId) return;
+    const bucket = meeshoIndexesByOrder.get(orderId);
+    if (bucket) bucket.push(index);
+    else meeshoIndexesByOrder.set(orderId, [index]);
+  });
+
+  if (!meeshoIndexesByOrder.size) return rows;
+
+  const next = rows.map((row) => ({ ...row }));
+
+  for (const indexes of meeshoIndexesByOrder.values()) {
+    const stampedByKey = new Map<string, number[]>();
+    for (const index of indexes) {
+      const key = meeshoSaleReturnMirrorKey(next[index]);
+      if (!key) continue;
+      const bucket = stampedByKey.get(key);
+      if (bucket) bucket.push(index);
+      else stampedByKey.set(key, [index]);
+    }
+
+    for (const stampedIndexes of stampedByKey.values()) {
+      // Distinct settlement Transaction IDs only — fee-split already merged.
+      const uniqueTxnIndexes: number[] = [];
+      const seenTxn = new Set<string>();
+      for (const index of stampedIndexes) {
+        const txn = meeshoTxnIdentity(next[index]);
+        if (seenTxn.has(txn)) continue;
+        seenTxn.add(txn);
+        uniqueTxnIndexes.push(index);
+      }
+      if (uniqueTxnIndexes.length < 2) continue;
+
+      uniqueTxnIndexes.sort(
+        (a, b) => meeshoPaymentSortTime(next[a]) - meeshoPaymentSortTime(next[b]),
+      );
+
+      const firstIdx = uniqueTxnIndexes[0];
+      const lastIdx = uniqueTxnIndexes[uniqueTxnIndexes.length - 1];
+
+      next[firstIdx] = {
+        ...next[firstIdx],
+        refund: 0,
+        documentType: 'Sale',
+        returnType: undefined,
+      };
+      next[lastIdx] = {
+        ...next[lastIdx],
+        saleAmount: 0,
+        // Keep bank on the return settlement — clawbacks (−X) must net against
+        // sale payouts (+X). Same-sign reprints are cleared below.
+        documentType:
+          String(next[lastIdx].documentType ?? '').trim() &&
+          !/^sale$/i.test(String(next[lastIdx].documentType))
+            ? next[lastIdx].documentType
+            : 'Return',
+      };
+      for (const midIdx of uniqueTxnIndexes.slice(1, -1)) {
+        next[midIdx] = {
+          ...next[midIdx],
+          saleAmount: 0,
+          refund: 0,
+          documentType: 'Payment',
+          returnType: undefined,
+        };
+      }
+    }
+
+    // Sale settlement (refund=0) + return settlement that still stamps sale:
+    // clear the mirrored sale on return rows so Sales aren't double-displayed.
+    // Meesho may reprint a different Total Sale on the RTO/return NEFT than on
+    // the later Cancelled/sale payout (e.g. 634 vs 674) — still clear it; the
+    // sale-only row is the Sales source.
+    const saleOnly = indexes.filter((index) => {
+      const row = next[index];
+      return (
+        Math.abs(Number(row.saleAmount) || 0) > 0 &&
+        Math.abs(Number(row.refund) || 0) <= 0
+      );
+    });
+    if (saleOnly.length) {
+      for (const index of indexes) {
+        const row = next[index];
+        const sale = Math.abs(Number(row.saleAmount) || 0);
+        const refund = Math.abs(Number(row.refund) || 0);
+        if (sale <= 0 || refund <= 0) continue;
+        next[index] = { ...row, saleAmount: 0 };
+      }
+    }
+
+    // Identical Final Settlement / fee / return totals reprinted across distinct txns.
+    clearMeeshoIdenticalAmountStamps(
+      next,
+      indexes,
+      (row) =>
+        Number(row.bankSettlementValue ?? row.finalSettlementAmount) || 0,
+      (row) => ({
+        ...row,
+        bankSettlementValue: 0,
+        finalSettlementAmount: 0,
+      }),
+    );
+    clearMeeshoIdenticalAmountStamps(
+      next,
+      indexes,
+      (row) => Number(row.refund) || 0,
+      (row) => ({ ...row, refund: 0 }),
+    );
+    clearMeeshoIdenticalAmountStamps(
+      next,
+      indexes,
+      (row) => Number(row.marketplaceFee) || 0,
+      (row) => ({ ...row, marketplaceFee: 0 }),
+    );
+    clearMeeshoIdenticalAmountStamps(
+      next,
+      indexes,
+      (row) => Number(row.commission) || 0,
+      (row) => ({ ...row, commission: 0 }),
+    );
+    clearMeeshoIdenticalAmountStamps(
+      next,
+      indexes,
+      (row) => Number(row.tcs) || 0,
+      (row) => ({ ...row, tcs: 0 }),
+    );
+    clearMeeshoIdenticalAmountStamps(
+      next,
+      indexes,
+      (row) => Number(row.tds) || 0,
+      (row) => ({ ...row, tds: 0 }),
+    );
+    clearMeeshoIdenticalFeeComponentStamps(next, indexes);
+  }
+
+  return next;
 }
 
 export function mapImportRowToPaymentAnalyticsRow(row: {

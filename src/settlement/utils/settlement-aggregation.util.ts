@@ -96,6 +96,34 @@ export function settlementCalculationStages(): PipelineStage[] {
           $max: { $ifNull: ['$orderDate', '$settlementDate'] },
         },
         currency: { $first: '$currency' },
+        sellerSku: {
+          $first: {
+            $ifNull: [
+              '$metadata.sellerSku',
+              {
+                $ifNull: [
+                  '$metadata.skuId',
+                  { $ifNull: ['$metadata.skuID', null] },
+                ],
+              },
+            ],
+          },
+        },
+        costPrice: {
+          $sum: {
+            $convert: {
+              input: {
+                $ifNull: [
+                  '$metadata.costPrice',
+                  { $ifNull: ['$metadata.cost', 0] },
+                ],
+              },
+              to: 'double',
+              onError: 0,
+              onNull: 0,
+            },
+          },
+        },
         grossSale: {
           $sum: {
             $cond: [
@@ -142,6 +170,8 @@ export function settlementCalculationStages(): PipelineStage[] {
         orderDate: { $max: '$orderDate' },
         fallbackOrderDate: { $max: '$fallbackOrderDate' },
         currency: { $first: '$currency' },
+        sellerSku: { $max: '$sellerSku' },
+        costPrice: { $sum: '$costPrice' },
         grossSale: { $sum: '$grossSale' },
         returns: { $sum: '$returns' },
         expenses: { $sum: '$expenses' },
@@ -161,6 +191,7 @@ export function settlementCalculationStages(): PipelineStage[] {
       $set: {
         orderId: '$_id',
         orderDate: { $ifNull: ['$orderDate', '$fallbackOrderDate'] },
+        invoiceDate: { $ifNull: ['$orderDate', '$fallbackOrderDate'] },
         settlementIds: {
           $reduce: {
             input: '$settlementIdSets',
@@ -197,6 +228,16 @@ export function settlementCalculationStages(): PipelineStage[] {
           $switch: {
             branches: [
               { case: { $eq: ['$disputed', 1] }, then: 'disputed' },
+              {
+                // Net sale ≈ 0 and nothing received → fully offset / closed.
+                case: {
+                  $and: [
+                    { $lte: [{ $abs: '$netSale' }, 0.01] },
+                    { $eq: ['$received', 0] },
+                  ],
+                },
+                then: 'matched',
+              },
               {
                 case: {
                   $and: [

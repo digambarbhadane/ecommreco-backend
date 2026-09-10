@@ -9,14 +9,23 @@ export async function resolveSellerMarketplaceLinkIds(
   marketplaceModel: Model<MarketplaceDocument>,
   sellerAliases: string[],
   marketplaceSlug: string,
+  gstId?: string,
 ): Promise<string[]> {
   const slug = String(marketplaceSlug ?? '')
     .trim()
     .toLowerCase();
   if (!slug || sellerAliases.length === 0) return [];
 
+  const filter: Record<string, unknown> = {
+    sellerId: { $in: sellerAliases },
+  };
+  const scopedGstId = String(gstId ?? '').trim();
+  if (scopedGstId) {
+    filter.gstId = scopedGstId;
+  }
+
   const links = await marketplaceModel
-    .find({ sellerId: { $in: sellerAliases } })
+    .find(filter)
     .populate('platformMarketplaceId')
     .select({ _id: 1, platformMarketplaceId: 1 })
     .lean()
@@ -44,12 +53,14 @@ export async function resolveSellerMarketplaceLinkIds(
 /**
  * import_rows.marketplace is usually a seller-marketplace link ObjectId.
  * Card clicks and All-GST filters pass platform slugs (amazon/flipkart/…).
+ * When gstId is provided, slug expansion is limited to that GST's links.
  */
 export async function applyImportRowMarketplaceFilter(
   filter: Record<string, unknown>,
   marketplaceModel: Model<MarketplaceDocument>,
   sellerAliases: string[],
   marketplace?: string,
+  gstId?: string,
 ): Promise<void> {
   const raw = String(marketplace ?? '').trim();
   if (!raw) return;
@@ -74,6 +85,7 @@ export async function applyImportRowMarketplaceFilter(
     marketplaceModel,
     sellerAliases,
     slug,
+    gstId,
   );
   const clauses: Record<string, unknown>[] = [
     { marketplace: { $regex: new RegExp(`^${escapeRegex(slug)}`, 'i') } },

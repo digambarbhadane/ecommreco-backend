@@ -198,6 +198,106 @@ export function resolveMyntraPgNeftId(
   return fromRow || undefined;
 }
 
+const MYNTRA_PG_UTR_FIELDS = [
+  'bank_utr_no_prepaid_payment',
+  'bank_utr_no_postpaid_payment',
+  'bank_utr_no_prepaid_comm_deduction',
+  'bank_utr_no_postpaid_comm_deduction',
+  'bank_utr_no_prepaid_logistics_deduction',
+  'bank_utr_no_postpaid_logistics_deduction',
+] as const;
+
+/** All non-empty NEFT/UTR values on a PG settlement row (prepaid + postpaid). */
+export function collectMyntraPgNeftIds(
+  doc: MyntraPgSettlementAnalyticsDoc,
+): Set<string> {
+  const ids = new Set<string>();
+  const rowData = doc.rowData ?? {};
+  for (const field of MYNTRA_PG_UTR_FIELDS) {
+    const value = pickRowDataString(rowData, field);
+    if (value) ids.add(value);
+  }
+  return ids;
+}
+
+/**
+ * Business identity of a Myntra PG settlement line (not settlement amount).
+ * Re-uploads revise total_actual_settlement and may fill additional UTR fields.
+ */
+export function myntraPgBusinessKey(doc: MyntraPgSettlementAnalyticsDoc): string {
+  const kind = String(doc.reportKind ?? '').trim().toLowerCase();
+  const release = String(doc.orderReleaseId ?? '').trim();
+  const line = String(doc.orderLineId ?? '').trim();
+  const ret = String(doc.returnId ?? '').trim();
+  const sku = String(doc.skuCode ?? '').trim().toUpperCase();
+  return `${kind}::${release}::${line}::${ret}::${sku}`;
+}
+
+/** @deprecated Prefer myntraPgBusinessKey; kept for existing call sites/tests. */
+export function myntraPgDedupeKey(doc: MyntraPgSettlementAnalyticsDoc): string {
+  return myntraPgBusinessKey(doc);
+}
+
+function neftSetsShouldMerge(a: Set<string>, b: Set<string>): boolean {
+  // Missing UTRs (common on partial re-uploads) merge with the same business line.
+  if (a.size === 0 || b.size === 0) return true;
+  for (const id of a) {
+    if (b.has(id)) return true;
+  }
+  return false;
+}
+
+function preferNewerPgDoc<T extends MyntraPgSettlementAnalyticsDoc>(
+  prev: T,
+  next: T,
+): T {
+  const prevAt = Date.parse(String(prev.uploadedAt ?? ''));
+  const nextAt = Date.parse(String(next.uploadedAt ?? ''));
+  return (Number.isFinite(nextAt) ? nextAt : 0) >=
+    (Number.isFinite(prevAt) ? prevAt : 0)
+    ? next
+    : prev;
+}
+
+/**
+ * Collapse duplicate PG uploads of the same settlement line.
+ *
+ * - Same kind + order release + order line + return + SKU group together.
+ * - Within a group, merge rows whose NEFT/UTR sets overlap (or either lacks UTR).
+ * - Completely disjoint NEFT sets for the same line are kept as separate payouts.
+ * - Prefer the newest uploadedAt when merging.
+ */
+export function dedupeMyntraPgSettlementDocs<
+  T extends MyntraPgSettlementAnalyticsDoc,
+>(docs: T[]): T[] {
+  type Cluster = { doc: T; nefts: Set<string> };
+  const byBusiness = new Map<string, Cluster[]>();
+
+  for (const doc of docs) {
+    const businessKey = myntraPgBusinessKey(doc);
+    const nefts = collectMyntraPgNeftIds(doc);
+    const clusters = byBusiness.get(businessKey) ?? [];
+    let merged = false;
+    for (const cluster of clusters) {
+      if (!neftSetsShouldMerge(cluster.nefts, nefts)) continue;
+      cluster.doc = preferNewerPgDoc(cluster.doc, doc);
+      for (const id of nefts) cluster.nefts.add(id);
+      merged = true;
+      break;
+    }
+    if (!merged) {
+      clusters.push({ doc, nefts: new Set(nefts) });
+    }
+    byBusiness.set(businessKey, clusters);
+  }
+
+  const result: T[] = [];
+  for (const clusters of byBusiness.values()) {
+    for (const cluster of clusters) result.push(cluster.doc);
+  }
+  return result;
+}
+
 export function resolveMyntraPgPaymentDate(
   doc: MyntraPgSettlementAnalyticsDoc,
 ): string | undefined {
@@ -213,43 +313,6 @@ export function resolveMyntraPgPaymentDate(
       'settlement_date_postpaid_logistics_deduction',
     ) || toIsoDateString(doc.settlementDate, doc.reportMonth)
   );
-}
-
-/**
- * Prefer a stable business key so duplicate PG uploads of the same settlement
- * line are not double-counted in Order Wise Payments.
- */
-export function myntraPgDedupeKey(doc: MyntraPgSettlementAnalyticsDoc): string {
-  const kind = String(doc.reportKind ?? '').trim().toLowerCase();
-  const release = String(doc.orderReleaseId ?? '').trim();
-  const line = String(doc.orderLineId ?? '').trim();
-  const ret = String(doc.returnId ?? '').trim();
-  const sku = String(doc.skuCode ?? '').trim().toUpperCase();
-  const settle = num(doc.totalActualSettlement) ?? 0;
-  return `${kind}::${release}::${line}::${ret}::${sku}::${settle}`;
-}
-
-export function dedupeMyntraPgSettlementDocs<
-  T extends MyntraPgSettlementAnalyticsDoc,
->(docs: T[]): T[] {
-  const byKey = new Map<string, T>();
-  for (const doc of docs) {
-    const key = myntraPgDedupeKey(doc);
-    const prev = byKey.get(key);
-    if (!prev) {
-      byKey.set(key, doc);
-      continue;
-    }
-    const prevAt = Date.parse(String(prev.uploadedAt ?? ''));
-    const nextAt = Date.parse(String(doc.uploadedAt ?? ''));
-    if (
-      (Number.isFinite(nextAt) ? nextAt : 0) >=
-      (Number.isFinite(prevAt) ? prevAt : 0)
-    ) {
-      byKey.set(key, doc);
-    }
-  }
-  return [...byKey.values()];
 }
 
 /**

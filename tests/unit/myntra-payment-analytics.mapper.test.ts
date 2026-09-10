@@ -367,6 +367,96 @@ describe('myntra-payment-analytics.mapper', () => {
     expect(String(deduped[0].uploadedAt)).toContain('2025-10');
   });
 
+  it('dedupes re-uploaded forward PG lines with revised settlement but same UTR', () => {
+    const docs = [
+      {
+        reportKind: 'forward' as const,
+        orderReleaseId: '8817141948',
+        orderLineId: '10817399164',
+        skuCode: 'MUMABRAA117708144',
+        totalActualSettlement: 306.35794,
+        uploadedAt: '2026-08-27T14:01:05.345Z',
+        rowData: {
+          bank_utr_no_prepaid_payment: 'NFT-/XUTR/DEUTH025344A0S6DX',
+          bank_utr_no_postpaid_payment: 'NFT-/XUTR/DEUTH026007A0RKJX',
+        },
+      },
+      {
+        reportKind: 'forward' as const,
+        orderReleaseId: '8817141948',
+        orderLineId: '10817399164',
+        skuCode: 'MUMABRAA117708144',
+        totalActualSettlement: 317.928,
+        uploadedAt: '2026-08-27T14:05:20.715Z',
+        rowData: {
+          bank_utr_no_prepaid_payment: 'NFT-/XUTR/DEUTH025344A0S6DX',
+          bank_utr_no_postpaid_payment: 'NFT-/XUTR/DEUTH026007A0RKJX',
+        },
+      },
+    ];
+    const deduped = dedupeMyntraPgSettlementDocs(docs);
+    expect(deduped).toHaveLength(1);
+    expect(deduped[0].totalActualSettlement).toBe(317.928);
+  });
+
+  it('keeps distinct forward PG payouts when NEFT/UTR differs', () => {
+    const docs = [
+      {
+        reportKind: 'forward' as const,
+        orderReleaseId: '8817141948',
+        orderLineId: '10817399164',
+        skuCode: 'SKU',
+        totalActualSettlement: 100,
+        uploadedAt: '2026-08-27T14:01:05.345Z',
+        rowData: { bank_utr_no_prepaid_payment: 'UTR-A' },
+      },
+      {
+        reportKind: 'forward' as const,
+        orderReleaseId: '8817141948',
+        orderLineId: '10817399164',
+        skuCode: 'SKU',
+        totalActualSettlement: 50,
+        uploadedAt: '2026-08-27T14:05:20.715Z',
+        rowData: { bank_utr_no_prepaid_payment: 'UTR-B' },
+      },
+    ];
+    const deduped = dedupeMyntraPgSettlementDocs(docs);
+    expect(deduped).toHaveLength(2);
+  });
+
+  it('dedupes re-uploads that share a postpaid UTR even when prepaid UTR appears later', () => {
+    // Pattern: older upload has only postpaid UTR; newer upload adds prepaid UTR
+    // and revises settlement — same underlying payout, not two bank transfers.
+    const docs = [
+      {
+        reportKind: 'forward' as const,
+        orderReleaseId: '8901698424',
+        orderLineId: '10901234567',
+        skuCode: 'SKU890',
+        totalActualSettlement: 468.88,
+        uploadedAt: '2026-08-20T10:00:00.000Z',
+        rowData: {
+          bank_utr_no_postpaid_payment: 'NFT-/XUTR/DEUTH02602927964X',
+        },
+      },
+      {
+        reportKind: 'forward' as const,
+        orderReleaseId: '8901698424',
+        orderLineId: '10901234567',
+        skuCode: 'SKU890',
+        totalActualSettlement: 478.94,
+        uploadedAt: '2026-08-27T14:05:20.715Z',
+        rowData: {
+          bank_utr_no_prepaid_payment: 'NFT-/XUTR/DEUTH026033A13MIX',
+          bank_utr_no_postpaid_payment: 'NFT-/XUTR/DEUTH02602927964X',
+        },
+      },
+    ];
+    const deduped = dedupeMyntraPgSettlementDocs(docs);
+    expect(deduped).toHaveLength(1);
+    expect(deduped[0].totalActualSettlement).toBe(478.94);
+  });
+
   it('maps PG fees + settlement without inventing sales or returns', () => {
     const mapped = mapMyntraPgSettlementToAnalyticsRow(
       {
