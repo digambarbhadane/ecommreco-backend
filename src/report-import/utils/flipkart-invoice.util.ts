@@ -10,7 +10,9 @@ export type FlipkartInvoiceParts = {
   sgst?: number | null;
 };
 
-export function computeFlipkartInvoiceAmount(row: FlipkartInvoiceParts): number {
+export function computeFlipkartInvoiceAmount(
+  row: FlipkartInvoiceParts,
+): number {
   return (
     Number(row.taxableAmount ?? row.taxableValue ?? 0) +
     Number(row.igstAmount ?? row.igst ?? 0) +

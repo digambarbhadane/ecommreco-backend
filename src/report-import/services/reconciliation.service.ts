@@ -76,18 +76,24 @@ export class ReconciliationService {
                   {
                     case: {
                       $or: [
-                        { $regexMatch: { input: '$docUpper', regex: 'RETURN' } },
+                        {
+                          $regexMatch: { input: '$docUpper', regex: 'RETURN' },
+                        },
                         { $regexMatch: { input: '$docUpper', regex: 'RTO' } },
                       ],
                     },
                     then: 'return',
                   },
                   {
-                    case: { $regexMatch: { input: '$docUpper', regex: 'SALE' } },
+                    case: {
+                      $regexMatch: { input: '$docUpper', regex: 'SALE' },
+                    },
                     then: 'sale',
                   },
                   {
-                    case: { $gt: [{ $ifNull: ['$finalSettlementAmount', 0] }, 0] },
+                    case: {
+                      $gt: [{ $ifNull: ['$finalSettlementAmount', 0] }, 0],
+                    },
                     then: 'settlement',
                   },
                 ],
@@ -102,7 +108,9 @@ export class ReconciliationService {
             rowCount: { $sum: 1 },
             quantity: { $sum: { $ifNull: ['$quantity', 0] } },
             invoiceAmount: { $sum: { $ifNull: ['$invoiceAmount', 0] } },
-            settlementAmount: { $sum: { $ifNull: ['$finalSettlementAmount', 0] } },
+            settlementAmount: {
+              $sum: { $ifNull: ['$finalSettlementAmount', 0] },
+            },
             firstDate: { $min: '$invoiceDate' },
             lastDate: { $max: '$invoiceDate' },
             orderId: { $first: '$orderID' },
@@ -195,7 +203,8 @@ export class ReconciliationService {
             },
             $set: {
               lastReportMonth: upload.reportMonth,
-              firstEventDate: sale?.firstDate ?? ret?.firstDate ?? setl?.firstDate,
+              firstEventDate:
+                sale?.firstDate ?? ret?.firstDate ?? setl?.firstDate,
               lastEventDate: setl?.lastDate ?? ret?.lastDate ?? sale?.lastDate,
               status,
               lastReconciledUploadId: uploadId,
@@ -243,7 +252,9 @@ export class ReconciliationService {
       await this.eventModel.bulkWrite(eventOps as any, { ordered: false });
     }
     if (transactionOps.length) {
-      await this.transactionModel.bulkWrite(transactionOps as any, { ordered: false });
+      await this.transactionModel.bulkWrite(transactionOps as any, {
+        ordered: false,
+      });
     }
     if (adjustmentDocs.length) {
       await this.adjustmentModel.insertMany(adjustmentDocs, { ordered: false });
@@ -402,14 +413,21 @@ export class ReconciliationService {
                     {
                       case: {
                         $or: [
-                          { $regexMatch: { input: '$docUpper', regex: 'RETURN' } },
+                          {
+                            $regexMatch: {
+                              input: '$docUpper',
+                              regex: 'RETURN',
+                            },
+                          },
                           { $regexMatch: { input: '$docUpper', regex: 'RTO' } },
                         ],
                       },
                       then: 'returns',
                     },
                     {
-                      case: { $regexMatch: { input: '$docUpper', regex: 'SALE' } },
+                      case: {
+                        $regexMatch: { input: '$docUpper', regex: 'SALE' },
+                      },
                       then: 'sales',
                     },
                   ],
@@ -418,7 +436,9 @@ export class ReconciliationService {
               },
               rowCount: { $sum: 1 },
               invoiceAmount: { $sum: { $ifNull: ['$invoiceAmount', 0] } },
-              settlementAmount: { $sum: { $ifNull: ['$finalSettlementAmount', 0] } },
+              settlementAmount: {
+                $sum: { $ifNull: ['$finalSettlementAmount', 0] },
+              },
             },
           },
         ])
@@ -456,8 +476,14 @@ export class ReconciliationService {
         totals: {
           transactions: rows.length,
           salesAmount: rows.reduce((s, r) => s + (r.totalSalesAmount ?? 0), 0),
-          returnAmount: rows.reduce((s, r) => s + (r.totalReturnAmount ?? 0), 0),
-          settlementAmount: rows.reduce((s, r) => s + (r.totalSettlementAmount ?? 0), 0),
+          returnAmount: rows.reduce(
+            (s, r) => s + (r.totalReturnAmount ?? 0),
+            0,
+          ),
+          settlementAmount: rows.reduce(
+            (s, r) => s + (r.totalSettlementAmount ?? 0),
+            0,
+          ),
         },
         transactions: rows,
       },
@@ -469,7 +495,8 @@ export class ReconciliationService {
     hasReturn: boolean;
     hasSettlement: boolean;
   }) {
-    if (input.hasSale && input.hasReturn && input.hasSettlement) return 'completed';
+    if (input.hasSale && input.hasReturn && input.hasSettlement)
+      return 'completed';
     if (!input.hasSale && input.hasReturn) return 'returned_only';
     if (input.hasSale && input.hasReturn) return 'returned';
     if (input.hasSettlement) return 'settlement_updated';

@@ -71,7 +71,10 @@ export function buildSlotUploadDetails(input: {
   uploadedSlots: string[];
   normalizedRows: Array<{ reportType: string }>;
   parsedMeesho?: ParsedMeeshoBundle | null;
-  parsedFlipkart?: { salesRows: ParsedSheetRow[]; cashbackRows: ParsedSheetRow[] } | null;
+  parsedFlipkart?: {
+    salesRows: ParsedSheetRow[];
+    cashbackRows: ParsedSheetRow[];
+  } | null;
   parsedAmazonB2c?: { rows: ParsedSheetRow[] } | null;
   parsedAmazonB2b?: { rows: ParsedSheetRow[] } | null;
   parsedAmazonReturn?: { rows: ParsedSheetRow[] } | null;
@@ -129,7 +132,8 @@ export function buildSlotUploadDetails(input: {
       parsed.returnDeliveryComplete.rows.length,
       false,
     );
-    if (deliveryComplete) details.returnDeliveryCompleteReportFile = deliveryComplete;
+    if (deliveryComplete)
+      details.returnDeliveryCompleteReportFile = deliveryComplete;
 
     const payment = fileDetail(
       input.files.paymentReportFile,
@@ -144,10 +148,15 @@ export function buildSlotUploadDetails(input: {
   if (input.parsedFlipkart) {
     const salesCount = input.parsedFlipkart.salesRows.length;
     const cashbackCount = input.parsedFlipkart.cashbackRows.length;
-    const salesFile = fileDetail(input.files.file, salesCount + cashbackCount, true, {
-      salesRecords: salesPersisted,
-      cashbackRecords: cashbackPersisted,
-    });
+    const salesFile = fileDetail(
+      input.files.file,
+      salesCount + cashbackCount,
+      true,
+      {
+        salesRecords: salesPersisted,
+        cashbackRecords: cashbackPersisted,
+      },
+    );
     if (salesFile) details.file = salesFile;
 
     const returnReport = fileDetail(input.files.returnReportFile, 0, false);
@@ -207,7 +216,9 @@ export function buildSlotUploadDetails(input: {
 
   if (input.parsedMyntra) {
     const parsed = input.parsedMyntra;
-    const slotMap: Array<[keyof MarketplaceFilesInput, keyof ParsedMyntraBundle]> = [
+    const slotMap: Array<
+      [keyof MarketplaceFilesInput, keyof ParsedMyntraBundle]
+    > = [
       ['gstrReportPackedFile', 'gstrReportPacked'],
       ['mDirectOrdersReportFile', 'mDirectOrders'],
       ['salesRevenuePackedB2cFile', 'salesRevenueB2c'],
@@ -254,7 +265,10 @@ export function buildSlotUploadDetails(input: {
   return details;
 }
 
-export function buildPaymentOnlySlotDetail(file: UploadedFileInput, matchedOrders: number): SlotUploadDetail {
+export function buildPaymentOnlySlotDetail(
+  file: UploadedFileInput,
+  matchedOrders: number,
+): SlotUploadDetail {
   return {
     fileName: file.originalname,
     fileSize: file.buffer.length,

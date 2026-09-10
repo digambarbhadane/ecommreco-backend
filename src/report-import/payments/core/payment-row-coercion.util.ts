@@ -9,10 +9,7 @@ export function coercePaymentString(value: unknown): string | undefined {
 export function coercePaymentNumber(value: unknown): number | undefined {
   if (value === null || value === undefined || value === '') return undefined;
   if (typeof value === 'number' && Number.isFinite(value)) return value;
-  const cleaned = String(value)
-    .replace(/[₹,]/g, '')
-    .replace(/\s+/g, '')
-    .trim();
+  const cleaned = String(value).replace(/[₹,]/g, '').replace(/\s+/g, '').trim();
   if (!cleaned) return undefined;
   if (/^#(n\/?a|ref!|value!|div\/0!)/i.test(cleaned)) return undefined;
   const parsed = Number(cleaned);

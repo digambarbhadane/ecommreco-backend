@@ -19,6 +19,10 @@ export class ListImportedRowsDto {
 
   @IsOptional()
   @IsString()
+  documentTypes?: string;
+
+  @IsOptional()
+  @IsString()
   fromDate?: string;
 
   @IsOptional()
@@ -56,6 +60,13 @@ export class ListImportedRowsDto {
     'paymentDate',
     'finalSettlementAmount',
     'orderID',
+    'stateName',
+    'skuID',
+    'quantity',
+    'igstAmount',
+    'cgstAmount',
+    'sgstAmount',
+    'marketplace',
   ])
   sortBy?:
     | 'documentType'
@@ -67,7 +78,14 @@ export class ListImportedRowsDto {
     | 'taxableAmount'
     | 'paymentDate'
     | 'finalSettlementAmount'
-    | 'orderID';
+    | 'orderID'
+    | 'stateName'
+    | 'skuID'
+    | 'quantity'
+    | 'igstAmount'
+    | 'cgstAmount'
+    | 'sgstAmount'
+    | 'marketplace';
 
   @IsOptional()
   @IsString()

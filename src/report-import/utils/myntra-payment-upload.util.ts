@@ -15,7 +15,9 @@ export function hasMyntraPaymentFiles(
   return MYNTRA_PAYMENT_SLOTS.some((slot) => Boolean(files[slot]));
 }
 
-export function inferMyntraPaymentSlotsFromFileHash(fileHash: string): string[] {
+export function inferMyntraPaymentSlotsFromFileHash(
+  fileHash: string,
+): string[] {
   const hash = String(fileHash ?? '').trim();
   if (!hash.startsWith('myntra-payment|')) return [];
   const slots: string[] = [];

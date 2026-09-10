@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import ExcelJS from 'exceljs';
 import { ImportRow, ImportRowDocument } from '../schemas/import-row.schema';
 import {
@@ -15,6 +15,14 @@ import {
   SkuMasterMapping,
   SkuMasterMappingDocument,
 } from '../../sku-master/schemas/sku-master-mapping.schema';
+import {
+  FlipkartPaymentReport,
+  FlipkartPaymentReportDocument,
+} from '../payments/flipkart/schemas/flipkart-payment-report.schema';
+import {
+  MeeshoOrderPayments,
+  MeeshoOrderPaymentsDocument,
+} from '../payments/meesho/schemas/order-payments.schema';
 
 type MarketplaceTarget = {
   id: string;
@@ -27,6 +35,49 @@ type ReportContext = {
   gstin: string;
   sellerAliases: string[];
   gstScopeIds: string[];
+};
+
+type SkuFinanceMetrics = {
+  salesQty: number;
+  returnQty: number;
+  netPcs: number;
+  grossSales: number;
+  returnAmount: number;
+  netSales: number;
+  bankPayout: number;
+  commission: number;
+  cost: number;
+  profit: number;
+  returnPercent: number;
+};
+
+const EMPTY_FINANCE: SkuFinanceMetrics = {
+  salesQty: 0,
+  returnQty: 0,
+  netPcs: 0,
+  grossSales: 0,
+  returnAmount: 0,
+  netSales: 0,
+  bankPayout: 0,
+  commission: 0,
+  cost: 0,
+  profit: 0,
+  returnPercent: 0,
+};
+
+type SkuMasterGroup = {
+  masterSku: string;
+  status: 'MAPPED' | 'UNMAPPED';
+  productName?: string;
+  category?: string;
+  brand?: string;
+  rates: Set<number>;
+  marketplaceSkus: Array<{
+    marketplace: string;
+    marketplaceSku: string;
+    rate: number | null;
+    productName?: string;
+  }>;
 };
 
 type SkuDetailRow = {
@@ -78,6 +129,10 @@ export class StateSkuWiseReportService {
     private readonly gstModel: Model<GstDocument>,
     @InjectModel(SkuMasterMapping.name)
     private readonly skuMasterMappingModel: Model<SkuMasterMappingDocument>,
+    @InjectModel(FlipkartPaymentReport.name)
+    private readonly flipkartPaymentModel: Model<FlipkartPaymentReportDocument>,
+    @InjectModel(MeeshoOrderPayments.name)
+    private readonly meeshoOrderPaymentsModel: Model<MeeshoOrderPaymentsDocument>,
     private readonly validationService: ValidationService,
   ) {}
 
@@ -110,23 +165,50 @@ export class StateSkuWiseReportService {
       : 'master_sku';
   }
 
-  private async resolveContext(query: StateWiseExportDto): Promise<ReportContext> {
+  private async resolveContext(
+    query: StateWiseExportDto,
+  ): Promise<ReportContext> {
     const sellerId = String(query.sellerId ?? '').trim();
-    const gstin = String(query.gstin ?? '').trim().toUpperCase();
-    if (!sellerId || !gstin) {
-      throw new BadRequestException('sellerId and gstin are required');
+    const gstin = String(query.gstin ?? '')
+      .trim()
+      .toUpperCase();
+    if (!sellerId) {
+      throw new BadRequestException('sellerId is required');
     }
     const sellerAliases =
       await this.validationService.resolveSellerIdAliases(sellerId);
-    const gstScopeIds = await this.resolveGstScopeIds(gstin, sellerAliases);
+    const gstScopeIds = gstin
+      ? await this.resolveGstScopeIds(gstin, sellerAliases)
+      : await this.resolveAllGstScopeIds(sellerAliases);
     return { sellerId, gstin, sellerAliases, gstScopeIds };
+  }
+
+  private async resolveAllGstScopeIds(
+    sellerAliases: string[],
+  ): Promise<string[]> {
+    const records = await this.gstModel
+      .find({ sellerId: { $in: sellerAliases } })
+      .select('_id gstNumber')
+      .lean()
+      .exec();
+    const scope = new Set<string>();
+    for (const record of records) {
+      if (record?._id) scope.add(String(record._id));
+      const number = String(record?.gstNumber ?? '')
+        .trim()
+        .toUpperCase();
+      if (number) scope.add(number);
+    }
+    return Array.from(scope);
   }
 
   private async resolveGstScopeIds(
     gstin: string,
     sellerAliases: string[],
   ): Promise<string[]> {
-    const normalizedGstin = String(gstin ?? '').trim().toUpperCase();
+    const normalizedGstin = String(gstin ?? '')
+      .trim()
+      .toUpperCase();
     const scope = new Set<string>([normalizedGstin]);
     const gstRecord = await this.gstModel
       .findOne({
@@ -148,11 +230,17 @@ export class StateSkuWiseReportService {
   ): Promise<Record<string, unknown>> {
     const filter = buildStateWiseSalesMatch({
       sellerId: { $in: ctx.sellerAliases },
-      gstin: ctx.gstin,
+      ...(ctx.gstin ? { gstin: ctx.gstin } : {}),
     });
     const reportMonth = String(query.reportMonth ?? '').trim();
     if (reportMonth) {
       filter.reportMonth = reportMonth;
+    }
+    if (query.fromDate || query.toDate) {
+      const invoiceDate: Record<string, string> = {};
+      if (query.fromDate) invoiceDate.$gte = query.fromDate;
+      if (query.toDate) invoiceDate.$lte = query.toDate;
+      filter.invoiceDate = invoiceDate;
     }
     return filter;
   }
@@ -189,7 +277,9 @@ export class StateSkuWiseReportService {
     const registeredLinks = await this.marketplaceModel
       .find({
         sellerId: { $in: ctx.sellerAliases },
-        gstId: { $in: ctx.gstScopeIds },
+        ...(ctx.gstin && ctx.gstScopeIds.length
+          ? { gstId: { $in: ctx.gstScopeIds } }
+          : {}),
       })
       .populate<{ platformMarketplaceId?: { name?: string; slug?: string } }>(
         'platformMarketplaceId',
@@ -283,9 +373,9 @@ export class StateSkuWiseReportService {
     const id =
       preferredId && matchKeys.includes(preferredId)
         ? preferredId
-        : group.registeredLinkIds[0] ??
+        : (group.registeredLinkIds[0] ??
           group.rowMarketplaceIds[0] ??
-          group.platformId;
+          group.platformId);
     return { id, name: group.name, matchKeys };
   }
 
@@ -338,7 +428,10 @@ export class StateSkuWiseReportService {
 
     if (idsFromQuery.length) {
       const selectedDocs = await this.marketplaceModel
-        .find({ _id: { $in: idsFromQuery }, sellerId: { $in: ctx.sellerAliases } })
+        .find({
+          _id: { $in: idsFromQuery },
+          sellerId: { $in: ctx.sellerAliases },
+        })
         .lean()
         .exec();
       const platformIds = new Set(
@@ -369,6 +462,204 @@ export class StateSkuWiseReportService {
   private numberOf(value: unknown): number {
     const n = Number(value ?? 0);
     return Number.isFinite(n) ? n : 0;
+  }
+
+  private roundMoney(value: number): number {
+    return Number((Number.isFinite(value) ? value : 0).toFixed(2));
+  }
+
+  private isReturnImportRow(row: {
+    documentType?: string;
+    meeshoIsGrossSale?: boolean;
+    myntraTransactionType?: string;
+  }): boolean {
+    if (row.meeshoIsGrossSale === false) return true;
+    if (String(row.myntraTransactionType ?? '').toUpperCase() === 'RETURN') {
+      return true;
+    }
+    const documentType = String(row.documentType ?? '').toUpperCase();
+    return /RETURN|RTO/.test(documentType);
+  }
+
+  private emptyFinance(): SkuFinanceMetrics {
+    return { ...EMPTY_FINANCE };
+  }
+
+  private finalizeFinance(metrics: SkuFinanceMetrics): SkuFinanceMetrics {
+    const netPcs = metrics.salesQty - metrics.returnQty;
+    const netSales = metrics.grossSales - metrics.returnAmount;
+    const cost = this.roundMoney(metrics.cost);
+    const commission = this.roundMoney(metrics.commission);
+    const profit = netSales - commission - cost;
+    const returnPercent =
+      metrics.grossSales > 0
+        ? (metrics.returnAmount / metrics.grossSales) * 100
+        : metrics.salesQty > 0
+          ? (metrics.returnQty / metrics.salesQty) * 100
+          : 0;
+    return {
+      salesQty: this.roundMoney(metrics.salesQty),
+      returnQty: this.roundMoney(metrics.returnQty),
+      netPcs: this.roundMoney(netPcs),
+      grossSales: this.roundMoney(metrics.grossSales),
+      returnAmount: this.roundMoney(metrics.returnAmount),
+      netSales: this.roundMoney(netSales),
+      bankPayout: this.roundMoney(metrics.bankPayout),
+      commission,
+      cost,
+      profit: this.roundMoney(profit),
+      returnPercent: this.roundMoney(returnPercent),
+    };
+  }
+
+  private async loadSkuFinanceMetrics(
+    ctx: ReportContext,
+    query: StateWiseExportDto,
+    skuGrouping: 'master_sku' | 'marketplace_sku',
+    masterByMarketplaceSku: Map<string, string>,
+  ): Promise<Map<string, SkuFinanceMetrics>> {
+    const finance = new Map<string, SkuFinanceMetrics>();
+    const ensure = (key: string) => {
+      const existing = finance.get(key);
+      if (existing) return existing;
+      const created = this.emptyFinance();
+      finance.set(key, created);
+      return created;
+    };
+    const resolveKey = (marketplaceSku: string) => {
+      const sku = marketplaceSku.trim();
+      if (!sku) return skuGrouping === 'master_sku' ? 'UNMAPPED' : 'N/A';
+      if (skuGrouping === 'marketplace_sku') return sku;
+      return masterByMarketplaceSku.get(sku) ?? 'UNMAPPED';
+    };
+
+    const salesFilter = await this.buildSalesFilter(ctx, query);
+    const targets = await this.resolveMarketplaceTargets(query, ctx);
+    const matchKeys = targets.flatMap((target) => target.matchKeys);
+    const selectedMarketplace =
+      Boolean(String(query.marketplace ?? '').trim()) ||
+      Boolean(String(query.marketplaceIds ?? '').trim());
+    if (selectedMarketplace && matchKeys.length) {
+      salesFilter.marketplace = { $in: matchKeys };
+    }
+    const selectedNames = new Set(
+      targets.map((target) => target.name.trim().toLowerCase()),
+    );
+    const includeFlipkart =
+      !selectedMarketplace || selectedNames.has('flipkart');
+    const includeMeesho = !selectedMarketplace || selectedNames.has('meesho');
+    const importRows = await this.rowModel
+      .find(salesFilter)
+      .select({
+        skuID: 1,
+        quantity: 1,
+        returnQty: 1,
+        invoiceAmount: 1,
+        meeshoReturnInvoiceAmount: 1,
+        documentType: 1,
+        meeshoIsGrossSale: 1,
+        myntraTransactionType: 1,
+      })
+      .lean()
+      .exec();
+
+    for (const row of importRows) {
+      const key = resolveKey(String(row.skuID ?? ''));
+      const bucket = ensure(key);
+      const isReturn = this.isReturnImportRow(row);
+      if (isReturn) {
+        bucket.returnQty += Math.abs(
+          this.numberOf(row.returnQty || row.quantity),
+        );
+        bucket.returnAmount += Math.abs(
+          this.numberOf(row.meeshoReturnInvoiceAmount || row.invoiceAmount),
+        );
+      } else {
+        bucket.salesQty += this.numberOf(row.quantity);
+        bucket.grossSales += this.numberOf(row.invoiceAmount);
+      }
+    }
+
+    const paymentMatch: Record<string, unknown> = {
+      sellerId: { $in: ctx.sellerAliases },
+      ...(ctx.gstin ? { gstin: ctx.gstin } : {}),
+    };
+    if (query.fromDate || query.toDate) {
+      const paymentDate: Record<string, string> = {};
+      if (query.fromDate) paymentDate.$gte = query.fromDate;
+      if (query.toDate) paymentDate.$lte = query.toDate;
+      paymentMatch.paymentDate = paymentDate;
+    }
+
+    const flipkartRows = includeFlipkart
+      ? await this.flipkartPaymentModel
+          .find(paymentMatch)
+          .select({
+            sellerSku: 1,
+            bankSettlementValue: 1,
+            commission: 1,
+          })
+          .lean()
+          .exec()
+      : [];
+    for (const row of flipkartRows) {
+      const key = resolveKey(String(row.sellerSku ?? ''));
+      const bucket = ensure(key);
+      bucket.bankPayout += this.numberOf(row.bankSettlementValue);
+      bucket.commission += Math.abs(this.numberOf(row.commission));
+    }
+
+    const meeshoSellerIds = ctx.sellerAliases
+      .filter((id) => Types.ObjectId.isValid(id))
+      .map((id) => new Types.ObjectId(id));
+    const meeshoMatch: Record<string, unknown> = {
+      sellerId: {
+        $in:
+          meeshoSellerIds.length > 0
+            ? [...meeshoSellerIds, ...ctx.sellerAliases]
+            : ctx.sellerAliases,
+      },
+      ...(ctx.gstin ? { gstin: ctx.gstin } : {}),
+    };
+    if (query.fromDate || query.toDate) {
+      const range: Record<string, Date> = {};
+      if (query.fromDate) {
+        const start = new Date(query.fromDate);
+        if (!Number.isNaN(start.getTime())) range.$gte = start;
+      }
+      if (query.toDate) {
+        const end = new Date(query.toDate);
+        if (!Number.isNaN(end.getTime())) {
+          end.setHours(23, 59, 59, 999);
+          range.$lte = end;
+        }
+      }
+      if (Object.keys(range).length) meeshoMatch.paymentDate = range;
+    }
+
+    const meeshoRows = includeMeesho
+      ? await this.meeshoOrderPaymentsModel
+          .find(meeshoMatch)
+          .select({
+            supplierSku: 1,
+            finalSettlementAmount: 1,
+            meeshoCommissionInclGst: 1,
+          })
+          .lean()
+          .exec()
+      : [];
+    for (const row of meeshoRows) {
+      const key = resolveKey(String(row.supplierSku ?? ''));
+      const bucket = ensure(key);
+      bucket.bankPayout += this.numberOf(row.finalSettlementAmount);
+      bucket.commission += Math.abs(this.numberOf(row.meeshoCommissionInclGst));
+    }
+
+    const finalized = new Map<string, SkuFinanceMetrics>();
+    for (const [key, metrics] of finance) {
+      finalized.set(key, this.finalizeFinance(metrics));
+    }
+    return finalized;
   }
 
   private gstRateForRow(row: Partial<ImportRow>): number {
@@ -439,7 +730,7 @@ export class StateSkuWiseReportService {
       ? await this.skuMasterMappingModel
           .find({
             sellerId: { $in: ctx.sellerAliases },
-            gstin: ctx.gstin,
+            ...(ctx.gstin ? { gstin: ctx.gstin } : {}),
             marketplace: { $in: target.matchKeys },
             marketplaceSku: { $in: skuList },
           })
@@ -454,7 +745,8 @@ export class StateSkuWiseReportService {
     for (const row of rows) {
       const stateName = this.normalizeState(row.stateName);
       const marketplaceSku = String(row.skuID ?? '').trim() || 'N/A';
-      const masterSku = masterByMarketplaceSku.get(marketplaceSku) ?? 'UNMAPPED';
+      const masterSku =
+        masterByMarketplaceSku.get(marketplaceSku) ?? 'UNMAPPED';
       const skuLabel =
         skuGrouping === 'marketplace_sku' ? marketplaceSku : masterSku;
       const gstRate = this.gstRateForRow(row);
@@ -557,7 +849,11 @@ export class StateSkuWiseReportService {
     }> = [];
 
     for (const target of targets) {
-      const stateGroups = await this.aggregateForMarketplace(ctx, target, query);
+      const stateGroups = await this.aggregateForMarketplace(
+        ctx,
+        target,
+        query,
+      );
       const skuCount = stateGroups.reduce((sum, g) => sum + g.skus.length, 0);
       marketplaces.push({
         id: target.id,
@@ -606,17 +902,13 @@ export class StateSkuWiseReportService {
    * including marketplace SKU mappings from SKU Master.
    */
   async getSkuWiseAnalytics(query: StateWiseExportDto) {
-    const reportQuery: StateWiseExportDto = {
-      ...query,
-      skuGrouping: 'master_sku',
-    };
-    const { ctx, marketplaces, totalRows } =
-      await this.buildReportData(reportQuery);
+    const skuGrouping = this.resolveSkuGrouping(query);
+    const { ctx, marketplaces, totalRows } = await this.buildReportData(query);
 
-    const metricByMaster = new Map<
+    const metricByKey = new Map<
       string,
       {
-        masterSku: string;
+        key: string;
         qty: number;
         taxableValue: number;
         igst: number;
@@ -630,8 +922,8 @@ export class StateSkuWiseReportService {
     for (const mp of marketplaces) {
       for (const row of mp.masterTotals) {
         const key = row.label || 'UNMAPPED';
-        const existing = metricByMaster.get(key) ?? {
-          masterSku: key,
+        const existing = metricByKey.get(key) ?? {
+          key,
           qty: 0,
           taxableValue: 0,
           igst: 0,
@@ -647,14 +939,14 @@ export class StateSkuWiseReportService {
         existing.sgst += row.sgst;
         existing.invoiceAmount += row.invoiceAmount;
         existing.gstRates.add(row.gstRate);
-        metricByMaster.set(key, existing);
+        metricByKey.set(key, existing);
       }
     }
 
     const mappings = await this.skuMasterMappingModel
       .find({
         sellerId: { $in: ctx.sellerAliases },
-        gstin: ctx.gstin,
+        ...(ctx.gstin ? { gstin: ctx.gstin } : {}),
       })
       .select({
         marketplace: 1,
@@ -669,116 +961,286 @@ export class StateSkuWiseReportService {
       .lean()
       .exec();
 
-    const byMaster = new Map<
-      string,
-      {
-        masterSku: string;
-        status: 'MAPPED' | 'UNMAPPED';
-        productName?: string;
-        category?: string;
-        brand?: string;
-        rates: Set<number>;
-        marketplaceSkus: Array<{
-          marketplace: string;
-          marketplaceSku: string;
-          rate: number | null;
-          productName?: string;
-        }>;
-      }
-    >();
+    const masterByMarketplaceSku = this.buildMasterSkuMap(mappings);
+    const financeByKey = await this.loadSkuFinanceMetrics(
+      ctx,
+      query,
+      skuGrouping,
+      masterByMarketplaceSku,
+    );
 
-    for (const item of mappings) {
-      const masterSku = String(item.masterSku ?? '').trim() || 'UNMAPPED';
-      const group = byMaster.get(masterSku) ?? {
-        masterSku,
-        status: masterSku === 'UNMAPPED' ? 'UNMAPPED' : 'MAPPED',
-        productName: item.productName,
-        category: item.category,
-        brand: item.brand,
-        rates: new Set<number>(),
-        marketplaceSkus: [],
+    type AnalyticsRow = {
+      rowKey: string;
+      masterSku: string;
+      marketplaceSku: string | null;
+      status: 'MAPPED' | 'UNMAPPED';
+      productName: string | null;
+      category: string | null;
+      brand: string | null;
+      rates: number[];
+      marketplaceSkuCount: number;
+      marketplaceSkus: SkuMasterGroup['marketplaceSkus'];
+      qty: number;
+      taxableValue: number;
+      igst: number;
+      cgst: number;
+      sgst: number;
+      invoiceAmount: number;
+      salesQty: number;
+      returnQty: number;
+      grossSales: number;
+      returnAmount: number;
+      netPcs: number;
+      netSales: number;
+      bankPayout: number;
+      commission: number;
+      cost: number;
+      profit: number;
+      returnPercent: number;
+    };
+
+    const attachFinance = (
+      row: Omit<
+        AnalyticsRow,
+        | 'salesQty'
+        | 'returnQty'
+        | 'grossSales'
+        | 'returnAmount'
+        | 'netPcs'
+        | 'netSales'
+        | 'bankPayout'
+        | 'commission'
+        | 'cost'
+        | 'profit'
+        | 'returnPercent'
+      >,
+      financeKey: string,
+    ): AnalyticsRow => {
+      const finance = financeByKey.get(financeKey) ?? this.emptyFinance();
+      return {
+        ...row,
+        salesQty: finance.salesQty,
+        returnQty: finance.returnQty,
+        grossSales: finance.grossSales,
+        returnAmount: finance.returnAmount,
+        netPcs: finance.netPcs,
+        netSales: finance.netSales,
+        bankPayout: finance.bankPayout,
+        commission: finance.commission,
+        cost: finance.cost,
+        profit: finance.profit,
+        returnPercent: finance.returnPercent,
       };
-      if (!group.productName && item.productName) {
-        group.productName = item.productName;
-      }
-      if (!group.category && item.category) group.category = item.category;
-      if (!group.brand && item.brand) group.brand = item.brand;
-      if (typeof item.rate === 'number') group.rates.add(item.rate);
-      group.marketplaceSkus.push({
-        marketplace: String(item.marketplace ?? ''),
-        marketplaceSku: String(item.marketplaceSku ?? ''),
-        rate: typeof item.rate === 'number' ? item.rate : null,
-        productName: item.productName,
-      });
-      byMaster.set(masterSku, group);
-    }
+    };
 
-    // Ensure metric-only masters (no mapping row) still appear.
-    for (const [masterSku] of metricByMaster) {
-      if (!byMaster.has(masterSku)) {
-        byMaster.set(masterSku, {
+    let rows: AnalyticsRow[] = [];
+
+    if (skuGrouping === 'marketplace_sku') {
+      const bySku = new Map<string, AnalyticsRow>();
+      for (const item of mappings) {
+        const marketplaceSku =
+          String(item.marketplaceSku ?? '').trim() || 'N/A';
+        const masterSku = String(item.masterSku ?? '').trim() || 'UNMAPPED';
+        const rowKey = `${String(item.marketplace ?? '')}::${marketplaceSku}`;
+        const metrics = metricByKey.get(marketplaceSku);
+        const existing = bySku.get(rowKey);
+        const mapping = {
+          marketplace: String(item.marketplace ?? ''),
+          marketplaceSku,
+          rate: typeof item.rate === 'number' ? item.rate : null,
+          productName: item.productName,
+        };
+        if (existing) {
+          existing.marketplaceSkus.push(mapping);
+          existing.marketplaceSkuCount = existing.marketplaceSkus.length;
+          continue;
+        }
+        bySku.set(
+          rowKey,
+          attachFinance(
+            {
+              rowKey,
+              masterSku,
+              marketplaceSku,
+              status: masterSku === 'UNMAPPED' ? 'UNMAPPED' : 'MAPPED',
+              productName: item.productName ?? null,
+              category: item.category ?? null,
+              brand: item.brand ?? null,
+              rates:
+                typeof item.rate === 'number'
+                  ? [item.rate]
+                  : Array.from(metrics?.gstRates ?? []).sort((a, b) => a - b),
+              marketplaceSkuCount: 1,
+              marketplaceSkus: [mapping],
+              qty: this.roundMoney(metrics?.qty ?? 0),
+              taxableValue: this.roundMoney(metrics?.taxableValue ?? 0),
+              igst: this.roundMoney(metrics?.igst ?? 0),
+              cgst: this.roundMoney(metrics?.cgst ?? 0),
+              sgst: this.roundMoney(metrics?.sgst ?? 0),
+              invoiceAmount: this.roundMoney(metrics?.invoiceAmount ?? 0),
+            },
+            marketplaceSku,
+          ),
+        );
+      }
+      for (const [sku] of metricByKey) {
+        const hasRow = Array.from(bySku.values()).some(
+          (row) => row.marketplaceSku === sku,
+        );
+        if (hasRow) continue;
+        const masterSku = masterByMarketplaceSku.get(sku) ?? 'UNMAPPED';
+        const rowKey = `::${sku}`;
+        const metrics = metricByKey.get(sku);
+        bySku.set(
+          rowKey,
+          attachFinance(
+            {
+              rowKey,
+              masterSku,
+              marketplaceSku: sku,
+              status: masterSku === 'UNMAPPED' ? 'UNMAPPED' : 'MAPPED',
+              productName: null,
+              category: null,
+              brand: null,
+              rates: Array.from(metrics?.gstRates ?? []).sort((a, b) => a - b),
+              marketplaceSkuCount: 1,
+              marketplaceSkus: [
+                {
+                  marketplace: '',
+                  marketplaceSku: sku,
+                  rate: null,
+                },
+              ],
+              qty: this.roundMoney(metrics?.qty ?? 0),
+              taxableValue: this.roundMoney(metrics?.taxableValue ?? 0),
+              igst: this.roundMoney(metrics?.igst ?? 0),
+              cgst: this.roundMoney(metrics?.cgst ?? 0),
+              sgst: this.roundMoney(metrics?.sgst ?? 0),
+              invoiceAmount: this.roundMoney(metrics?.invoiceAmount ?? 0),
+            },
+            sku,
+          ),
+        );
+      }
+      rows = Array.from(bySku.values());
+    } else {
+      const byMaster = new Map<string, SkuMasterGroup>();
+      for (const item of mappings) {
+        const masterSku = String(item.masterSku ?? '').trim() || 'UNMAPPED';
+        const group: SkuMasterGroup = byMaster.get(masterSku) ?? {
           masterSku,
           status: masterSku === 'UNMAPPED' ? 'UNMAPPED' : 'MAPPED',
+          productName: item.productName ?? undefined,
+          category: item.category ?? undefined,
+          brand: item.brand ?? undefined,
           rates: new Set<number>(),
           marketplaceSkus: [],
+        };
+        if (!group.productName && item.productName) {
+          group.productName = item.productName;
+        }
+        if (!group.category && item.category) {
+          group.category = item.category ?? undefined;
+        }
+        if (!group.brand && item.brand) group.brand = item.brand ?? undefined;
+        if (typeof item.rate === 'number') group.rates.add(item.rate);
+        group.marketplaceSkus.push({
+          marketplace: String(item.marketplace ?? ''),
+          marketplaceSku: String(item.marketplaceSku ?? ''),
+          rate: typeof item.rate === 'number' ? item.rate : null,
+          productName: item.productName,
         });
+        byMaster.set(masterSku, group);
       }
+
+      for (const [key] of metricByKey) {
+        if (!byMaster.has(key)) {
+          byMaster.set(key, {
+            masterSku: key,
+            status: key === 'UNMAPPED' ? 'UNMAPPED' : 'MAPPED',
+            rates: new Set<number>(),
+            marketplaceSkus: [],
+          });
+        }
+      }
+
+      rows = Array.from(byMaster.values()).map((group) => {
+        const metrics = metricByKey.get(group.masterSku);
+        return attachFinance(
+          {
+            rowKey: group.masterSku,
+            masterSku: group.masterSku,
+            marketplaceSku: null,
+            status: group.status,
+            productName: group.productName ?? null,
+            category: group.category ?? null,
+            brand: group.brand ?? null,
+            rates: Array.from(
+              new Set([
+                ...Array.from(group.rates),
+                ...(metrics ? Array.from(metrics.gstRates) : []),
+              ]),
+            ).sort((a, b) => a - b),
+            marketplaceSkuCount: group.marketplaceSkus.length,
+            marketplaceSkus: group.marketplaceSkus.sort((a, b) =>
+              a.marketplaceSku.localeCompare(b.marketplaceSku),
+            ),
+            qty: this.roundMoney(metrics?.qty ?? 0),
+            taxableValue: this.roundMoney(metrics?.taxableValue ?? 0),
+            igst: this.roundMoney(metrics?.igst ?? 0),
+            cgst: this.roundMoney(metrics?.cgst ?? 0),
+            sgst: this.roundMoney(metrics?.sgst ?? 0),
+            invoiceAmount: this.roundMoney(metrics?.invoiceAmount ?? 0),
+          },
+          group.masterSku,
+        );
+      });
     }
 
-    const rows = Array.from(byMaster.values())
-      .map((group) => {
-        const metrics = metricByMaster.get(group.masterSku);
-        return {
-          masterSku: group.masterSku,
-          status: group.status,
-          productName: group.productName ?? null,
-          category: group.category ?? null,
-          brand: group.brand ?? null,
-          rates: Array.from(
-            new Set([
-              ...Array.from(group.rates),
-              ...(metrics ? Array.from(metrics.gstRates) : []),
-            ]),
-          ).sort((a, b) => a - b),
-          marketplaceSkuCount: group.marketplaceSkus.length,
-          marketplaceSkus: group.marketplaceSkus.sort((a, b) =>
-            a.marketplaceSku.localeCompare(b.marketplaceSku),
-          ),
-          qty: Number((metrics?.qty ?? 0).toFixed(2)),
-          taxableValue: Number((metrics?.taxableValue ?? 0).toFixed(2)),
-          igst: Number((metrics?.igst ?? 0).toFixed(2)),
-          cgst: Number((metrics?.cgst ?? 0).toFixed(2)),
-          sgst: Number((metrics?.sgst ?? 0).toFixed(2)),
-          invoiceAmount: Number((metrics?.invoiceAmount ?? 0).toFixed(2)),
-        };
-      })
-      .sort((a, b) => {
-        if (a.masterSku === 'UNMAPPED') return 1;
-        if (b.masterSku === 'UNMAPPED') return -1;
-        return b.invoiceAmount - a.invoiceAmount || a.masterSku.localeCompare(b.masterSku);
-      });
+    rows.sort((a, b) => {
+      if (a.masterSku === 'UNMAPPED') return 1;
+      if (b.masterSku === 'UNMAPPED') return -1;
+      return (
+        b.netSales - a.netSales ||
+        b.invoiceAmount - a.invoiceAmount ||
+        a.masterSku.localeCompare(b.masterSku)
+      );
+    });
 
     const summary = {
-      masterSkuCount: rows.filter((r) => r.masterSku !== 'UNMAPPED').length,
+      masterSkuCount: new Set(
+        rows.filter((r) => r.masterSku !== 'UNMAPPED').map((r) => r.masterSku),
+      ).size,
       unmappedCount: rows.filter((r) => r.masterSku === 'UNMAPPED').length,
       marketplaceSkuCount: rows.reduce(
         (sum, r) => sum + r.marketplaceSkuCount,
         0,
       ),
-      qty: Number(rows.reduce((sum, r) => sum + r.qty, 0).toFixed(2)),
-      taxableValue: Number(
-        rows.reduce((sum, r) => sum + r.taxableValue, 0).toFixed(2),
+      qty: this.roundMoney(rows.reduce((sum, r) => sum + r.qty, 0)),
+      taxableValue: this.roundMoney(
+        rows.reduce((sum, r) => sum + r.taxableValue, 0),
       ),
-      invoiceAmount: Number(
-        rows.reduce((sum, r) => sum + r.invoiceAmount, 0).toFixed(2),
+      invoiceAmount: this.roundMoney(
+        rows.reduce((sum, r) => sum + r.invoiceAmount, 0),
       ),
+      salesQty: this.roundMoney(rows.reduce((sum, r) => sum + r.salesQty, 0)),
+      returnQty: this.roundMoney(rows.reduce((sum, r) => sum + r.returnQty, 0)),
+      grossSales: this.roundMoney(
+        rows.reduce((sum, r) => sum + r.grossSales, 0),
+      ),
+      returnAmount: this.roundMoney(
+        rows.reduce((sum, r) => sum + r.returnAmount, 0),
+      ),
+      netSales: this.roundMoney(rows.reduce((sum, r) => sum + r.netSales, 0)),
+      netPcs: this.roundMoney(rows.reduce((sum, r) => sum + r.netPcs, 0)),
       totalRows,
     };
 
     return {
       success: true,
       data: {
-        gstin: ctx.gstin,
+        gstin: ctx.gstin || 'ALL',
+        skuGrouping,
         summary,
         rows,
       },
@@ -809,7 +1271,10 @@ export class StateSkuWiseReportService {
       row.invoiceAmount,
     ]);
     // Keep SKU labels right-aligned for easier visual scanning.
-    detailRow.getCell(1).alignment = { horizontal: 'right', vertical: 'middle' };
+    detailRow.getCell(1).alignment = {
+      horizontal: 'right',
+      vertical: 'middle',
+    };
   }
 
   private addStateHeaderRow(sheet: ExcelJS.Worksheet, group: StateGroup) {

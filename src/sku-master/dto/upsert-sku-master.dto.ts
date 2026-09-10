@@ -1,12 +1,13 @@
-import { Type } from 'class-transformer';
+import { Transform } from 'class-transformer';
 import {
   IsNotEmpty,
   IsNumber,
+  IsOptional,
   IsString,
-  Max,
   MaxLength,
   Min,
 } from 'class-validator';
+import { parseSkuRate } from '../sku-rate.util';
 
 export class UpsertSkuMasterDto {
   @IsString()
@@ -26,9 +27,20 @@ export class UpsertSkuMasterDto {
   @MaxLength(120)
   masterSku: string;
 
-  @Type(() => Number)
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (value === '' || value === null || value === undefined) {
+      return undefined;
+    }
+    const parsed = parseSkuRate(value);
+    return parsed === null ? undefined : parsed;
+  })
   @IsNumber()
   @Min(0)
-  @Max(100)
-  rate: number;
+  rate?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  category?: string;
 }

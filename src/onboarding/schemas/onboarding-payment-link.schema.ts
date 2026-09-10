@@ -9,10 +9,20 @@ export class OnboardingPaymentLink {
   @Prop({ required: true, unique: true, index: true })
   token!: string;
 
-  @Prop({ type: SchemaTypes.ObjectId, ref: 'Lead', required: true, index: true })
+  @Prop({
+    type: SchemaTypes.ObjectId,
+    ref: 'Lead',
+    required: true,
+    index: true,
+  })
   leadId!: Types.ObjectId;
 
-  @Prop({ type: SchemaTypes.ObjectId, ref: 'User', required: true, index: true })
+  @Prop({
+    type: SchemaTypes.ObjectId,
+    ref: 'User',
+    required: true,
+    index: true,
+  })
   userId!: Types.ObjectId;
 
   @Prop({ type: SchemaTypes.ObjectId, ref: 'SubscriptionPackage' })

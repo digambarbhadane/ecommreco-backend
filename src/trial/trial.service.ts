@@ -50,7 +50,9 @@ import {
   TrialSubscription,
   TrialSubscriptionDocument,
 } from './schemas/trial-subscription.schema';
+import { findSellerByIdentifier } from '../common/utils/seller-id.util';
 import { Gst, GstDocument } from '../gsts/schemas/gst.schema';
+import { User, UserDocument } from '../users/schemas/user.schema';
 import { TrialHistoryService } from './trial-history.service';
 import { TrialValidationService } from './trial-validation.service';
 import {
@@ -66,6 +68,9 @@ import {
 import { GstsService } from '../gsts/gsts.service';
 import { MarketplacesService } from '../marketplaces/marketplaces.service';
 import { PaymentsService } from '../payments/payments.service';
+import { TrialOtpService } from './trial-otp.service';
+import { OtpService } from '../otp/otp.service';
+import { OTP_PURPOSE } from '../otp/otp.constants';
 
 @Injectable()
 export class TrialService {
@@ -74,6 +79,8 @@ export class TrialService {
   constructor(
     @InjectModel(Seller.name)
     private readonly sellerModel: Model<SellerDocument>,
+    @InjectModel(User.name)
+    private readonly userModel: Model<UserDocument>,
     @InjectModel(TrialSubscription.name)
     private readonly trialModel: Model<TrialSubscriptionDocument>,
     @InjectModel(TrialCleanupLog.name)
@@ -96,6 +103,8 @@ export class TrialService {
     private readonly gstsService: GstsService,
     @Inject(forwardRef(() => MarketplacesService))
     private readonly marketplacesService: MarketplacesService,
+    private readonly trialOtpService: TrialOtpService,
+    private readonly otpService: OtpService,
   ) {}
 
   getPricing() {
@@ -117,6 +126,47 @@ export class TrialService {
     };
   }
 
+  async verifyGstForRegistration(dto: {
+    gstNumber: string;
+    panNumber?: string;
+  }) {
+    const gstNumber = dto.gstNumber.trim().toUpperCase();
+    const panNumber = dto.panNumber?.trim().toUpperCase();
+    const panFromGst = gstNumber.length >= 12 ? gstNumber.slice(2, 12) : '';
+
+    if (panNumber && panFromGst && panNumber !== panFromGst) {
+      throw new BadRequestException(
+        'PAN must match the PAN embedded in GSTIN.',
+      );
+    }
+
+    return this.gstsService.verifyGst({ gstNumber });
+  }
+
+  private async assertVerifiedTrialGst(input: {
+    gstNumber: string;
+    verificationId: string;
+  }) {
+    const gstNumber = input.gstNumber.trim().toUpperCase();
+    const verificationId = input.verificationId.trim();
+
+    const profile = await this.gstsService.getVerificationBusinessProfile(
+      verificationId,
+      gstNumber,
+    );
+
+    return {
+      gstNumber: profile.gstNumber,
+      panNumber: profile.panNumber,
+      verificationId,
+      businessName: profile.businessName,
+      tradeName: profile.tradeName,
+      state: profile.state,
+      address: profile.address,
+      businessType: profile.businessType,
+    };
+  }
+
   private inferSubscriptionType(durationDays: number): SubscriptionType {
     if (durationDays >= 365) return 'yearly';
     if (durationDays >= 180) return 'half_yearly';
@@ -125,9 +175,7 @@ export class TrialService {
     return 'custom';
   }
 
-  private async resolveTrialCoverageContext(
-    seller: SellerDocument,
-  ): Promise<
+  private async resolveTrialCoverageContext(seller: SellerDocument): Promise<
     | (TrialCoverageContext & {
         trialMarketplaces: Array<{ id: string; name: string }>;
         trialTradeName?: string;
@@ -291,18 +339,71 @@ export class TrialService {
       .exec();
   }
 
+  async enrichTrialRegisterForOnboarding(dto: RegisterTrialDto) {
+    await this.otpService.assertMobileVerified(
+      dto.mobile.trim(),
+      OTP_PURPOSE.REGISTER,
+    );
+
+    const verifiedGst = await this.assertVerifiedTrialGst({
+      gstNumber: dto.gstNumber.trim().toUpperCase(),
+      verificationId: dto.verificationId.trim(),
+    });
+
+    return {
+      companyName:
+        dto.companyName?.trim() ||
+        verifiedGst.tradeName ||
+        verifiedGst.businessName ||
+        dto.ownerName.trim(),
+      ownerName: dto.ownerName.trim(),
+      mobile: dto.mobile.trim(),
+      email: dto.email.trim().toLowerCase(),
+      panNumber: verifiedGst.panNumber,
+      gstNumber: verifiedGst.gstNumber,
+      businessType:
+        dto.businessType?.trim() || verifiedGst.businessType || undefined,
+      state: verifiedGst.state || dto.state?.trim() || undefined,
+      city: dto.city?.trim() || undefined,
+      password: dto.password,
+      confirmPassword: dto.confirmPassword,
+      acceptTerms: dto.acceptTerms,
+    };
+  }
+
+  async consumeRegistrationOtp(mobile: string) {
+    await this.otpService.consumeVerification(
+      mobile.trim(),
+      OTP_PURPOSE.REGISTER,
+    );
+  }
+
   async register(dto: RegisterTrialDto) {
     if (!dto.acceptTerms) {
       throw new BadRequestException('You must accept the Terms to continue.');
     }
     if (dto.password !== dto.confirmPassword) {
-      throw new BadRequestException('Password and Confirm Password do not match.');
+      throw new BadRequestException(
+        'Password and Confirm Password do not match.',
+      );
     }
 
     const email = dto.email.trim().toLowerCase();
     const mobile = dto.mobile.trim();
-    const panNumber = dto.panNumber.trim().toUpperCase();
     const gstNumber = dto.gstNumber.trim().toUpperCase();
+    const verificationId = dto.verificationId.trim();
+
+    await this.otpService.assertMobileVerified(mobile, OTP_PURPOSE.REGISTER);
+
+    const verifiedGst = await this.assertVerifiedTrialGst({
+      gstNumber,
+      verificationId,
+    });
+    const panNumber = verifiedGst.panNumber;
+    const companyName =
+      dto.companyName?.trim() ||
+      verifiedGst.tradeName ||
+      verifiedGst.businessName;
 
     await this.validation.assertEligibleForTrial({
       email,
@@ -325,14 +426,17 @@ export class TrialService {
           {
             publicId: generatePublicId('seller', email),
             fullName: dto.ownerName.trim(),
-            firmName: dto.companyName.trim(),
+            firmName: companyName,
             contactNumber: mobile,
             email,
             gstNumber,
             panNumber,
-            businessType: dto.businessType?.trim(),
-            state: dto.state?.trim(),
+            gstVerificationId: verificationId,
+            businessType:
+              dto.businessType?.trim() || verifiedGst.businessType || undefined,
+            state: verifiedGst.state || dto.state?.trim(),
             city: dto.city?.trim(),
+            address: verifiedGst.address || undefined,
             password: hashedPassword,
             username: email,
             isTrial: true,
@@ -365,7 +469,7 @@ export class TrialService {
             gstNumber,
             email,
             mobile,
-            companyName: dto.companyName.trim(),
+            companyName: companyName,
             ownerName: dto.ownerName.trim(),
             status: 'pending_payment',
             basePrice: pricing.basePrice,
@@ -429,6 +533,8 @@ export class TrialService {
       })
       .catch(() => undefined);
 
+    await this.otpService.consumeVerification(mobile, OTP_PURPOSE.REGISTER);
+
     return {
       success: true,
       sellerId: String(seller._id),
@@ -442,7 +548,8 @@ export class TrialService {
 
   async getPaymentSummary(sellerId: string) {
     const trial = await this.requireTrialBySeller(sellerId);
-    const pending = (trial.metadata as Record<string, unknown>)?.pendingCheckout as
+    const pending = (trial.metadata as Record<string, unknown>)
+      ?.pendingCheckout as
       | { orderId?: string; paymentSessionId?: string }
       | undefined;
     return {
@@ -471,7 +578,10 @@ export class TrialService {
       return String(trialPlan._id);
     }
     const fallback = await this.packageModel
-      .findOne({ isActive: true, durationInDays: { $lte: TRIAL_DURATION_DAYS } })
+      .findOne({
+        isActive: true,
+        durationInDays: { $lte: TRIAL_DURATION_DAYS },
+      })
       .sort({ durationInDays: 1 })
       .exec();
     if (fallback) {
@@ -685,8 +795,7 @@ export class TrialService {
       subscriptionPlanType: planType,
       reconciliationMonths,
       maxGsts:
-        planType === 'single_gst' ||
-        planType === 'single_gst_multi_marketplace'
+        planType === 'single_gst' || planType === 'single_gst_multi_marketplace'
           ? 1
           : null,
       maxMarketplaces:
@@ -737,6 +846,7 @@ export class TrialService {
       allowedImportMonths,
       trialCoveredMonthsForPurchase,
       trialGstNumber: trialCoverage?.trialGstNumber ?? null,
+      trialGstVerificationId: seller.gstVerificationId ?? null,
       trialMarketplacePlatformIds:
         trialCoverage?.trialMarketplacePlatformIds ?? [],
       trialMarketplaces: trialCoverage?.trialMarketplaces ?? [],
@@ -786,10 +896,7 @@ export class TrialService {
   calculateSubscriptionQuote(input: {
     basePrice: number;
     durationInDays: number;
-    planType?:
-      | 'single_gst'
-      | 'multi_gst_pan'
-      | 'single_gst_multi_marketplace';
+    planType?: 'single_gst' | 'multi_gst_pan' | 'single_gst_multi_marketplace';
     billingMode:
       | 'single_gst'
       | 'multi_gst_pan'
@@ -819,10 +926,7 @@ export class TrialService {
     const billingMode = input.billingMode;
     const planType = input.planType ?? 'multi_gst_pan';
 
-    if (
-      billingMode === 'single_gst' &&
-      planType !== 'single_gst'
-    ) {
+    if (billingMode === 'single_gst' && planType !== 'single_gst') {
       throw new BadRequestException(
         'Selected package is not a Single GST plan.',
       );
@@ -864,10 +968,7 @@ export class TrialService {
       );
       const requestedSlots = Math.max(
         1,
-        Math.min(
-          50,
-          Number(input.gstSlots ?? input.panSlots ?? 0) || 1,
-        ),
+        Math.min(50, Number(input.gstSlots ?? input.panSlots ?? 0) || 1),
       );
 
       if (requestedSlots === 1 && !gstNumbers.length) {
@@ -879,7 +980,9 @@ export class TrialService {
       let pan: string | undefined;
       if (gstNumbers.length) {
         pan =
-          String(input.panNumber ?? '').trim().toUpperCase() ||
+          String(input.panNumber ?? '')
+            .trim()
+            .toUpperCase() ||
           (gstNumbers[0].length >= 12 ? gstNumbers[0].slice(2, 12) : '');
         if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(pan)) {
           throw new BadRequestException(
@@ -968,10 +1071,7 @@ export class TrialService {
 
     const basePrice = Number(pkg.finalPriceAfterDiscount ?? pkg.basePrice ?? 0);
     const durationInDays = Number(pkg.durationInDays ?? 30);
-    const planType = (pkg.planType ?? billingMode) as
-      | 'single_gst'
-      | 'multi_gst_pan'
-      | 'single_gst_multi_marketplace';
+    const planType = pkg.planType ?? billingMode;
 
     return {
       package: pkg.toObject(),
@@ -1006,7 +1106,9 @@ export class TrialService {
       });
     } catch (error) {
       throw new BadRequestException(
-        error instanceof Error ? error.message : 'Invalid GST checkout selection.',
+        error instanceof Error
+          ? error.message
+          : 'Invalid GST checkout selection.',
       );
     }
 
@@ -1096,7 +1198,9 @@ export class TrialService {
           },
           { actorRole: 'super_admin' },
         );
-        const gstId = String((created as { data?: { _id?: unknown } }).data?._id ?? '');
+        const gstId = String(
+          (created as { data?: { _id?: unknown } }).data?._id ?? '',
+        );
         if (gstId) {
           gstIdByNumber.set(gstNumber, gstId);
         }
@@ -1227,7 +1331,8 @@ export class TrialService {
       paymentLink: '',
       quote,
       package: pkg,
-      message: 'Checkout created. Complete payment to activate your subscription.',
+      message:
+        'Checkout created. Complete payment to activate your subscription.',
     };
   }
 
@@ -1245,7 +1350,7 @@ export class TrialService {
       .exec();
 
     const order = await this.paymentsService.getOrderById(confirm.orderId);
-    const orderMeta = (order?.metadata ?? {}) as Record<string, unknown>;
+    const orderMeta = order?.metadata ?? {};
     const pendingFromTrial = (trial?.metadata as any)?.pendingCheckout;
     const pendingFromOrder =
       orderMeta.purchaseDto && orderMeta.quote
@@ -1351,12 +1456,17 @@ export class TrialService {
     seller.trialStatus = 'converted';
     seller.convertedToPaid = true;
     seller.convertedAt = now;
-    seller.gstSlots = quote.gstSlots;
-    seller.gstSlotsPurchased = quote.gstSlots;
+    const gstProfilesInPlan = Number(quote.gstCount ?? quote.gstSlots ?? 1);
+    seller.gstSlots = gstProfilesInPlan;
+    seller.gstSlotsPurchased = gstProfilesInPlan;
     seller.allocatedPanSlots = quote.panSlots;
     seller.totalPanSlots = quote.panSlots;
     seller.marketplaceSlotsPurchased = Number(quote.marketplaceSlots ?? 0);
     seller.subscriptionPlanType = quote.planType ?? quote.billingMode;
+    seller.subscriptionPlanLabel = quote.planLabel ?? undefined;
+    seller.subscriptionPanBreakdown = Array.isArray(quote.panBreakdown)
+      ? quote.panBreakdown
+      : undefined;
     seller.reconciliationMonths = quote.selectedMonths;
     if (quote.billingMode === 'multi_gst_pan' && quote.panNumber) {
       if (Number(quote.panSlots ?? 1) <= 1) {
@@ -1373,10 +1483,7 @@ export class TrialService {
       if (quote.panNumber && !seller.panNumber) {
         seller.panNumber = quote.panNumber;
       }
-    } else if (
-      quote.billingMode === 'single_gst' &&
-      seller.panNumber
-    ) {
+    } else if (quote.billingMode === 'single_gst' && seller.panNumber) {
       seller.lockedPanNumber = String(seller.panNumber).toUpperCase();
     }
     seller.durationYears = quote.durationDays / 365;
@@ -1420,7 +1527,7 @@ export class TrialService {
       packageName,
       quote,
       pendingCheckout: {
-        ...((trial.metadata as any)?.pendingCheckout ?? {}),
+        ...(trial.metadata?.pendingCheckout ?? {}),
         status: 'paid',
         paidAt: now.toISOString(),
         paymentId,
@@ -1495,17 +1602,25 @@ export class TrialService {
       ? new Date(seller.subscriptionEndsAt)
       : now;
     const renewalBase =
-      !Number.isNaN(currentEnd.getTime()) && currentEnd.getTime() > now.getTime()
+      !Number.isNaN(currentEnd.getTime()) &&
+      currentEnd.getTime() > now.getTime()
         ? currentEnd
         : now;
     const endsAt = addDays(renewalBase, quote.durationDays);
 
     seller.reconciliationMonths = mergedMonths;
-    seller.gstSlots = Math.max(Number(seller.gstSlots ?? 0), quote.gstSlots);
+    const renewalGstInPlan = Number(quote.gstCount ?? quote.gstSlots ?? 0);
+    seller.gstSlots = Math.max(Number(seller.gstSlots ?? 0), renewalGstInPlan);
     seller.gstSlotsPurchased = Math.max(
       Number(seller.gstSlotsPurchased ?? 0),
-      quote.gstSlots,
+      renewalGstInPlan,
     );
+    if (quote.planLabel) {
+      seller.subscriptionPlanLabel = quote.planLabel;
+    }
+    if (Array.isArray(quote.panBreakdown) && quote.panBreakdown.length) {
+      seller.subscriptionPanBreakdown = quote.panBreakdown;
+    }
     seller.allocatedPanSlots = Math.max(
       Number(seller.allocatedPanSlots ?? 0),
       quote.panSlots,
@@ -1558,7 +1673,7 @@ export class TrialService {
       trial.metadata = {
         ...(trial.metadata ?? {}),
         pendingCheckout: {
-          ...((trial.metadata as any)?.pendingCheckout ?? {}),
+          ...(trial.metadata?.pendingCheckout ?? {}),
           status: 'paid',
           paidAt: now.toISOString(),
           paymentId,
@@ -1627,7 +1742,11 @@ export class TrialService {
             },
             revenueFromTrial: {
               $sum: {
-                $cond: [{ $eq: ['$paymentStatus', 'paid'] }, '$totalPayable', 0],
+                $cond: [
+                  { $eq: ['$paymentStatus', 'paid'] },
+                  '$totalPayable',
+                  0,
+                ],
               },
             },
           },
@@ -1723,15 +1842,20 @@ export class TrialService {
     return { trial, seller, timeline };
   }
 
-  async adminExtend(trialId: string, dto: AdminTrialActionDto, actorId?: string) {
+  async adminExtend(
+    trialId: string,
+    dto: AdminTrialActionDto,
+    actorId?: string,
+  ) {
     const days = Math.max(1, Number(dto.extendDays ?? 7));
     const trial = await this.trialModel.findById(trialId).exec();
     if (!trial) throw new NotFoundException('Trial not found');
     const seller = await this.requireSeller(String(trial.sellerId));
 
-    const base = trial.trialEnd && trial.trialEnd > new Date()
-      ? new Date(trial.trialEnd)
-      : new Date();
+    const base =
+      trial.trialEnd && trial.trialEnd > new Date()
+        ? new Date(trial.trialEnd)
+        : new Date();
     const nextEnd = addDays(base, days);
     trial.trialEnd = nextEnd;
     trial.status = 'active';
@@ -1793,7 +1917,11 @@ export class TrialService {
     return { success: true };
   }
 
-  async adminSuspend(trialId: string, dto: AdminTrialActionDto, actorId?: string) {
+  async adminSuspend(
+    trialId: string,
+    dto: AdminTrialActionDto,
+    actorId?: string,
+  ) {
     const trial = await this.trialModel.findById(trialId).exec();
     if (!trial) throw new NotFoundException('Trial not found');
     const seller = await this.requireSeller(String(trial.sellerId));
@@ -1874,7 +2002,10 @@ export class TrialService {
 
     let cleaned = 0;
     for (const trial of due) {
-      await this.deleteTrialBusinessData(String(trial.sellerId), String(trial._id));
+      await this.deleteTrialBusinessData(
+        String(trial.sellerId),
+        String(trial._id),
+      );
       cleaned += 1;
     }
     return { cleaned };
@@ -1974,8 +2105,7 @@ export class TrialService {
       return deletedCounts;
     } catch (error) {
       log.status = 'failed';
-      log.errorMessage =
-        error instanceof Error ? error.message : String(error);
+      log.errorMessage = error instanceof Error ? error.message : String(error);
       await log.save();
       throw error;
     }
@@ -2092,8 +2222,40 @@ export class TrialService {
       return;
     }
 
-    const panFromGst =
-      gstNumber.length >= 12 ? gstNumber.slice(2, 12) : '';
+    const verificationId = String(seller.gstVerificationId ?? '').trim();
+    if (verificationId) {
+      try {
+        await this.gstsService.create(
+          {
+            sellerId,
+            verificationId,
+            gstNumber,
+          },
+          { actorRole: 'super_admin' },
+        );
+        await this.syncTrialSlotUsage(seller, gstNumber);
+        return;
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : String(error ?? '');
+        if (!message.toLowerCase().includes('already added')) {
+          this.logger.warn(
+            `Verified trial GST provision failed for seller ${sellerId}: ${message}`,
+          );
+        }
+        const dup = await this.gstModel
+          .findOne({ sellerId, gstNumber })
+          .select('_id')
+          .lean()
+          .exec();
+        if (dup) {
+          await this.syncTrialSlotUsage(seller, gstNumber);
+          return;
+        }
+      }
+    }
+
+    const panFromGst = gstNumber.length >= 12 ? gstNumber.slice(2, 12) : '';
     const panNumber = String(seller.panNumber ?? panFromGst)
       .trim()
       .toUpperCase();
@@ -2131,8 +2293,7 @@ export class TrialService {
   }
 
   private async syncTrialSlotUsage(seller: SellerDocument, gstNumber: string) {
-    const panFromGst =
-      gstNumber.length >= 12 ? gstNumber.slice(2, 12) : '';
+    const panFromGst = gstNumber.length >= 12 ? gstNumber.slice(2, 12) : '';
     const panNumber = String(seller.panNumber ?? panFromGst)
       .trim()
       .toUpperCase();
@@ -2142,7 +2303,10 @@ export class TrialService {
       ? [...seller.panProfiles]
       : [];
     const hasPan = profiles.some(
-      (p) => String(p.panNumber ?? '').trim().toUpperCase() === panNumber,
+      (p) =>
+        String(p.panNumber ?? '')
+          .trim()
+          .toUpperCase() === panNumber,
     );
     if (!hasPan) {
       profiles.push({
@@ -2155,10 +2319,7 @@ export class TrialService {
     seller.panProfiles = profiles;
     seller.usedPanSlots = Math.max(1, Number(seller.usedPanSlots ?? 0));
     seller.gstSlotsUsed = Math.max(1, Number(seller.gstSlotsUsed ?? 0));
-    seller.gstSlots = Math.max(
-      Number(seller.gstSlots ?? 0),
-      TRIAL_GST_SLOTS,
-    );
+    seller.gstSlots = Math.max(Number(seller.gstSlots ?? 0), TRIAL_GST_SLOTS);
     seller.gstSlotsPurchased = Math.max(
       Number(seller.gstSlotsPurchased ?? 0),
       TRIAL_GST_SLOTS,
@@ -2175,7 +2336,11 @@ export class TrialService {
   }
 
   private async requireSeller(sellerId: string) {
-    const seller = await this.sellerModel.findById(sellerId).exec();
+    const seller = await findSellerByIdentifier(
+      this.sellerModel,
+      this.userModel,
+      sellerId,
+    );
     if (!seller) throw new NotFoundException('Seller not found');
     return seller;
   }

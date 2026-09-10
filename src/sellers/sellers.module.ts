@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
+import { AuthModule } from '../auth/auth.module';
 import { LeadsModule } from '../leads/leads.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { EmailModule } from '../email/email.module';
@@ -11,13 +12,19 @@ import {
   UserSecurity,
   UserSecuritySchema,
 } from '../profile/schemas/user-security.schema';
+import {
+  PaymentOrder,
+  PaymentOrderSchema,
+} from '../payments/schemas/payment-order.schema';
 
 @Module({
   imports: [
+    AuthModule,
     MongooseModule.forFeature([
       { name: Seller.name, schema: SellerSchema },
       { name: User.name, schema: UserSchema },
       { name: UserSecurity.name, schema: UserSecuritySchema },
+      { name: PaymentOrder.name, schema: PaymentOrderSchema },
     ]),
     LeadsModule,
     NotificationsModule,

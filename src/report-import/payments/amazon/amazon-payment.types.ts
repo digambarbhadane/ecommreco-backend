@@ -20,4 +20,3 @@ export type AmazonPaymentInsertPayload = AmazonPaymentMappedRow & {
   sheetName: string;
   uploadedAt: Date;
 };
-

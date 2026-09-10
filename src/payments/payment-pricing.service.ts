@@ -55,7 +55,7 @@ export class PaymentPricingService {
     const scaleFactor =
       (durationDays / Math.max(1, plan.durationInDays)) * gstSlots;
 
-    let baseAmount = this.toTwoDecimals(
+    const baseAmount = this.toTwoDecimals(
       (plan.finalPriceAfterDiscount ?? plan.basePrice) * scaleFactor,
     );
     let discountAmount = 0;
@@ -77,9 +77,7 @@ export class PaymentPricingService {
 
     const taxableAmount = Math.max(0, baseAmount - discountAmount);
     const gstPercentage = plan.gstPercentage ?? 18;
-    const gstAmount = this.toTwoDecimals(
-      (taxableAmount * gstPercentage) / 100,
-    );
+    const gstAmount = this.toTwoDecimals((taxableAmount * gstPercentage) / 100);
     const totalAmount = this.toRupee(taxableAmount + gstAmount);
 
     return {

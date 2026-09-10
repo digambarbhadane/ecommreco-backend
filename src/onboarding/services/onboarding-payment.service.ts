@@ -5,6 +5,10 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import {
+  buildPaymentNotifyUrl,
+  buildPaymentReturnUrl,
+} from '../../config/payment-urls';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Lead, LeadDocument } from '../../leads/schemas/lead.schema';
@@ -25,7 +29,7 @@ import {
   ONBOARDING_CHECKOUT_TYPE,
   ONBOARDING_TIMELINE_EVENTS,
 } from '../constants/onboarding-status';
-import { computeTrialPayable } from '../../trial/trial.constants';
+import { computeTrialPayable, TRIAL_PRICE } from '../../trial/trial.constants';
 import { OnboardingTimelineService } from './onboarding-timeline.service';
 
 @Injectable()
@@ -75,21 +79,10 @@ export class OnboardingPaymentService {
       throw new BadRequestException('Trial plan is not configured');
     }
 
-    const pricing = computeTrialPayable(
-      Number(plan.finalPriceAfterDiscount ?? plan.basePrice ?? 499),
-    );
-    const attemptNumber =
-      (await this.countAttempts(input.userId)) + 1;
+    const pricing = computeTrialPayable(TRIAL_PRICE);
+    const attemptNumber = (await this.countAttempts(input.userId)) + 1;
     const orderId = `ECO-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
-    const frontendUrl =
-      this.config.get<string>('PAYMENT_RETURN_BASE_URL')?.trim() ||
-      this.config.get<string>('FRONTEND_URL')?.split(',')[0]?.trim() ||
-      'http://localhost:8080';
-    const apiUrl =
-      this.config.get<string>('API_PUBLIC_URL')?.trim() ||
-      `http://localhost:${this.config.get('PORT') ?? 5001}`;
-
-    const returnPath = `/onboarding/payment?order_id=${orderId}`;
+    const returnPath = `/seller/register?mode=trial&order_id=${orderId}`;
 
     const gatewayResult = await this.gateway.createOrder({
       orderId,
@@ -97,8 +90,8 @@ export class OnboardingPaymentService {
       customerId: input.userId,
       customerEmail: input.email,
       customerPhone: input.mobile || '9999999999',
-      returnUrl: `${frontendUrl.replace(/\/+$/, '')}${returnPath}`,
-      notifyUrl: `${apiUrl.replace(/\/+$/, '')}/api/v1/webhooks/cashfree`,
+      returnUrl: buildPaymentReturnUrl(this.config, returnPath),
+      notifyUrl: buildPaymentNotifyUrl(this.config),
       metadata: {
         user_id: input.userId,
         lead_id: input.leadId,

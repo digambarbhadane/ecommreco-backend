@@ -91,10 +91,7 @@ const ORDER_PAYMENT_NUMBER_FIELDS = new Set([
   'recovery',
 ]);
 
-const DUPLICATE_HEADER_TARGETS: Record<
-  string,
-  [string, string]
-> = {
+const DUPLICATE_HEADER_TARGETS: Record<string, [string, string]> = {
   'fixed fee incl gst': ['fixedFeeInclGst', 'fixedFeeDuplicateInclGst'],
   'warehousing fee incl gst': [
     'warehousingFeeInclGst',
@@ -106,7 +103,10 @@ const ORDER_PAYMENT_HEADER_ALIASES: Array<{
   field: keyof MeeshoOrderPaymentsMappedRow;
   aliases: string[];
 }> = [
-  { field: 'subOrderNo', aliases: ['Sub Order No', 'sub_order_num', 'Order ID'] },
+  {
+    field: 'subOrderNo',
+    aliases: ['Sub Order No', 'sub_order_num', 'Order ID'],
+  },
   { field: 'orderDate', aliases: ['Order Date'] },
   { field: 'dispatchDate', aliases: ['Dispatch Date'] },
   { field: 'productName', aliases: ['Product Name'] },
@@ -216,7 +216,9 @@ function resolveFieldForHeader(
   if (duplicateTargets) {
     const count = duplicateCounts[normalizedHeader] ?? 0;
     duplicateCounts[normalizedHeader] = count + 1;
-    return duplicateTargets[Math.min(count, duplicateTargets.length - 1)] as keyof MeeshoOrderPaymentsMappedRow;
+    return duplicateTargets[
+      Math.min(count, duplicateTargets.length - 1)
+    ] as keyof MeeshoOrderPaymentsMappedRow;
   }
   return ALIAS_LOOKUP.get(normalizedHeader) ?? null;
 }
@@ -252,7 +254,9 @@ export function buildOrderPaymentsColumnFieldMap(
       const count = duplicateCounts['warehousing fee incl gst'] ?? 0;
       duplicateCounts['warehousing fee incl gst'] = count + 1;
       const targets = DUPLICATE_HEADER_TARGETS['warehousing fee incl gst'];
-      field = targets[Math.min(count, targets.length - 1)] as keyof MeeshoOrderPaymentsMappedRow;
+      field = targets[
+        Math.min(count, targets.length - 1)
+      ] as keyof MeeshoOrderPaymentsMappedRow;
     }
 
     if (!field) continue;
@@ -300,8 +304,10 @@ export function mappedOrderPaymentsToEnrichmentRow(
     __rowNumber: rowNumber,
   };
   if (mapped.subOrderNo != null) row['Sub Order No'] = mapped.subOrderNo;
-  if (mapped.liveOrderStatus != null) row['Live Order Status'] = mapped.liveOrderStatus;
-  if (mapped.transactionId != null) row['Transaction ID'] = mapped.transactionId;
+  if (mapped.liveOrderStatus != null)
+    row['Live Order Status'] = mapped.liveOrderStatus;
+  if (mapped.transactionId != null)
+    row['Transaction ID'] = mapped.transactionId;
   if (mapped.paymentDate != null) row['Payment Date'] = mapped.paymentDate;
   if (mapped.finalSettlementAmount != null) {
     row['Final Settlement Amount'] = mapped.finalSettlementAmount;
@@ -315,7 +321,8 @@ export function mappedOrderPaymentsToEnrichmentRow(
     row['Total Sale Return Amount (Incl. Shipping & GST)'] =
       mapped.totalSaleReturnAmountInclShippingGst;
   }
-  if (mapped.fixedFeeInclGst != null) row['Fixed Fee (Incl. GST)'] = mapped.fixedFeeInclGst;
+  if (mapped.fixedFeeInclGst != null)
+    row['Fixed Fee (Incl. GST)'] = mapped.fixedFeeInclGst;
   if (mapped.warehousingFeeInclGst != null) {
     row['Warehousing fee (Incl. GST)'] = mapped.warehousingFeeInclGst;
   }
@@ -323,7 +330,8 @@ export function mappedOrderPaymentsToEnrichmentRow(
     row['Return premium (incl GST)'] = mapped.returnPremiumInclGst;
   }
   if (mapped.returnPremiumReturnInclGst != null) {
-    row['Return premium (incl GST) of Return'] = mapped.returnPremiumReturnInclGst;
+    row['Return premium (incl GST) of Return'] =
+      mapped.returnPremiumReturnInclGst;
   }
   if (mapped.meeshoCommissionPercentage != null) {
     row['Meesho Commission Percentage'] = mapped.meeshoCommissionPercentage;
@@ -332,13 +340,16 @@ export function mappedOrderPaymentsToEnrichmentRow(
     row['Meesho Commission (Incl. GST)'] = mapped.meeshoCommissionInclGst;
   }
   if (mapped.meeshoGoldPlatformFeeInclGst != null) {
-    row['Meesho gold platform fee (Incl. GST)'] = mapped.meeshoGoldPlatformFeeInclGst;
+    row['Meesho gold platform fee (Incl. GST)'] =
+      mapped.meeshoGoldPlatformFeeInclGst;
   }
   if (mapped.meeshoMallPlatformFeeInclGst != null) {
-    row['Meesho mall platform fee (Incl. GST)'] = mapped.meeshoMallPlatformFeeInclGst;
+    row['Meesho mall platform fee (Incl. GST)'] =
+      mapped.meeshoMallPlatformFeeInclGst;
   }
   if (mapped.returnShippingChargeInclGst != null) {
-    row['Return Shipping Charge (Incl. GST)'] = mapped.returnShippingChargeInclGst;
+    row['Return Shipping Charge (Incl. GST)'] =
+      mapped.returnShippingChargeInclGst;
   }
   if (mapped.gstCompensationPrpShipping != null) {
     row['GST Compensation (PRP Shipping)'] = mapped.gstCompensationPrpShipping;
@@ -350,7 +361,8 @@ export function mappedOrderPaymentsToEnrichmentRow(
     row['Other Support Service Charges (Excl. GST)'] =
       mapped.otherSupportServiceChargesExclGst;
   }
-  if (mapped.waiversExclGst != null) row['Waivers (Excl. GST)'] = mapped.waiversExclGst;
+  if (mapped.waiversExclGst != null)
+    row['Waivers (Excl. GST)'] = mapped.waiversExclGst;
   if (mapped.netOtherSupportServiceChargesExclGst != null) {
     row['Net Other Support Service Charges (Excl. GST)'] =
       mapped.netOtherSupportServiceChargesExclGst;
@@ -369,7 +381,8 @@ export function mappedOrderPaymentsToEnrichmentRow(
     row['Compensation Reason'] = mapped.compensationReason;
   }
   if (mapped.claimsReason != null) row['Claims Reason'] = mapped.claimsReason;
-  if (mapped.recoveryReason != null) row['Recovery Reason'] = mapped.recoveryReason;
+  if (mapped.recoveryReason != null)
+    row['Recovery Reason'] = mapped.recoveryReason;
   return row;
 }
 
@@ -377,7 +390,8 @@ export function mapMeeshoOrderPaymentsRow(
   rawRow: ParsedSheetRow,
   headerFieldMap?: Map<string, keyof MeeshoOrderPaymentsMappedRow>,
 ): MeeshoOrderPaymentsMappedRow {
-  const fieldMap = headerFieldMap ?? buildOrderPaymentsHeaderFieldMap(Object.keys(rawRow));
+  const fieldMap =
+    headerFieldMap ?? buildOrderPaymentsHeaderFieldMap(Object.keys(rawRow));
   const mapped = {} as MeeshoOrderPaymentsMappedRow;
 
   for (const [header, value] of Object.entries(rawRow)) {

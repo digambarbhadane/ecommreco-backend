@@ -54,10 +54,13 @@ export class RenewalReminderScheduler {
 
     for (const sub of subscriptions) {
       const reminderKey = `reminder_${daysBefore}d`;
-      const metadata = (sub.metadata ?? {}) as Record<string, unknown>;
+      const metadata = sub.metadata ?? {};
       if (metadata[reminderKey]) continue;
 
-      const seller = await this.sellerModel.findById(sub.sellerId).lean().exec();
+      const seller = await this.sellerModel
+        .findById(sub.sellerId)
+        .lean()
+        .exec();
       if (!seller?.email) continue;
 
       const message =
@@ -121,7 +124,12 @@ export class RenewalReminderScheduler {
       );
       await this.sellerModel.updateOne(
         { _id: sub.sellerId },
-        { $set: { accountStatus: 'suspended', onboardingStatus: 'payment_pending' } },
+        {
+          $set: {
+            accountStatus: 'suspended',
+            onboardingStatus: 'payment_pending',
+          },
+        },
       );
     }
 

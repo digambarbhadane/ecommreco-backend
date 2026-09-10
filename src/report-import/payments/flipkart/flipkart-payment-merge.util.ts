@@ -109,7 +109,10 @@ export function mergeFlipkartPaymentRowsByOrderId(
     (merged as Record<string, unknown>)[field] = sum;
   }
 
-  merged.orderItemId = mergeTextUnique(existing.orderItemId, incoming.orderItemId);
+  merged.orderItemId = mergeTextUnique(
+    existing.orderItemId,
+    incoming.orderItemId,
+  );
   merged.neftId = preferText(existing.neftId, incoming.neftId);
   merged.neftType = preferText(existing.neftType, incoming.neftType);
   merged.paymentDate = preferText(existing.paymentDate, incoming.paymentDate);
@@ -118,7 +121,10 @@ export function mergeFlipkartPaymentRowsByOrderId(
   merged.invoiceId = preferText(existing.invoiceId, incoming.invoiceId);
   merged.invoiceDate = preferText(existing.invoiceDate, incoming.invoiceDate);
   merged.orderDate = preferText(existing.orderDate, incoming.orderDate);
-  merged.dispatchDate = preferText(existing.dispatchDate, incoming.dispatchDate);
+  merged.dispatchDate = preferText(
+    existing.dispatchDate,
+    incoming.dispatchDate,
+  );
   merged.fulfilmentType = preferText(
     existing.fulfilmentType,
     incoming.fulfilmentType,
@@ -133,7 +139,10 @@ export function mergeFlipkartPaymentRowsByOrderId(
     existing.itemReturnStatus,
     incoming.itemReturnStatus,
   );
-  merged.shippingZone = preferText(existing.shippingZone, incoming.shippingZone);
+  merged.shippingZone = preferText(
+    existing.shippingZone,
+    incoming.shippingZone,
+  );
   merged.additionalInformation = preferText(
     existing.additionalInformation,
     incoming.additionalInformation,

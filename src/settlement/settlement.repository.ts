@@ -21,9 +21,13 @@ import {
 import { chunkArray } from '../common/utils/mongo-batch.util';
 import { repairLegacyCorruptedDate } from '../common/utils/repair-legacy-date.util';
 
-function repairRowDates<T extends { orderDate?: Date | string | null; invoiceDate?: Date | string | null; settlementDate?: Date | string | null }>(
-  row: T,
-): T {
+function repairRowDates<
+  T extends {
+    orderDate?: Date | string | null;
+    invoiceDate?: Date | string | null;
+    settlementDate?: Date | string | null;
+  },
+>(row: T): T {
   const next = { ...row };
   if (next.orderDate) {
     const repaired = repairLegacyCorruptedDate(next.orderDate);
@@ -274,7 +278,34 @@ export class SettlementRepository {
     };
   }
 
-  async summary(query: ListSettlementsDto, sellerAliases = [query.sellerId]) {
+  private emptySettlementSummary() {
+    return {
+      totalOrders: 0,
+      grossSales: 0,
+      returns: 0,
+      netSales: 0,
+      totalExpenses: 0,
+      receivable: 0,
+      received: 0,
+      difference: 0,
+      byMarketplace: [] as Array<{
+        marketplace: string;
+        orderCount: number;
+        netSales: number;
+      }>,
+      byStatus: [] as Array<{
+        status: string;
+        orderCount: number;
+        netSales: number;
+        difference: number;
+      }>,
+    };
+  }
+
+  private async aggregateSettlementTotals(
+    query: ListSettlementsDto,
+    sellerAliases: string[],
+  ) {
     const pipeline: PipelineStage[] = [
       {
         $match: {
@@ -318,6 +349,101 @@ export class SettlementRepository {
         difference: 0,
       }
     );
+  }
+
+  private async aggregateSettlementByMarketplace(
+    query: ListSettlementsDto,
+    sellerAliases: string[],
+  ) {
+    const scoped: ListSettlementsDto = {
+      ...query,
+      marketplace: undefined,
+      status: undefined,
+    };
+    const pipeline: PipelineStage[] = [
+      {
+        $match: {
+          ...buildSettlementMatch(scoped),
+          sellerId: { $in: sellerAliases },
+        },
+      },
+      ...settlementCalculationStages(),
+      ...(buildOrderDateMatch(scoped)
+        ? [{ $match: buildOrderDateMatch(scoped)! }]
+        : []),
+      {
+        $group: {
+          _id: { $toLower: { $ifNull: ['$marketplace', ''] } },
+          orderCount: { $sum: 1 },
+          netSales: { $sum: '$netSale' },
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          marketplace: '$_id',
+          orderCount: 1,
+          netSales: 1,
+        },
+      },
+      { $sort: { marketplace: 1 } },
+    ];
+    return this.model.aggregate(pipeline).allowDiskUse(true).exec();
+  }
+
+  private async aggregateSettlementByStatus(
+    query: ListSettlementsDto,
+    sellerAliases: string[],
+  ) {
+    const scoped: ListSettlementsDto = {
+      ...query,
+      status: undefined,
+    };
+    const pipeline: PipelineStage[] = [
+      {
+        $match: {
+          ...buildSettlementMatch(scoped),
+          sellerId: { $in: sellerAliases },
+        },
+      },
+      ...settlementCalculationStages(),
+      ...(buildOrderDateMatch(scoped)
+        ? [{ $match: buildOrderDateMatch(scoped)! }]
+        : []),
+      {
+        $group: {
+          _id: '$status',
+          orderCount: { $sum: 1 },
+          netSales: { $sum: '$netSale' },
+          difference: { $sum: '$difference' },
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          status: '$_id',
+          orderCount: 1,
+          netSales: 1,
+          difference: 1,
+        },
+      },
+    ];
+    return this.model.aggregate(pipeline).allowDiskUse(true).exec();
+  }
+
+  async summary(query: ListSettlementsDto, sellerAliases = [query.sellerId]) {
+    const empty = this.emptySettlementSummary();
+    const [totals, byMarketplace, byStatus] = await Promise.all([
+      this.aggregateSettlementTotals(query, sellerAliases),
+      this.aggregateSettlementByMarketplace(query, sellerAliases),
+      this.aggregateSettlementByStatus(query, sellerAliases),
+    ]);
+    return {
+      ...empty,
+      ...totals,
+      byMarketplace: Array.isArray(byMarketplace) ? byMarketplace : [],
+      byStatus: Array.isArray(byStatus) ? byStatus : [],
+    };
   }
 
   async findOrder(
@@ -406,10 +532,7 @@ export class SettlementRepository {
       .cursor({ batchSize: 1000 });
   }
 
-  async replaceUpload(
-    uploadId: string,
-    transactions: NormalizedTransaction[],
-  ) {
+  async replaceUpload(uploadId: string, transactions: NormalizedTransaction[]) {
     await this.model.deleteMany({ uploadId }).exec();
     if (!transactions.length) return { inserted: 0 };
 
@@ -418,7 +541,7 @@ export class SettlementRepository {
       deduped.set(txn.sourceId, { ...txn, uploadId });
     }
     const rows = [...deduped.values()];
-    const first = rows[0]!;
+    const first = rows[0];
 
     const conflictFilter = {
       sellerId: first.sellerId,

@@ -57,8 +57,12 @@ export class MarketplacesService implements OnModuleInit {
 
   async onModuleInit() {
     try {
-      await this.marketplaceModel.collection.dropIndex('sellerId_1_platformMarketplaceId_1');
-      this.logger.log('Dropped legacy marketplace unique index (seller + platform only)');
+      await this.marketplaceModel.collection.dropIndex(
+        'sellerId_1_platformMarketplaceId_1',
+      );
+      this.logger.log(
+        'Dropped legacy marketplace unique index (seller + platform only)',
+      );
     } catch {
       // Index may not exist on fresh databases.
     }
@@ -106,7 +110,8 @@ export class MarketplacesService implements OnModuleInit {
     if (existing) {
       throw new BadRequestException({
         success: false,
-        message: 'This marketplace is already connected to the selected GST profile',
+        message:
+          'This marketplace is already connected to the selected GST profile',
         errorCode: 'DUPLICATE_MARKETPLACE',
       });
     }
@@ -264,25 +269,52 @@ export class MarketplacesService implements OnModuleInit {
       throw new BadRequestException('Confirmation text must be DELETE.');
     }
 
-    const gst = await this.gstModel.findById(String(link.gstId ?? '')).lean().exec();
+    let gst: GstDocument | null = null;
+    const gstIdCandidate = String(link.gstId ?? '').trim();
+    if (Types.ObjectId.isValid(gstIdCandidate)) {
+      gst = await this.gstModel.findById(gstIdCandidate).lean().exec();
+    }
+    if (!gst && gstIdCandidate) {
+      const escapedGstId = gstIdCandidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      gst = await this.gstModel
+        .findOne({ gstNumber: { $regex: new RegExp(`^${escapedGstId}$`, 'i') } })
+        .lean()
+        .exec();
+    }
+    if (!gst && options.confirmedGstNumber) {
+      const confirmedUpper = String(options.confirmedGstNumber).trim().toUpperCase();
+      const escaped = confirmedUpper.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      gst = await this.gstModel
+        .findOne({ gstNumber: { $regex: new RegExp(`^${escaped}$`, 'i') } })
+        .lean()
+        .exec();
+    }
     if (!gst) {
       throw new NotFoundException('GST not found');
     }
     const confirmedGst = String(options.confirmedGstNumber ?? '')
       .trim()
       .toUpperCase();
-    if (confirmedGst !== String(gst.gstNumber ?? '').trim().toUpperCase()) {
+    const actualGst = String(gst.gstNumber ?? '')
+      .trim()
+      .toUpperCase();
+    if (confirmedGst !== actualGst) {
       throw new BadRequestException('Entered GST Number does not match.');
     }
 
-    const sellerAliases =
+    const resolvedAliases =
       options?.requesterRole === 'seller' && options.requesterId
         ? await resolveSellerIdAliases(
             this.sellerModel,
             this.userModel,
             options.requesterId,
           )
-        : [String(link.sellerId ?? '')];
+        : [];
+    const sellerAliases = Array.from(
+      new Set(
+        [...resolvedAliases, String(link.sellerId ?? '')].filter(Boolean),
+      ),
+    );
     const platform = await this.platformMarketplaceModel
       .findById(link.platformMarketplaceId)
       .lean()
@@ -291,13 +323,21 @@ export class MarketplacesService implements OnModuleInit {
       {
         linkId: String(link._id ?? ''),
         platformId: String(link.platformMarketplaceId ?? ''),
-        platformSlug: String(platform?.slug ?? '').trim().toLowerCase(),
-        platformName: String(platform?.name ?? '').trim().toLowerCase(),
+        platformSlug: String(platform?.slug ?? '')
+          .trim()
+          .toLowerCase(),
+        platformName: String(platform?.name ?? '')
+          .trim()
+          .toLowerCase(),
       },
     ];
     const marketplaceLabel =
-      String(platform?.slug ?? '').trim().toLowerCase() ||
-      String(platform?.name ?? '').trim().toLowerCase() ||
+      String(platform?.slug ?? '')
+        .trim()
+        .toLowerCase() ||
+      String(platform?.name ?? '')
+        .trim()
+        .toLowerCase() ||
       '';
 
     try {
@@ -369,7 +409,9 @@ export class MarketplacesService implements OnModuleInit {
       );
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : 'Unknown cascade cleanup error';
+        error instanceof Error
+          ? error.message
+          : 'Unknown cascade cleanup error';
       this.logger.error(
         `Marketplace cascade cleanup failed for ${input.marketplaceLabel || input.gstNumber}: ${message}`,
       );

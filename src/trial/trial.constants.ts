@@ -18,7 +18,9 @@ export const TRIAL_STATUSES = [
 export type TrialStatus = (typeof TRIAL_STATUSES)[number];
 
 export function computeTrialPayable(basePrice = TRIAL_PRICE) {
-  const gstAmount = Number(((basePrice * TRIAL_GST_PERCENTAGE) / 100).toFixed(2));
+  const gstAmount = Number(
+    ((basePrice * TRIAL_GST_PERCENTAGE) / 100).toFixed(2),
+  );
   const totalPayable = Number((basePrice + gstAmount).toFixed(2));
   return {
     basePrice,
@@ -41,7 +43,11 @@ export function resolveTrialRegistrationDate(input: {
   accountCreatedAt?: Date | string;
   createdAt?: Date | string;
 }): Date {
-  for (const value of [input.trialStart, input.accountCreatedAt, input.createdAt]) {
+  for (const value of [
+    input.trialStart,
+    input.accountCreatedAt,
+    input.createdAt,
+  ]) {
     if (!value) continue;
     const parsed = new Date(value);
     if (!Number.isNaN(parsed.getTime())) {
@@ -120,7 +126,9 @@ export function getTrialCoveredMonthsForPurchase(seller: {
 }
 
 /** @deprecated Use getTrialAllowedReportMonthsForSeller — kept for compatibility. */
-export function getTrialAllowedReportMonths(reference: Date = new Date()): string[] {
+export function getTrialAllowedReportMonths(
+  reference: Date = new Date(),
+): string[] {
   return getTrialAllowedReportMonthsFromRegistration(reference);
 }
 

@@ -31,7 +31,9 @@ export function isAmazonReturnCategory(
   );
 }
 
-export function isAmazonSaleCategory(category: AmazonTransactionCategory): boolean {
+export function isAmazonSaleCategory(
+  category: AmazonTransactionCategory,
+): boolean {
   return category === 'sale' || category === 'shipment' || category === 'other';
 }
 
@@ -84,7 +86,9 @@ export function isAmazonCountableReturnTransaction(
   if (isAmazonCancellationTransaction(documentType, voucherType)) {
     return false;
   }
-  if (isAmazonB2bCancelRow(mtrSource, documentType, voucherType, customerGstNo)) {
+  if (
+    isAmazonB2bCancelRow(mtrSource, documentType, voucherType, customerGstNo)
+  ) {
     return false;
   }
   const raw = `${documentType ?? ''} ${voucherType ?? ''}`.trim().toUpperCase();
@@ -116,9 +120,7 @@ export function classifyAmazonImportRowForSummary(row: {
   amazonReturnSubType?: string | null;
 }): AmazonSummaryBucket {
   if (isAmazonCancellationTransaction(row.documentType, row.voucherType)) {
-    if (
-      isAmazonB2bMtrRow(row.amazonMtrSource, row.customerGstNo)
-    ) {
+    if (isAmazonB2bMtrRow(row.amazonMtrSource, row.customerGstNo)) {
       return 'b2b_cancel';
     }
     return 'cancel';

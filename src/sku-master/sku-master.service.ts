@@ -4,6 +4,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -23,6 +24,7 @@ import { parseObjectId } from '../common/mongo-id.util';
 import { resolveGstDisplayName } from '../gsts/utils/gst-display.util';
 import { ListSkuMasterQueryDto } from './dto/list-sku-master.query.dto';
 import { UpsertSkuMasterDto } from './dto/upsert-sku-master.dto';
+import { parseSkuRate } from './sku-rate.util';
 import {
   SkuMasterMapping,
   SkuMasterMappingDocument,
@@ -68,8 +70,16 @@ export type GstScope = {
   sellerScope: SellerScope;
 };
 
+type MappingListContext = {
+  sellerScope: SellerScope;
+  gst: GstScope['gst'] | null;
+  gstIds: string[];
+};
+
+type MappingFilter = Record<string, unknown>;
+
 @Injectable()
-export class SkuMasterService {
+export class SkuMasterService implements OnModuleInit {
   private readonly logger = new Logger(SkuMasterService.name);
   private readonly marketplaceSlugCache = new Map<string, string>();
 
@@ -90,6 +100,10 @@ export class SkuMasterService {
     private readonly platformMarketplaceModel: Model<PlatformMarketplaceDocument>,
   ) {}
 
+  async onModuleInit() {
+    await this.dropLegacyMappingIndexes();
+  }
+
   async validateGstForSeller(
     gstId: string,
     actor: RequestActor,
@@ -108,38 +122,150 @@ export class SkuMasterService {
     };
   }
 
+  /** GST document ids the actor can access (for All-GST SKU sync). */
+  async listAccessibleGstIds(actor: RequestActor): Promise<string[]> {
+    const sellerScope = await this.resolveSellerScope(actor);
+    const gsts = await this.gstModel
+      .find({ sellerId: { $in: sellerScope.aliases } })
+      .select('_id')
+      .lean()
+      .exec();
+    return gsts.map((gst) => String(gst._id));
+  }
+
   async list(query: ListSkuMasterQueryDto, actor: RequestActor) {
-    const { filtered, allItems, gst } = await this.getFilteredItems(
-      query,
-      actor,
-    );
-
-    const summaryTotal = allItems.length;
-    const mappedCount = allItems.filter((item) => item.status === 'MAPPED').length;
-    const unmappedCount = summaryTotal - mappedCount;
-
     const page = Math.max(1, Number(query.page ?? 1));
     const limit = Math.min(200, Math.max(1, Number(query.limit ?? 25)));
     const skip = (page - 1) * limit;
-    const pageItems = filtered.slice(skip, skip + limit);
+
+    const context = await this.resolveListContext(query.gstId, actor);
+    if (!context) {
+      return {
+        success: true,
+        data: [],
+        summary: {
+          totalMarketplaceSkus: 0,
+          mappedSkus: 0,
+          pendingMapping: 0,
+          byMarketplace: [],
+        },
+        pagination: { total: 0, page, limit },
+      };
+    }
+
+    const tableFilter = this.buildMappingFilter(context, {
+      marketplace: query.marketplace,
+      status: query.status,
+      search: query.search,
+    });
+    // Marketplace cards stay GST-scoped (all marketplaces). Mapped/Pending/Total
+    // SKUs follow the same marketplace selection as the table.
+    const marketplaceCardsFilter = this.buildMappingFilter(context, {});
+    const statusSummaryFilter = this.buildMappingFilter(context, {
+      marketplace: query.marketplace,
+    });
+
+    const [pageRows, filteredTotal, summaryCounts, marketplaceCounts] =
+      await Promise.all([
+        this.mappingModel
+          .find(tableFilter)
+          .sort({ marketplace: 1, marketplaceSku: 1 })
+          .skip(skip)
+          .limit(limit)
+          .lean()
+          .exec(),
+        this.mappingModel.countDocuments(tableFilter).exec(),
+        this.mappingModel
+          .aggregate<{
+            _id: string;
+            count: number;
+          }>([
+            { $match: statusSummaryFilter },
+            {
+              $group: {
+                _id: {
+                  $cond: [
+                    {
+                      $and: [
+                        {
+                          $gt: [
+                            {
+                              $strLenCP: {
+                                $trim: {
+                                  input: { $ifNull: ['$masterSku', ''] },
+                                },
+                              },
+                            },
+                            0,
+                          ],
+                        },
+                        {
+                          $in: [
+                            { $type: '$rate' },
+                            ['double', 'int', 'long', 'decimal'],
+                          ],
+                        },
+                      ],
+                    },
+                    'MAPPED',
+                    'UNMAPPED',
+                  ],
+                },
+                count: { $sum: 1 },
+              },
+            },
+          ])
+          .exec(),
+        this.mappingModel
+          .aggregate<{
+            _id: string;
+            count: number;
+          }>([
+            { $match: marketplaceCardsFilter },
+            { $group: { _id: '$marketplace', count: { $sum: 1 } } },
+            { $sort: { count: -1, _id: 1 } },
+          ])
+          .exec(),
+      ]);
+
+    const mappedSkus =
+      summaryCounts.find((row) => row._id === 'MAPPED')?.count ?? 0;
+    const unmappedSkus =
+      summaryCounts.find((row) => row._id === 'UNMAPPED')?.count ?? 0;
+    const totalMarketplaceSkus = mappedSkus + unmappedSkus;
+
+    const gstNameById = await this.buildGstNameMap(
+      context,
+      pageRows.map((row) => String(row.gstId ?? '')),
+    );
 
     return {
       success: true,
-      data: pageItems,
+      data: pageRows.map((row) =>
+        this.mappingToListItem(row, gstNameById.get(String(row.gstId ?? ''))),
+      ),
       summary: {
-        totalMarketplaceSkus: summaryTotal,
-        mappedSkus: mappedCount,
-        pendingMapping: unmappedCount,
+        totalMarketplaceSkus,
+        mappedSkus,
+        pendingMapping: unmappedSkus,
+        byMarketplace: marketplaceCounts
+          .map((row) => ({
+            marketplace: this.normalizeMarketplace(String(row._id ?? '')),
+            count: Number(row.count) || 0,
+          }))
+          .filter((row) => row.marketplace && row.count > 0),
       },
       pagination: {
-        total: filtered.length,
+        total: filteredTotal,
         page,
         limit,
       },
-      gst: gst
+      gst: context.gst
         ? {
-            id: String(gst._id),
-            gstNumber: String(gst.gstNumber ?? '').trim().toUpperCase(),
+            id: String(context.gst._id),
+            gstNumber: String(context.gst.gstNumber ?? '')
+              .trim()
+              .toUpperCase(),
           }
         : undefined,
     };
@@ -154,100 +280,34 @@ export class SkuMasterService {
     },
     actor: RequestActor,
   ) {
-    const gstId = String(query.gstId ?? '').trim();
-    if (!gstId) {
-      return this.getFilteredItemsForAllGsts(query, actor);
+    const context = await this.resolveListContext(query.gstId, actor);
+    if (!context) {
+      return { allItems: [], filtered: [], gst: null };
     }
 
-    const { gst, sellerScope } = await this.validateGstForSeller(
-      gstId,
-      actor,
-    );
-    const resolvedGstId = String(gst._id);
-    const gstin = String(gst.gstNumber ?? '').trim().toUpperCase();
-
-    const allItems = await this.buildSkuListFromImports(
-      sellerScope,
-      resolvedGstId,
-      gstin,
-      this.resolveBusinessName(gst),
-    );
-
-    const marketplace = String(query.marketplace ?? 'ALL').trim().toLowerCase();
-    const status = String(query.status ?? 'ALL').trim().toUpperCase();
-    const search = String(query.search ?? '').trim().toLowerCase();
-
-    let filtered = allItems;
-    if (marketplace && marketplace !== 'all') {
-      filtered = filtered.filter((item) => item.marketplace === marketplace);
-    }
-    if (status === 'MAPPED') {
-      filtered = filtered.filter((item) => item.status === 'MAPPED');
-    } else if (status === 'UNMAPPED') {
-      filtered = filtered.filter((item) => item.status === 'UNMAPPED');
-    }
-    if (search) {
-      filtered = filtered.filter(
-        (item) =>
-          item.marketplaceSku.toLowerCase().includes(search) ||
-          String(item.masterSku ?? '').toLowerCase().includes(search),
-      );
-    }
-
-    return { allItems, filtered, gst };
-  }
-
-  private async getFilteredItemsForAllGsts(
-    query: {
-      marketplace?: string;
-      status?: string;
-      search?: string;
-    },
-    actor: RequestActor,
-  ) {
-    const sellerScope = await this.resolveSellerScope(actor);
-    const gsts = await this.gstModel
-      .find({ sellerId: { $in: sellerScope.aliases } })
+    const tableFilter = this.buildMappingFilter(context, {
+      marketplace: query.marketplace,
+      status: query.status,
+      search: query.search,
+    });
+    const rows = await this.mappingModel
+      .find(tableFilter)
+      .select(
+        'gstId gstin marketplace marketplaceSku masterSku rate productName category brand status createdAt updatedAt',
+      )
+      .sort({ marketplace: 1, marketplaceSku: 1 })
       .lean()
       .exec();
 
-    let allItems: SkuMasterListItem[] = [];
-    for (const gst of gsts) {
-      const items = await this.buildSkuListFromImports(
-        sellerScope,
-        String(gst._id),
-        String(gst.gstNumber ?? '').trim().toUpperCase(),
-        this.resolveBusinessName(gst),
-      );
-      allItems = allItems.concat(items);
-    }
+    const gstNameById = await this.buildGstNameMap(
+      context,
+      rows.map((row) => String(row.gstId ?? '')),
+    );
+    const items = rows.map((row) =>
+      this.mappingToListItem(row, gstNameById.get(String(row.gstId ?? ''))),
+    );
 
-    const marketplace = String(query.marketplace ?? 'ALL').trim().toLowerCase();
-    const status = String(query.status ?? 'ALL').trim().toUpperCase();
-    const search = String(query.search ?? '').trim().toLowerCase();
-
-    let filtered = allItems;
-    if (marketplace && marketplace !== 'all') {
-      filtered = filtered.filter((item) => item.marketplace === marketplace);
-    }
-    if (status === 'MAPPED') {
-      filtered = filtered.filter((item) => item.status === 'MAPPED');
-    } else if (status === 'UNMAPPED') {
-      filtered = filtered.filter((item) => item.status === 'UNMAPPED');
-    }
-    if (search) {
-      filtered = filtered.filter(
-        (item) =>
-          item.marketplaceSku.toLowerCase().includes(search) ||
-          String(item.masterSku ?? '').toLowerCase().includes(search),
-      );
-    }
-
-    return {
-      allItems,
-      filtered,
-      gst: gsts[0] ?? null,
-    };
+    return { allItems: items, filtered: items, gst: context.gst };
   }
 
   async upsertMapping(dto: UpsertSkuMasterDto, actor: RequestActor) {
@@ -255,9 +315,10 @@ export class SkuMasterService {
       dto.gstId,
       actor,
     );
-    const rate = this.normalizeRate(dto.rate);
-    if (rate === null) {
-      throw new BadRequestException('Rate must be a number between 0 and 100');
+    const hasRate = dto.rate !== undefined && dto.rate !== null;
+    const rate = hasRate ? this.normalizeRate(dto.rate) : null;
+    if (hasRate && rate === null) {
+      throw new BadRequestException('Rate must be a number 0 or greater');
     }
     const doc = await this.saveMasterSku({
       sellerId: sellerScope.canonicalSellerId,
@@ -268,6 +329,7 @@ export class SkuMasterService {
       marketplaceSku: dto.marketplaceSku.trim(),
       masterSku: dto.masterSku.trim(),
       rate,
+      category: this.normalizeCategory(dto.category),
       updatedBy: this.actorId(actor),
     });
 
@@ -283,45 +345,216 @@ export class SkuMasterService {
       marketplace: string;
       marketplaceSku: string;
       masterSku: string;
-      rate: number;
+      rate?: number | null;
+      category?: string | null;
     }>,
     actor: RequestActor,
   ) {
-    const updated: SkuMasterListItem[] = [];
-
-    for (const item of items) {
-      const { gst, sellerScope } = await this.validateGstForSeller(
-        item.gstId,
-        actor,
-      );
-      const rate = this.normalizeRate(item.rate);
-      if (rate === null) {
-        throw new BadRequestException(
-          `Rate must be a number between 0 and 100 for SKU ${item.marketplaceSku}`,
-        );
-      }
-      const doc = await this.saveMasterSku({
-        sellerId: sellerScope.canonicalSellerId,
-        gstId: String(gst._id),
-        gstin: String(gst.gstNumber).trim().toUpperCase(),
-        businessName: this.resolveBusinessName(gst),
-        marketplace: this.normalizeMarketplace(item.marketplace),
-        marketplaceSku: item.marketplaceSku.trim(),
-        masterSku: item.masterSku.trim(),
-        rate,
-        updatedBy: this.actorId(actor),
-      });
-      updated.push(doc);
-    }
-
-    if (!updated.length) {
+    if (!Array.isArray(items) || items.length === 0) {
       throw new NotFoundException('No SKU mappings were updated');
     }
 
+    const sellerScope = await this.resolveSellerScope(actor);
+    const updatedBy = this.actorId(actor);
+    const uniqueGstIds = [
+      ...new Set(
+        items.map((item) => String(item.gstId ?? '').trim()).filter(Boolean),
+      ),
+    ];
+    if (!uniqueGstIds.length) {
+      throw new BadRequestException('GST profile is required');
+    }
+
+    const gstDocs = await this.gstModel
+      .find({
+        _id: { $in: uniqueGstIds.map((id) => parseObjectId(id, 'gst id')) },
+        sellerId: { $in: sellerScope.aliases },
+      })
+      .lean()
+      .exec();
+    const gstById = new Map(
+      gstDocs.map((gst) => [String(gst._id), gst as GstScope['gst']]),
+    );
+
+    type PreparedRow = {
+      gstId: string;
+      gstin: string;
+      businessName?: string;
+      marketplace: string;
+      marketplaceSku: string;
+      masterSku: string;
+      rate: number | null;
+      hasRate: boolean;
+      category: string | null;
+      hasCategory: boolean;
+    };
+
+    const prepared: PreparedRow[] = [];
+    for (const item of items) {
+      const gstId = String(item.gstId ?? '').trim();
+      const gst = gstById.get(gstId);
+      if (!gst) {
+        throw new NotFoundException(
+          `GST profile not found for SKU ${item.marketplaceSku}`,
+        );
+      }
+      const hasRate = item.rate !== undefined && item.rate !== null;
+      const rate = hasRate ? this.normalizeRate(item.rate) : null;
+      if (hasRate && rate === null) {
+        throw new BadRequestException(
+          `Rate must be a number 0 or greater for SKU ${item.marketplaceSku}`,
+        );
+      }
+      const marketplace = this.normalizeMarketplace(item.marketplace);
+      const marketplaceSku = String(item.marketplaceSku ?? '').trim();
+      const masterSku = String(item.masterSku ?? '').trim();
+      if (!marketplace || !marketplaceSku || !masterSku) {
+        continue;
+      }
+      const hasCategory = item.category !== undefined;
+      prepared.push({
+        gstId,
+        gstin: String(gst.gstNumber).trim().toUpperCase(),
+        businessName: this.resolveBusinessName(gst),
+        marketplace,
+        marketplaceSku,
+        masterSku,
+        rate,
+        hasRate,
+        category: hasCategory
+          ? (this.normalizeCategory(item.category) ?? null)
+          : null,
+        hasCategory,
+      });
+    }
+
+    if (!prepared.length) {
+      throw new NotFoundException('No SKU mappings were updated');
+    }
+
+    const existingGroups = new Map<
+      string,
+      { gstId: string; marketplace: string; skus: string[] }
+    >();
+    for (const row of prepared) {
+      const groupKey = `${row.gstId}:${row.marketplace}`;
+      const group = existingGroups.get(groupKey) ?? {
+        gstId: row.gstId,
+        marketplace: row.marketplace,
+        skus: [],
+      };
+      group.skus.push(row.marketplaceSku);
+      existingGroups.set(groupKey, group);
+    }
+
+    const needsExisting = prepared.some(
+      (row) => !row.hasRate || !row.hasCategory,
+    );
+    const existing = needsExisting
+      ? await this.mappingModel
+          .find({
+            sellerId: sellerScope.canonicalSellerId,
+            $or: [...existingGroups.values()].map((group) => ({
+              gstId: group.gstId,
+              marketplace: group.marketplace,
+              marketplaceSku: { $in: group.skus },
+            })),
+          })
+          .select('gstId marketplace marketplaceSku rate category')
+          .lean()
+          .exec()
+      : [];
+    const existingByKey = new Map(
+      existing.map((row) => [
+        `${row.gstId}:${row.marketplace}:${row.marketplaceSku}`,
+        row,
+      ]),
+    );
+
+    const now = new Date();
+    const ops = prepared.map((row) => {
+      const previous = existingByKey.get(
+        `${row.gstId}:${row.marketplace}:${row.marketplaceSku}`,
+      );
+      const nextRate = row.hasRate
+        ? row.rate
+        : previous?.rate === null || previous?.rate === undefined
+          ? null
+          : Number(previous.rate);
+      const status = this.resolveMappingStatus(row.masterSku, nextRate);
+      const setFields: Record<string, unknown> = {
+        sellerId: sellerScope.canonicalSellerId,
+        gstId: row.gstId,
+        gstin: row.gstin,
+        marketplace: row.marketplace,
+        marketplaceSku: row.marketplaceSku,
+        masterSku: row.masterSku,
+        status,
+        updatedBy,
+        updatedAt: now,
+      };
+      if (row.hasRate) {
+        setFields.rate = row.rate;
+      }
+      if (row.hasCategory) {
+        setFields.category = row.category;
+      }
+      return {
+        updateOne: {
+          filter: {
+            sellerId: sellerScope.canonicalSellerId,
+            gstId: row.gstId,
+            marketplace: row.marketplace,
+            marketplaceSku: row.marketplaceSku,
+          },
+          update: {
+            $set: setFields,
+            $setOnInsert: {
+              createdBy: updatedBy,
+            },
+          },
+          upsert: true,
+          timestamps: false,
+        },
+      };
+    });
+
+    await this.mappingModel.bulkWrite(ops, { ordered: false });
+
+    const data: SkuMasterListItem[] = prepared.map((row) => {
+      const previous = existingByKey.get(
+        `${row.gstId}:${row.marketplace}:${row.marketplaceSku}`,
+      );
+      const nextRate = row.hasRate
+        ? row.rate
+        : previous?.rate === null || previous?.rate === undefined
+          ? null
+          : Number(previous.rate);
+      const status = this.resolveMappingStatus(row.masterSku, nextRate);
+      const nextCategory = row.hasCategory
+        ? row.category
+        : previous?.category
+          ? String(previous.category).trim()
+          : undefined;
+      return {
+        id: `${row.gstId}:${row.marketplace}:${row.marketplaceSku}`,
+        rowKey: `${row.marketplace}:${row.marketplaceSku}`,
+        gstId: row.gstId,
+        gstin: row.gstin,
+        businessName: row.businessName,
+        marketplace: row.marketplace,
+        marketplaceSku: row.marketplaceSku,
+        masterSku: row.masterSku,
+        rate: Number.isFinite(nextRate as number) ? (nextRate as number) : null,
+        category: nextCategory || undefined,
+        status,
+      };
+    });
+
     return {
       success: true,
-      data: updated,
-      updatedCount: updated.length,
+      data,
+      updatedCount: data.length,
     };
   }
 
@@ -341,66 +574,82 @@ export class SkuMasterService {
     const sellerScope = await this.resolveSellerScopeById(params.sellerId);
     const marketplace = this.normalizeMarketplace(params.marketplace);
     const gstId = String(params.gstId ?? '').trim();
-    const gstin = String(params.gstin ?? '').trim().toUpperCase();
+    const gstin = String(params.gstin ?? '')
+      .trim()
+      .toUpperCase();
     if (!marketplace || !params.skus.length || !gstId || !gstin) {
       return { inserted: 0, skipped: 0 };
     }
 
-    let inserted = 0;
-    let skipped = 0;
     const canonicalSellerId = sellerScope.canonicalSellerId;
+    const ops: Array<{
+      updateOne: {
+        filter: Record<string, unknown>;
+        update: Record<string, unknown>;
+        upsert: true;
+      };
+    }> = [];
 
     for (const entry of params.skus) {
       const marketplaceSku = String(entry.marketplaceSku ?? '').trim();
       if (!marketplaceSku) continue;
 
-      try {
-        const result = await this.mappingModel.updateOne(
-          {
+      // Enrichment-only $set. Do NOT put gstin (or other $setOnInsert keys) in
+      // $set — Mongo rejects path conflicts on upsert (code 40).
+      const setFields: Record<string, unknown> = {};
+      if (entry.productName) setFields.productName = entry.productName;
+      if (entry.brand) setFields.brand = entry.brand;
+      if (entry.category) setFields.category = entry.category;
+
+      const update: Record<string, unknown> = {
+        $setOnInsert: {
+          sellerId: canonicalSellerId,
+          gstId,
+          gstin,
+          marketplace,
+          marketplaceSku,
+          masterSku: null,
+          status: 'UNMAPPED',
+          createdBy: params.createdBy,
+        },
+      };
+      if (Object.keys(setFields).length) {
+        update.$set = setFields;
+      }
+
+      ops.push({
+        updateOne: {
+          filter: {
             sellerId: canonicalSellerId,
             gstId,
             marketplace,
             marketplaceSku,
           },
-          {
-            $setOnInsert: {
-              sellerId: canonicalSellerId,
-              gstId,
-              gstin,
-              marketplace,
-              marketplaceSku,
-              masterSku: null,
-              status: 'UNMAPPED',
-              createdBy: params.createdBy,
-            },
-            $set: {
-              gstin,
-              ...(entry.productName ? { productName: entry.productName } : {}),
-              ...(entry.category ? { category: entry.category } : {}),
-              ...(entry.brand ? { brand: entry.brand } : {}),
-            },
-          },
-          { upsert: true },
-        );
-
-        if (result.upsertedCount && result.upsertedCount > 0) {
-          inserted += 1;
-        } else {
-          skipped += 1;
-        }
-      } catch (err: unknown) {
-        const message =
-          err && typeof err === 'object' && 'message' in err
-            ? String((err as { message?: unknown }).message)
-            : String(err);
-        this.logger.warn(
-          `SKU upsert skipped for ${marketplaceSku}: ${message}`,
-        );
-        skipped += 1;
-      }
+          update,
+          upsert: true,
+        },
+      });
     }
 
-    return { inserted, skipped };
+    if (!ops.length) return { inserted: 0, skipped: 0 };
+
+    try {
+      const result = await this.mappingModel.bulkWrite(ops, { ordered: false });
+      const inserted = Number(result.upsertedCount ?? 0);
+      return {
+        inserted,
+        skipped: Math.max(0, ops.length - inserted),
+      };
+    } catch (err: unknown) {
+      const message =
+        err && typeof err === 'object' && 'message' in err
+          ? String((err as { message?: unknown }).message)
+          : String(err);
+      this.logger.warn(
+        `SKU bulk upsert failed for marketplace=${marketplace}: ${message}`,
+      );
+      return { inserted: 0, skipped: ops.length };
+    }
   }
 
   async resolveSellerScopeById(identifier: string): Promise<SellerScope> {
@@ -426,11 +675,17 @@ export class SkuMasterService {
     businessName?: string,
   ): Promise<SkuMasterListItem[]> {
     const gstinCandidates = Array.from(
-      new Set([
-        String(gstin ?? '').trim(),
-        String(gstin ?? '').trim().toUpperCase(),
-        String(gstin ?? '').trim().toLowerCase(),
-      ].filter(Boolean)),
+      new Set(
+        [
+          String(gstin ?? '').trim(),
+          String(gstin ?? '')
+            .trim()
+            .toUpperCase(),
+          String(gstin ?? '')
+            .trim()
+            .toLowerCase(),
+        ].filter(Boolean),
+      ),
     );
 
     const skuGroups = await this.rowModel
@@ -488,10 +743,7 @@ export class SkuMasterService {
       .exec();
 
     const mappingByKey = new Map(
-      mappings.map((row) => [
-        `${row.marketplace}:${row.marketplaceSku}`,
-        row,
-      ]),
+      mappings.map((row) => [`${row.marketplace}:${row.marketplaceSku}`, row]),
     );
 
     const items: SkuMasterListItem[] = [];
@@ -523,7 +775,7 @@ export class SkuMasterService {
         masterSku,
         rate: Number.isFinite(rate as number) ? (rate as number) : null,
         productName: row.productName ? String(row.productName) : undefined,
-        category: mapping?.category,
+        category: this.toOptionalText(mapping?.category),
         brand: mapping?.brand,
         status,
       });
@@ -546,21 +798,59 @@ export class SkuMasterService {
     marketplace: string;
     marketplaceSku: string;
     masterSku: string;
-    rate: number;
+    rate?: number | null;
+    category?: string | null;
     updatedBy?: string;
   }): Promise<SkuMasterListItem> {
     const marketplace = this.normalizeMarketplace(params.marketplace);
     const marketplaceSku = params.marketplaceSku.trim();
     const masterSku = params.masterSku.trim();
-    const rate = this.normalizeRate(params.rate);
+    const rate =
+      params.rate === undefined || params.rate === null
+        ? null
+        : this.normalizeRate(params.rate);
     if (!marketplace || !marketplaceSku || !masterSku) {
       throw new NotFoundException('Invalid SKU mapping payload');
     }
-    if (rate === null) {
-      throw new BadRequestException('Rate is required to complete mapping');
+    if (params.rate !== undefined && params.rate !== null && rate === null) {
+      throw new BadRequestException('Rate must be a number 0 or greater');
     }
 
+    const existing = await this.mappingModel
+      .findOne({
+        sellerId: params.sellerId,
+        gstId: params.gstId,
+        marketplace,
+        marketplaceSku,
+      })
+      .lean()
+      .exec();
+
+    const nextRate =
+      rate ??
+      (existing?.rate === null || existing?.rate === undefined
+        ? null
+        : Number(existing.rate));
+    const status = this.resolveMappingStatus(masterSku, nextRate);
+
     const rowKey = `${marketplace}:${marketplaceSku}`;
+    const setFields: Record<string, unknown> = {
+      sellerId: params.sellerId,
+      gstId: params.gstId,
+      gstin: params.gstin,
+      marketplace,
+      marketplaceSku,
+      masterSku,
+      status,
+      updatedBy: params.updatedBy,
+    };
+    if (rate !== null) {
+      setFields.rate = rate;
+    }
+    if (params.category !== undefined) {
+      setFields.category = params.category;
+    }
+
     const doc = await this.mappingModel
       .findOneAndUpdate(
         {
@@ -570,22 +860,19 @@ export class SkuMasterService {
           marketplaceSku,
         },
         {
-          $set: {
-            sellerId: params.sellerId,
-            gstId: params.gstId,
-            gstin: params.gstin,
-            marketplace,
-            marketplaceSku,
-            masterSku,
-            rate,
-            status: 'MAPPED',
-            updatedBy: params.updatedBy,
-          },
+          $set: setFields,
           $setOnInsert: {
             createdBy: params.updatedBy,
           },
         },
-        { upsert: true, new: true, lean: true },
+        {
+          upsert: true,
+          new: true,
+          lean: true,
+          // Prevent schema defaults from also being written to $setOnInsert
+          // (Mongo conflict → HTTP 500 on masterSku/rate/status).
+          setDefaultsOnInsert: false,
+        },
       )
       .exec();
 
@@ -604,11 +891,14 @@ export class SkuMasterService {
       marketplace,
       marketplaceSku,
       masterSku: saved.masterSku ?? masterSku,
-      rate: saved.rate ?? rate,
+      rate:
+        saved.rate === null || saved.rate === undefined
+          ? null
+          : Number(saved.rate),
       productName: saved.productName,
-      category: saved.category,
+      category: this.toOptionalText(saved.category),
       brand: saved.brand,
-      status: 'MAPPED',
+      status,
     };
   }
 
@@ -647,13 +937,178 @@ export class SkuMasterService {
       .findById(marketplace.platformMarketplaceId)
       .lean()
       .exec();
-    const slug = String(platform?.slug ?? '').trim().toLowerCase();
+    const slug = String(platform?.slug ?? '')
+      .trim()
+      .toLowerCase();
     if (slug) this.marketplaceSlugCache.set(trimmed, slug);
     return slug;
   }
 
   private resolveBusinessName(gst: GstScope['gst']) {
     return resolveGstDisplayName(gst) || undefined;
+  }
+
+  private async resolveListContext(
+    gstId: string | undefined,
+    actor: RequestActor,
+  ): Promise<MappingListContext | null> {
+    const requestedGstId = String(gstId ?? '').trim();
+    if (requestedGstId) {
+      const { gst, sellerScope } = await this.validateGstForSeller(
+        requestedGstId,
+        actor,
+      );
+      return {
+        sellerScope,
+        gst,
+        gstIds: [String(gst._id)],
+      };
+    }
+
+    const sellerScope = await this.resolveSellerScope(actor);
+    const gsts = await this.gstModel
+      .find({ sellerId: { $in: sellerScope.aliases } })
+      .select('_id sellerId gstNumber businessName tradeName')
+      .lean()
+      .exec();
+    if (!gsts.length) return null;
+    return {
+      sellerScope,
+      gst: gsts[0] as GstScope['gst'],
+      gstIds: gsts.map((gst) => String(gst._id)),
+    };
+  }
+
+  private buildMappingFilter(
+    context: MappingListContext,
+    query: {
+      marketplace?: string;
+      status?: string;
+      search?: string;
+    },
+  ): MappingFilter {
+    const clauses: MappingFilter[] = [
+      { sellerId: { $in: context.sellerScope.aliases } },
+    ];
+    if (context.gstIds.length === 1) {
+      clauses.push({ gstId: context.gstIds[0] });
+    } else if (context.gstIds.length > 1) {
+      clauses.push({ gstId: { $in: context.gstIds } });
+    }
+
+    const marketplace = String(query.marketplace ?? 'ALL')
+      .trim()
+      .toLowerCase();
+    if (marketplace && marketplace !== 'all') {
+      clauses.push({ marketplace });
+    }
+
+    const status = String(query.status ?? 'ALL')
+      .trim()
+      .toUpperCase();
+    // Same rule as resolveMappingStatus: MAPPED only when Master SKU + Rate exist.
+    if (status === 'MAPPED') {
+      clauses.push({
+        masterSku: { $nin: [null, ''] },
+        rate: { $type: 'number' },
+      });
+    } else if (status === 'UNMAPPED') {
+      clauses.push({
+        $nor: [
+          {
+            masterSku: { $nin: [null, ''] },
+            rate: { $type: 'number' },
+          },
+        ],
+      });
+    }
+
+    const search = String(query.search ?? '').trim();
+    if (search) {
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      clauses.push({
+        $or: [
+          { marketplaceSku: { $regex: escaped, $options: 'i' } },
+          { masterSku: { $regex: escaped, $options: 'i' } },
+          { category: { $regex: escaped, $options: 'i' } },
+        ],
+      });
+    }
+
+    return clauses.length === 1 ? clauses[0] : { $and: clauses };
+  }
+
+  private async buildGstNameMap(context: MappingListContext, gstIds: string[]) {
+    const map = new Map<string, string | undefined>();
+    if (context.gst && context.gstIds.length === 1) {
+      map.set(String(context.gst._id), this.resolveBusinessName(context.gst));
+      return map;
+    }
+    const uniqueIds = [...new Set(gstIds.filter(Boolean))];
+    if (!uniqueIds.length) return map;
+    const gsts = await this.gstModel
+      .find({
+        _id: { $in: uniqueIds.map((id) => parseObjectId(id, 'gst id')) },
+      })
+      .select('_id gstNumber businessName tradeName')
+      .lean()
+      .exec();
+    for (const gst of gsts) {
+      map.set(
+        String(gst._id),
+        this.resolveBusinessName(gst as GstScope['gst']),
+      );
+    }
+    return map;
+  }
+
+  private mappingToListItem(
+    row: {
+      _id?: Types.ObjectId | string;
+      gstId?: string;
+      gstin?: string;
+      marketplace?: string;
+      marketplaceSku?: string;
+      masterSku?: string | null;
+      rate?: number | null;
+      productName?: string;
+      category?: string | null;
+      brand?: string;
+      status?: 'MAPPED' | 'UNMAPPED';
+      createdAt?: Date;
+      updatedAt?: Date;
+    },
+    businessName?: string,
+  ): SkuMasterListItem {
+    const marketplace = this.normalizeMarketplace(
+      String(row.marketplace ?? ''),
+    );
+    const marketplaceSku = String(row.marketplaceSku ?? '').trim();
+    const masterSku = row.masterSku ? String(row.masterSku).trim() : null;
+    const rate =
+      row.rate === null || row.rate === undefined ? null : Number(row.rate);
+    const gstId = String(row.gstId ?? '');
+    // Authoritative status from masterSku + rate (same rule as save/sync).
+    const status = this.resolveMappingStatus(masterSku, rate);
+    return {
+      id: row._id ? String(row._id) : `${gstId}:${marketplace}:${marketplaceSku}`,
+      rowKey: `${gstId}:${marketplace}:${marketplaceSku}`,
+      gstId,
+      gstin: String(row.gstin ?? '')
+        .trim()
+        .toUpperCase(),
+      businessName,
+      marketplace,
+      marketplaceSku,
+      masterSku,
+      rate: Number.isFinite(rate as number) ? (rate as number) : null,
+      productName: row.productName,
+      category: this.toOptionalText(row.category),
+      brand: row.brand,
+      status,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
   }
 
   private resolveMappingStatus(
@@ -667,11 +1122,20 @@ export class SkuMasterService {
   }
 
   private normalizeRate(value: unknown): number | null {
-    const rate = Number(value);
-    if (!Number.isFinite(rate) || rate < 0 || rate > 100) {
-      return null;
-    }
-    return Math.round(rate * 100) / 100;
+    return parseSkuRate(value);
+  }
+
+  private normalizeCategory(value: unknown): string | null | undefined {
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    const text = String(value).trim();
+    if (!text) return null;
+    return text.slice(0, 120);
+  }
+
+  private toOptionalText(value: string | null | undefined): string | undefined {
+    const text = String(value ?? '').trim();
+    return text || undefined;
   }
 
   private actorId(actor: RequestActor) {
@@ -679,7 +1143,34 @@ export class SkuMasterService {
   }
 
   private normalizeMarketplace(value: string) {
-    return String(value ?? '').trim().toLowerCase();
+    return String(value ?? '')
+      .trim()
+      .toLowerCase();
+  }
+
+  /**
+   * Legacy deployments created a seller+marketplace+SKU unique index without gstId,
+   * which blocked the same marketplace SKU from being stored per GST/APOB profile.
+   */
+  private async dropLegacyMappingIndexes() {
+    const legacyIndex = 'sellerId_1_marketplace_1_marketplaceSku_1';
+    try {
+      await this.mappingModel.collection.dropIndex(legacyIndex);
+      this.logger.log(`Dropped legacy SKU master index: ${legacyIndex}`);
+    } catch (err: unknown) {
+      const code =
+        err && typeof err === 'object' && 'code' in err
+          ? Number((err as { code?: unknown }).code)
+          : undefined;
+      const message =
+        err && typeof err === 'object' && 'message' in err
+          ? String((err as { message?: unknown }).message)
+          : String(err);
+      if (code === 27 || /index not found/i.test(message)) {
+        return;
+      }
+      this.logger.warn(`Could not drop legacy SKU master index: ${message}`);
+    }
   }
 
   private async resolveSellerScope(actor: RequestActor) {
@@ -687,36 +1178,79 @@ export class SkuMasterService {
       throw new ForbiddenException('Seller context is required');
     }
     if (actor.role !== 'seller') {
-      throw new ForbiddenException('Only sellers can access SKU master mappings');
+      throw new ForbiddenException(
+        'Only sellers can access SKU master mappings',
+      );
     }
     return this.resolveSellerScopeById(actor.id);
   }
 
-  private getSellerObjectIdString(seller: SellerDocument) {
-    const id = seller?._id as Types.ObjectId | string | undefined;
-    return typeof id === 'string' ? id : id?.toString?.() ?? '';
+  private getSellerObjectIdString(seller: { _id?: Types.ObjectId | string }) {
+    const id = seller?._id;
+    return typeof id === 'string' ? id : (id?.toString?.() ?? '');
   }
 
   private async findSellerByIdentifier(identifier: string) {
     const value = String(identifier ?? '').trim();
     if (!value) return null;
+
     if (Types.ObjectId.isValid(value)) {
-      const sellerById = await this.sellerModel.findById(value).exec();
+      const [sellerById, userById] = await Promise.all([
+        this.sellerModel.findById(value).select('_id publicId').lean().exec(),
+        this.userModel
+          .findOne({ _id: value, role: 'seller' })
+          .select('email sellerId')
+          .lean()
+          .exec(),
+      ]);
       if (sellerById) return sellerById;
+      if (userById?.sellerId) {
+        const linked = await this.sellerModel
+          .findById(userById.sellerId)
+          .select('_id publicId')
+          .lean()
+          .exec();
+        if (linked) return linked;
+      }
+      const email = String(userById?.email ?? '')
+        .trim()
+        .toLowerCase();
+      if (email) {
+        return this.sellerModel
+          .findOne({ $or: [{ email }, { username: email }] })
+          .select('_id publicId')
+          .lean()
+          .exec();
+      }
     }
+
     const sellerByPublicId = await this.sellerModel
       .findOne({ publicId: value })
+      .select('_id publicId')
+      .lean()
       .exec();
     if (sellerByPublicId) return sellerByPublicId;
 
     const user = await this.findSellerUserByIdentifier(value);
     if (!user) return null;
-    const email = String(user.email ?? '').trim().toLowerCase();
+    if (user.sellerId) {
+      const linked = await this.sellerModel
+        .findById(user.sellerId)
+        .select('_id publicId')
+        .lean()
+        .exec();
+      if (linked) return linked;
+    }
+    const email = String(user.email ?? '')
+      .trim()
+      .toLowerCase();
     if (!email) return null;
     return this.sellerModel
       .findOne({
         $or: [{ email }, { username: email }],
       })
+      .select('_id publicId')
+      .lean()
       .exec();
   }
 
@@ -726,6 +1260,8 @@ export class SkuMasterService {
     if (Types.ObjectId.isValid(value)) {
       const byId = await this.userModel
         .findOne({ _id: value, role: 'seller' })
+        .select('email sellerId publicId username')
+        .lean()
         .exec();
       if (byId) return byId;
     }
@@ -734,6 +1270,8 @@ export class SkuMasterService {
         role: 'seller',
         $or: [{ publicId: value }, { email: value }, { username: value }],
       })
+      .select('email sellerId publicId username')
+      .lean()
       .exec();
   }
 }

@@ -11,7 +11,10 @@ import { lastValueFrom } from 'rxjs';
 import { timeout } from 'rxjs/operators';
 import {
   CreateGatewayOrderInput,
+  CreateGatewayPaymentLinkInput,
+  GatewayLinkStatus,
   GatewayOrderResult,
+  GatewayPaymentLinkResult,
   GatewayPaymentStatus,
   GatewayRefundInput,
   GatewayRefundResult,
@@ -23,6 +26,15 @@ type CashfreeOrderResponse = {
   cf_order_id?: number;
   payment_session_id?: string;
   order_status?: string;
+};
+
+type CashfreeLinkResponse = {
+  cf_link_id?: string | number;
+  link_id?: string;
+  link_url?: string;
+  link_status?: string;
+  link_amount?: number;
+  link_amount_paid?: number;
 };
 
 type CashfreePaymentsResponse = {
@@ -63,7 +75,9 @@ export class CashfreeGateway implements PaymentGateway {
 
   private getCredentials() {
     const clientId = this.config.get<string>('CASHFREE_CLIENT_ID')?.trim();
-    const clientSecret = this.config.get<string>('CASHFREE_CLIENT_SECRET')?.trim();
+    const clientSecret = this.config
+      .get<string>('CASHFREE_CLIENT_SECRET')
+      ?.trim();
     if (!clientId || !clientSecret) {
       throw new UnauthorizedException({
         success: false,
@@ -84,7 +98,9 @@ export class CashfreeGateway implements PaymentGateway {
     };
   }
 
-  async createOrder(input: CreateGatewayOrderInput): Promise<GatewayOrderResult> {
+  async createOrder(
+    input: CreateGatewayOrderInput,
+  ): Promise<GatewayOrderResult> {
     const url = `${this.getBaseUrl()}/orders`;
     const body = {
       order_id: input.orderId,
@@ -105,26 +121,130 @@ export class CashfreeGateway implements PaymentGateway {
     try {
       const response = await lastValueFrom(
         this.http
-          .post<CashfreeOrderResponse>(url, body, { headers: this.getHeaders() })
+          .post<CashfreeOrderResponse>(url, body, {
+            headers: this.getHeaders(),
+          })
           .pipe(timeout(30000)),
       );
       const data = response.data ?? {};
       const paymentSessionId = data.payment_session_id;
       if (!paymentSessionId) {
-        throw new BadRequestException('Cashfree did not return a payment session');
+        throw new BadRequestException(
+          'Cashfree did not return a payment session',
+        );
       }
       return {
         orderId: input.orderId,
-        cashfreeOrderId: String(data.cf_order_id ?? data.order_id ?? input.orderId),
+        cashfreeOrderId: String(
+          data.cf_order_id ?? data.order_id ?? input.orderId,
+        ),
         paymentSessionId,
         raw: data as Record<string, unknown>,
       };
     } catch (err: unknown) {
-      this.logger.error(`Cashfree createOrder failed: ${this.extractError(err)}`);
+      this.logger.error(
+        `Cashfree createOrder failed: ${this.extractError(err)}`,
+      );
       throw new BadRequestException({
         success: false,
         message: 'Failed to create payment order with Cashfree',
         errorCode: 'CASHFREE_ORDER_FAILED',
+      });
+    }
+  }
+
+  async createPaymentLink(
+    input: CreateGatewayPaymentLinkInput,
+  ): Promise<GatewayPaymentLinkResult> {
+    const url = `${this.getBaseUrl()}/links`;
+    const body = {
+      link_id: input.linkId.slice(0, 50),
+      link_amount: input.amount,
+      link_currency: input.currency ?? 'INR',
+      link_purpose: input.purpose.slice(0, 500),
+      customer_details: {
+        customer_email: input.customerEmail,
+        customer_phone: input.customerPhone,
+        customer_name: input.customerName ?? input.customerEmail,
+      },
+      link_meta: {
+        return_url: input.returnUrl,
+        notify_url: input.notifyUrl,
+      },
+      link_expiry_time: input.expiryTime.toISOString(),
+      link_partial_payments: false,
+    };
+
+    try {
+      const response = await lastValueFrom(
+        this.http
+          .post<CashfreeLinkResponse>(url, body, {
+            headers: this.getHeaders(),
+          })
+          .pipe(timeout(30000)),
+      );
+      const data = response.data ?? {};
+      const linkUrl = data.link_url;
+      const linkId = data.link_id ?? input.linkId;
+      if (!linkUrl || !linkId) {
+        throw new BadRequestException('Cashfree did not return a payment link URL');
+      }
+      return {
+        linkId,
+        linkUrl,
+        cfLinkId: String(data.cf_link_id ?? linkId),
+        raw: data as Record<string, unknown>,
+      };
+    } catch (err: unknown) {
+      this.logger.error(
+        `Cashfree createPaymentLink failed: ${this.extractError(err)}`,
+      );
+      throw new BadRequestException({
+        success: false,
+        message: 'Failed to create payment link with Cashfree',
+        errorCode: 'CASHFREE_LINK_FAILED',
+      });
+    }
+  }
+
+  async getLinkStatus(linkId: string): Promise<GatewayLinkStatus> {
+    const url = `${this.getBaseUrl()}/links/${encodeURIComponent(linkId)}`;
+    try {
+      const response = await lastValueFrom(
+        this.http
+          .get<CashfreeLinkResponse>(url, { headers: this.getHeaders() })
+          .pipe(timeout(30000)),
+      );
+      const data = response.data ?? {};
+      const linkStatus = String(data.link_status ?? '').toUpperCase();
+      const amountPaid = Number(data.link_amount_paid ?? 0);
+      const linkAmount = Number(data.link_amount ?? 0);
+      let paymentStatus: GatewayLinkStatus['paymentStatus'] = 'pending';
+      if (
+        linkStatus === 'PAID' ||
+        (linkAmount > 0 && amountPaid >= linkAmount)
+      ) {
+        paymentStatus = 'paid';
+      } else if (linkStatus === 'EXPIRED' || linkStatus === 'CANCELLED') {
+        paymentStatus = 'expired';
+      } else if (linkStatus === 'FAILED') {
+        paymentStatus = 'failed';
+      }
+      return {
+        linkId,
+        linkStatus,
+        amountPaid,
+        paymentStatus,
+        raw: data as Record<string, unknown>,
+      };
+    } catch (err: unknown) {
+      this.logger.error(
+        `Cashfree getLinkStatus failed: ${this.extractError(err)}`,
+      );
+      throw new BadRequestException({
+        success: false,
+        message: 'Failed to verify payment link with Cashfree',
+        errorCode: 'CASHFREE_LINK_VERIFY_FAILED',
       });
     }
   }
@@ -141,7 +261,9 @@ export class CashfreeGateway implements PaymentGateway {
       const paymentsUrl = `${this.getBaseUrl()}/orders/${encodeURIComponent(orderId)}/payments`;
       const paymentsResponse = await lastValueFrom(
         this.http
-          .get<CashfreePaymentsResponse>(paymentsUrl, { headers: this.getHeaders() })
+          .get<CashfreePaymentsResponse>(paymentsUrl, {
+            headers: this.getHeaders(),
+          })
           .pipe(timeout(30000)),
       );
       const payments = paymentsResponse.data?.payments ?? [];
@@ -186,13 +308,43 @@ export class CashfreeGateway implements PaymentGateway {
         },
       };
     } catch (err: unknown) {
-      this.logger.error(`Cashfree getOrderStatus failed: ${this.extractError(err)}`);
+      if (this.isOrderNotFoundError(err)) {
+        this.logger.warn(
+          `Cashfree order ${orderId} not found — treating as expired`,
+        );
+        return {
+          orderId,
+          cashfreeOrderId: orderId,
+          paymentStatus: 'expired',
+          raw: {
+            order: { order_status: 'NOT_FOUND' },
+            payments: [],
+          },
+        };
+      }
+      this.logger.error(
+        `Cashfree getOrderStatus failed: ${this.extractError(err)}`,
+      );
       throw new BadRequestException({
         success: false,
         message: 'Failed to verify payment with Cashfree',
         errorCode: 'CASHFREE_VERIFY_FAILED',
       });
     }
+  }
+
+  private isOrderNotFoundError(err: unknown): boolean {
+    if (!err || typeof err !== 'object' || !('response' in err)) {
+      return false;
+    }
+    const response = (
+      err as {
+        response?: { status?: number; data?: { code?: string } };
+      }
+    ).response;
+    return (
+      response?.status === 404 || response?.data?.code === 'order_not_found'
+    );
   }
 
   async createRefund(input: GatewayRefundInput): Promise<GatewayRefundResult> {
@@ -205,7 +357,9 @@ export class CashfreeGateway implements PaymentGateway {
     try {
       const response = await lastValueFrom(
         this.http
-          .post<Record<string, unknown>>(url, body, { headers: this.getHeaders() })
+          .post<
+            Record<string, unknown>
+          >(url, body, { headers: this.getHeaders() })
           .pipe(timeout(30000)),
       );
       return {
@@ -214,7 +368,9 @@ export class CashfreeGateway implements PaymentGateway {
         raw: response.data ?? {},
       };
     } catch (err: unknown) {
-      this.logger.error(`Cashfree createRefund failed: ${this.extractError(err)}`);
+      this.logger.error(
+        `Cashfree createRefund failed: ${this.extractError(err)}`,
+      );
       throw new BadRequestException({
         success: false,
         message: 'Failed to initiate refund with Cashfree',
@@ -236,7 +392,9 @@ export class CashfreeGateway implements PaymentGateway {
     if (!signature?.trim()) return false;
 
     const payload = timestamp ? `${timestamp}${rawBody}` : rawBody;
-    const expected = createHmac('sha256', secret).update(payload).digest('base64');
+    const expected = createHmac('sha256', secret)
+      .update(payload)
+      .digest('base64');
     try {
       const sigBuf = Buffer.from(signature.trim());
       const expBuf = Buffer.from(expected);

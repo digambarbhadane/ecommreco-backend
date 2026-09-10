@@ -20,9 +20,6 @@ export const myntraImportMapping: MarketplaceImportMapping = {
       'order_id',
       'Order ID',
       'Order Id',
-      'Sale_Order_Code',
-      'sale_order_code',
-      'order_release_id',
     ],
   },
   sku: {

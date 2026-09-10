@@ -19,9 +19,17 @@ const SECONDARY_SHEET_FIELDS: Record<
   SecondaryFieldDef[]
 > = {
   adsCost: [
-    { field: 'deductionDuration', aliases: ['Deduction Duration'], type: 'string' },
+    {
+      field: 'deductionDuration',
+      aliases: ['Deduction Duration'],
+      type: 'string',
+    },
     { field: 'deductionDate', aliases: ['Deduction Date'], type: 'date' },
-    { field: 'campaignId', aliases: ['Campaign ID', 'Campaign Id'], type: 'string' },
+    {
+      field: 'campaignId',
+      aliases: ['Campaign ID', 'Campaign Id'],
+      type: 'string',
+    },
     { field: 'adCost', aliases: ['Ad Cost'], type: 'number' },
     {
       field: 'creditsWaiversDiscounts',

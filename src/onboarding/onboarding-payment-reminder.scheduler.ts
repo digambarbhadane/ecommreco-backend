@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
+import { resolvePaymentReturnBaseUrl } from '../config/payment-urls';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { Lead, LeadDocument } from '../leads/schemas/lead.schema';
@@ -33,7 +34,9 @@ export class OnboardingPaymentReminderScheduler {
 
   @Cron('0 10 * * *')
   async sendAbandonedPaymentReminders() {
-    if (!isOnboardingV2Enabled(this.config.get<string>('ONBOARDING_V2_ENABLED'))) {
+    if (
+      !isOnboardingV2Enabled(this.config.get<string>('ONBOARDING_V2_ENABLED'))
+    ) {
       return;
     }
 
@@ -65,12 +68,15 @@ export class OnboardingPaymentReminderScheduler {
       .exec();
 
     for (const lead of leads) {
-      const anchor = lead.lastPaymentAttemptAt ?? (lead as { createdAt?: Date }).createdAt;
+      const anchor =
+        lead.lastPaymentAttemptAt ?? (lead as { createdAt?: Date }).createdAt;
       if (!anchor || anchor.getTime() > cutoff.getTime()) {
         continue;
       }
 
-      const email = String(lead.email ?? '').trim().toLowerCase();
+      const email = String(lead.email ?? '')
+        .trim()
+        .toLowerCase();
       if (!email) continue;
 
       const user = lead.userId
@@ -81,11 +87,7 @@ export class OnboardingPaymentReminderScheduler {
         continue;
       }
 
-      const frontendUrl =
-        this.config.get<string>('PAYMENT_RETURN_BASE_URL')?.trim() ||
-        this.config.get<string>('FRONTEND_URL')?.split(',')[0]?.trim() ||
-        'http://localhost:8080';
-
+      const frontendUrl = resolvePaymentReturnBaseUrl(this.config);
       const paymentUrl = `${frontendUrl.replace(/\/+$/, '')}/login`;
 
       const message =
@@ -133,7 +135,8 @@ export class OnboardingPaymentReminderScheduler {
         { _id: lead._id },
         {
           $set: {
-            [`metadata.onboardingReminders.${reminderKey}`]: new Date().toISOString(),
+            [`metadata.onboardingReminders.${reminderKey}`]:
+              new Date().toISOString(),
           },
         },
       );

@@ -14,7 +14,10 @@ import {
   promoteMyntraPgReverseTopLevelFields,
   rowHasMeaningfulData,
 } from './myntra-pg-field.util';
-import type { MyntraPgParseResult, MyntraPgReportKind } from './myntra-pg.types';
+import type {
+  MyntraPgParseResult,
+  MyntraPgReportKind,
+} from './myntra-pg.types';
 
 @Injectable()
 export class MyntraPgParser {
@@ -60,9 +63,13 @@ export class MyntraPgParser {
     }
 
     const headerRowIndex = this.detectHeaderRowIndex(matrix);
-    const rawHeaders = (matrix[headerRowIndex] ?? []).map((cell) => String(cell ?? ''));
+    const rawHeaders = (matrix[headerRowIndex] ?? []).map((cell) =>
+      String(cell ?? ''),
+    );
     const headers = rawHeaders.filter((header) => header.trim().length > 0);
-    const fieldKeys = headers.map((header) => normalizeMyntraPgFieldKey(header));
+    const fieldKeys = headers.map((header) =>
+      normalizeMyntraPgFieldKey(header),
+    );
 
     if (reportKind === 'forward') {
       this.validateRequiredHeaders(
@@ -96,7 +103,11 @@ export class MyntraPgParser {
         continue;
       }
 
-      const orderReleaseId = pickString(rowData, 'order_release_id', 'seller_order_id');
+      const orderReleaseId = pickString(
+        rowData,
+        'order_release_id',
+        'seller_order_id',
+      );
       const orderLineId = pickString(rowData, 'order_line_id');
       const returnId = pickString(rowData, 'return_id');
       if (reportKind === 'forward' && !orderReleaseId && !orderLineId) {
@@ -130,7 +141,11 @@ export class MyntraPgParser {
         rowKey: buildMyntraPgRowKey(reportKind, rowData, sourceRowNumber),
         orderReleaseId,
         orderLineId,
-        sellerOrderId: pickString(rowData, 'seller_order_id', 'order_release_id'),
+        sellerOrderId: pickString(
+          rowData,
+          'seller_order_id',
+          'order_release_id',
+        ),
         skuCode: pickString(rowData, 'sku_code'),
         sellerGstn: pickString(rowData, 'seller_gstn'),
         returnType: pickString(rowData, 'return_type'),
@@ -180,9 +195,12 @@ export class MyntraPgParser {
         .filter(Boolean);
       if (!normalized.length) continue;
       const score = normalized.reduce((acc, cell) => {
-        if (cell.includes('order_release') || cell === 'order_release_id') return acc + 3;
-        if (cell.includes('seller_gstn') || cell.includes('sku_code')) return acc + 2;
-        if (cell.includes('settlement') || cell.includes('return_type')) return acc + 1;
+        if (cell.includes('order_release') || cell === 'order_release_id')
+          return acc + 3;
+        if (cell.includes('seller_gstn') || cell.includes('sku_code'))
+          return acc + 2;
+        if (cell.includes('settlement') || cell.includes('return_type'))
+          return acc + 1;
         return acc;
       }, 0);
       if (score > bestScore) {

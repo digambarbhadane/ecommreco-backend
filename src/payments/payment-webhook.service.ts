@@ -158,11 +158,20 @@ export class PaymentWebhookService {
       order.paymentStatus = 'paid';
       order.orderStatus = 'paid';
       await order.save();
-      await this.onboardingActivation.activateFromPayment(order.orderId, 'webhook');
-      return { success: true, message: 'Onboarding trial activated via webhook' };
+      await this.onboardingActivation.activateFromPayment(
+        order.orderId,
+        'webhook',
+      );
+      return {
+        success: true,
+        message: 'Onboarding trial activated via webhook',
+      };
     }
 
-    if (checkoutType === 'trial_upgrade' || checkoutType === 'trial_registration') {
+    if (
+      checkoutType === 'trial_upgrade' ||
+      checkoutType === 'trial_registration'
+    ) {
       order.paymentStatus = 'paid';
       order.orderStatus = 'paid';
       await order.save();
@@ -184,7 +193,10 @@ export class PaymentWebhookService {
       activatedBy: 'webhook',
     });
 
-    return { success: true, message: 'Payment processed and subscription activated' };
+    return {
+      success: true,
+      message: 'Payment processed and subscription activated',
+    };
   }
 
   private async handlePaymentFailed(
@@ -208,7 +220,10 @@ export class PaymentWebhookService {
     order.orderStatus = 'failed';
     await order.save();
 
-    const seller = await this.sellerModel.findById(order.sellerId).lean().exec();
+    const seller = await this.sellerModel
+      .findById(order.sellerId)
+      .lean()
+      .exec();
     if (seller?.email) {
       try {
         await this.emailService.sendEmail({

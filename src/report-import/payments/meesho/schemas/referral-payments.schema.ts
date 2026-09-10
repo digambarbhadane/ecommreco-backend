@@ -55,8 +55,9 @@ export class MeeshoReferralPayments {
   sheetName: string;
 }
 
-export const MeeshoReferralPaymentsSchema =
-  SchemaFactory.createForClass(MeeshoReferralPayments);
+export const MeeshoReferralPaymentsSchema = SchemaFactory.createForClass(
+  MeeshoReferralPayments,
+);
 
 MeeshoReferralPaymentsSchema.index({ sellerId: 1, importId: 1 });
 MeeshoReferralPaymentsSchema.index({ sellerId: 1, rewardId: 1 });

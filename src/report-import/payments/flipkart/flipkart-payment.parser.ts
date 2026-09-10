@@ -1,6 +1,9 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { FileParserService } from '../../services/file-parser.service';
-import type { PaymentParser, PaymentParserResult } from '../core/payment-parser.interface';
+import type {
+  PaymentParser,
+  PaymentParserResult,
+} from '../core/payment-parser.interface';
 import type { PaymentValidationError } from '../core/payment-upload-summary.types';
 import { mapFlipkartPaymentRawRow } from './flipkart-payment-header.mapper';
 import {
@@ -23,18 +26,20 @@ export type FlipkartPaymentSecondaryParsedSheet = {
   rows: Record<string, unknown>[];
 };
 
-export type FlipkartPaymentMultiSheetParseResult = PaymentParserResult<FlipkartPaymentMappedRow> & {
-  secondarySheets: FlipkartPaymentSecondaryParsedSheet[];
-  missingSheetLabels: string[];
-};
+export type FlipkartPaymentMultiSheetParseResult =
+  PaymentParserResult<FlipkartPaymentMappedRow> & {
+    secondarySheets: FlipkartPaymentSecondaryParsedSheet[];
+    missingSheetLabels: string[];
+  };
 
 @Injectable()
-export class FlipkartPaymentParser
-  implements PaymentParser<FlipkartPaymentMappedRow>
-{
+export class FlipkartPaymentParser implements PaymentParser<FlipkartPaymentMappedRow> {
   constructor(private readonly fileParser: FileParserService) {}
 
-  parse(buffer: Buffer, uploadedFileName: string): PaymentParserResult<FlipkartPaymentMappedRow> {
+  parse(
+    buffer: Buffer,
+    uploadedFileName: string,
+  ): PaymentParserResult<FlipkartPaymentMappedRow> {
     const multi = this.parseAllSheets(buffer, uploadedFileName);
     const { secondarySheets: _s, missingSheetLabels: _m, ...rest } = multi;
     return rest;
@@ -45,7 +50,8 @@ export class FlipkartPaymentParser
     uploadedFileName: string,
   ): FlipkartPaymentMultiSheetParseResult {
     void uploadedFileName;
-    const workbook = this.fileParser.parseFlipkartPaymentAllSheetsWorkbook(buffer);
+    const workbook =
+      this.fileParser.parseFlipkartPaymentAllSheetsWorkbook(buffer);
     this.validateHeaders(workbook.orders.headers);
 
     const validationErrors: PaymentValidationError[] = [];
@@ -121,7 +127,9 @@ export class FlipkartPaymentParser
       validateFlipkartPaymentHeaders(headers);
     } catch (error) {
       throw new BadRequestException(
-        error instanceof Error ? error.message : 'Invalid payment report headers',
+        error instanceof Error
+          ? error.message
+          : 'Invalid payment report headers',
       );
     }
   }
@@ -133,7 +141,10 @@ export class FlipkartPaymentParser
   map(
     rawRow: Record<string, unknown>,
     rowNumber: number,
-  ): { row: FlipkartPaymentMappedRow | null; errors: PaymentValidationError[] } {
+  ): {
+    row: FlipkartPaymentMappedRow | null;
+    errors: PaymentValidationError[];
+  } {
     const mappedPartial = mapFlipkartPaymentRawRow(rawRow);
     const orderId = normalizeFlipkartPaymentOrderId(mappedPartial.orderId);
     if (!orderId) {

@@ -17,6 +17,5 @@ export const AMAZON_B2B_BUYER_NAME_COLUMNS = [
   'Bill To Name',
 ] as const;
 
-export const AMAZON_B2B_EXTRA_HEADER_GROUPS: ReadonlyArray<
-  readonly string[]
-> = [AMAZON_B2B_CUSTOMER_GST_COLUMNS, AMAZON_B2B_BUYER_NAME_COLUMNS];
+export const AMAZON_B2B_EXTRA_HEADER_GROUPS: ReadonlyArray<readonly string[]> =
+  [AMAZON_B2B_CUSTOMER_GST_COLUMNS, AMAZON_B2B_BUYER_NAME_COLUMNS];

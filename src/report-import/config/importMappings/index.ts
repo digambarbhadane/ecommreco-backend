@@ -14,7 +14,9 @@ const REGISTRY: MarketplaceImportMapping[] = [
 export const resolveMarketplaceImportMapping = (
   marketplaceIdentifier: string,
 ): MarketplaceImportMapping => {
-  const normalized = String(marketplaceIdentifier ?? '').trim().toLowerCase();
+  const normalized = String(marketplaceIdentifier ?? '')
+    .trim()
+    .toLowerCase();
   const hit = REGISTRY.find(
     (item) =>
       normalized.includes(item.key) ||
@@ -32,4 +34,7 @@ export {
   meeshoImportMapping,
   myntraImportMapping,
 };
-export type { MarketplaceImportMapping, MarketplaceImportFieldMapping } from './types';
+export type {
+  MarketplaceImportMapping,
+  MarketplaceImportFieldMapping,
+} from './types';

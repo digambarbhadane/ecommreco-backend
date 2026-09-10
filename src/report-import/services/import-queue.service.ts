@@ -143,7 +143,9 @@ export class ImportQueueService implements OnModuleInit, OnModuleDestroy {
       progressPercentage: 8,
       startedAt: job.startedAt ?? new Date(),
     });
-    this.emitSocketSync(jobMeta, 'reading_excel', 8, undefined, { status: 'processing' });
+    this.emitSocketSync(jobMeta, 'reading_excel', 8, undefined, {
+      status: 'processing',
+    });
 
     let lastSocketEmit = 0;
     const throttleSocketMs = 800;
@@ -179,7 +181,11 @@ export class ImportQueueService implements OnModuleInit, OnModuleDestroy {
 
       const completedAt = new Date();
       const durationMs = result.timings?.totalMs;
-      const updatedMeta = { ...jobMeta, uploadId: result.uploadId ?? jobMeta.uploadId, fileName: result.fileName ?? jobMeta.fileName };
+      const updatedMeta = {
+        ...jobMeta,
+        uploadId: result.uploadId ?? jobMeta.uploadId,
+        fileName: result.fileName ?? jobMeta.fileName,
+      };
       await this.importJobService.updateJob(payload.jobId, {
         status: 'completed',
         phase: 'completed',
@@ -201,8 +207,7 @@ export class ImportQueueService implements OnModuleInit, OnModuleDestroy {
         durationMs,
       });
     } catch (err) {
-      const errorMessage =
-        err instanceof Error ? err.message : 'Import failed';
+      const errorMessage = err instanceof Error ? err.message : 'Import failed';
       // Re-fetch only to get uploadId in case it was set after job creation.
       const latestJob = await this.importJobService.getJob(payload.jobId);
       if (latestJob.uploadId) {
@@ -215,10 +220,16 @@ export class ImportQueueService implements OnModuleInit, OnModuleDestroy {
         completedAt: new Date(),
         errorMessage,
       });
-      this.emitSocketSync({ ...jobMeta, uploadId: latestJob.uploadId ?? jobMeta.uploadId }, 'failed', 0, 0, {
-        status: 'failed',
-        errorMessage,
-      });
+      this.emitSocketSync(
+        { ...jobMeta, uploadId: latestJob.uploadId ?? jobMeta.uploadId },
+        'failed',
+        0,
+        0,
+        {
+          status: 'failed',
+          errorMessage,
+        },
+      );
       this.logger.error(
         `Import job ${payload.jobId} failed: ${errorMessage}`,
         err instanceof Error ? err.stack : undefined,

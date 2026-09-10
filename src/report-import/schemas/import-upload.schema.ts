@@ -62,7 +62,12 @@ export class ImportUpload {
   @Prop({
     enum: ['completed', 'processing', 'failed', 'deleted', 'reuploaded'],
   })
-  lifecycleStatus?: 'completed' | 'processing' | 'failed' | 'deleted' | 'reuploaded';
+  lifecycleStatus?:
+    | 'completed'
+    | 'processing'
+    | 'failed'
+    | 'deleted'
+    | 'reuploaded';
 
   @Prop()
   errorMessage?: string;

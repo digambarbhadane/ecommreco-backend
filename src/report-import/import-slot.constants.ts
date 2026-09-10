@@ -2,34 +2,35 @@ import type { MarketplaceUploadKey } from './marketplace-upload.routes';
 import { inferMyntraPaymentSlotsFromFileHash } from './utils/myntra-payment-upload.util';
 
 /** Backend multipart / session slot names present in upload payloads. */
-export const MARKETPLACE_TRACKED_SLOTS: Record<MarketplaceUploadKey, string[]> = {
-  flipkart: ['file', 'returnReportFile', 'paymentReportFile'],
-  amazon: [
-    'mtrB2cFile',
-    'mtrB2bFile',
-    'amazonReturnReportFile',
-    'paymentReportFile',
-  ],
-  meesho: [
-    'tcsSalesFile',
-    'tcsSalesReturnFile',
-    'orderReportFile',
-    'returnInTransitReportFile',
-    'returnOutForDeliveryReportFile',
-    'returnDeliveryCompleteReportFile',
-    'paymentReportFile',
-  ],
-  myntra: [
-    'gstrReportPackedFile',
-    'salesRevenuePackedB2cFile',
-    'gstrReportRtoFile',
-    'gstrReportRtFile',
-    'mDirectOrdersReportFile',
-    'mDirectReturnsReportFile',
-    'pgForwardSettledFile',
-    'pgReverseSettledFile',
-  ],
-};
+export const MARKETPLACE_TRACKED_SLOTS: Record<MarketplaceUploadKey, string[]> =
+  {
+    flipkart: ['file', 'returnReportFile', 'paymentReportFile'],
+    amazon: [
+      'mtrB2cFile',
+      'mtrB2bFile',
+      'amazonReturnReportFile',
+      'paymentReportFile',
+    ],
+    meesho: [
+      'tcsSalesFile',
+      'tcsSalesReturnFile',
+      'orderReportFile',
+      'returnInTransitReportFile',
+      'returnOutForDeliveryReportFile',
+      'returnDeliveryCompleteReportFile',
+      'paymentReportFile',
+    ],
+    myntra: [
+      'gstrReportPackedFile',
+      'salesRevenuePackedB2cFile',
+      'gstrReportRtoFile',
+      'gstrReportRtFile',
+      'mDirectOrdersReportFile',
+      'mDirectReturnsReportFile',
+      'pgForwardSettledFile',
+      'pgReverseSettledFile',
+    ],
+  };
 
 /** Primary import slot whose upload owns persisted import rows for a month. */
 export const PRIMARY_IMPORT_SLOT: Record<MarketplaceUploadKey, string> = {
@@ -40,7 +41,10 @@ export const PRIMARY_IMPORT_SLOT: Record<MarketplaceUploadKey, string> = {
 };
 
 /** Slots required before a month is marked complete in the UI. */
-export const MARKETPLACE_COMPLETION_SLOTS: Record<MarketplaceUploadKey, string[]> = {
+export const MARKETPLACE_COMPLETION_SLOTS: Record<
+  MarketplaceUploadKey,
+  string[]
+> = {
   flipkart: ['file'],
   amazon: ['mtrB2cFile'],
   meesho: [
@@ -66,7 +70,10 @@ const FILE_HASH_SLOT_PREFIXES: Array<{ prefix: string; slot: string }> = [
   { prefix: 'order:', slot: 'orderReportFile' },
   { prefix: 'returnInTransit:', slot: 'returnInTransitReportFile' },
   { prefix: 'returnOutForDelivery:', slot: 'returnOutForDeliveryReportFile' },
-  { prefix: 'returnDeliveryComplete:', slot: 'returnDeliveryCompleteReportFile' },
+  {
+    prefix: 'returnDeliveryComplete:',
+    slot: 'returnDeliveryCompleteReportFile',
+  },
   { prefix: 'return:', slot: 'returnDeliveryCompleteReportFile' },
   { prefix: 'payment:', slot: 'paymentReportFile' },
   { prefix: 'return:', slot: 'returnReportFile' },

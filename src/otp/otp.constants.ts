@@ -1,0 +1,26 @@
+export const OTP_PURPOSE = {
+  REGISTER: 'REGISTER',
+  LOGIN: 'LOGIN',
+  FORGOT_PASSWORD: 'FORGOT_PASSWORD',
+  CHANGE_MOBILE: 'CHANGE_MOBILE',
+  TWO_FACTOR: 'TWO_FACTOR',
+  DELETE_ACCOUNT: 'DELETE_ACCOUNT',
+} as const;
+
+export type OtpPurpose = (typeof OTP_PURPOSE)[keyof typeof OTP_PURPOSE];
+
+export const OTP_PURPOSE_VALUES: OtpPurpose[] = Object.values(OTP_PURPOSE);
+
+export const OTP_LOG_EVENT = {
+  REQUESTED: 'OTP_REQUESTED',
+  SENT: 'OTP_SENT',
+  FAILED: 'OTP_FAILED',
+  VERIFIED: 'OTP_VERIFIED',
+  EXPIRED: 'OTP_EXPIRED',
+  RESENT: 'OTP_RESENT',
+  BLOCKED: 'OTP_BLOCKED',
+  INVALID: 'OTP_INVALID',
+  MAX_ATTEMPTS: 'OTP_MAX_ATTEMPTS',
+} as const;
+
+export type OtpLogEvent = (typeof OTP_LOG_EVENT)[keyof typeof OTP_LOG_EVENT];

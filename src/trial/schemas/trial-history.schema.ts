@@ -5,7 +5,12 @@ export type TrialHistoryDocument = HydratedDocument<TrialHistory>;
 
 @Schema({ timestamps: true, collection: 'trial_histories' })
 export class TrialHistory {
-  @Prop({ type: SchemaTypes.ObjectId, ref: 'Seller', required: true, index: true })
+  @Prop({
+    type: SchemaTypes.ObjectId,
+    ref: 'Seller',
+    required: true,
+    index: true,
+  })
   sellerId!: Types.ObjectId;
 
   @Prop({

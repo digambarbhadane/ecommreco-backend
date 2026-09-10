@@ -1,6 +1,6 @@
 /**
  * Global test environment. Runs before each test file.
- * Uses in-memory MongoDB (NODE_ENV=test) — see AppModule Mongoose factory.
+ * Uses in-memory MongoDB when USE_MEMORY_DB=true — see AppModule Mongoose factory.
  */
 process.env.NODE_ENV = 'test';
 process.env.USE_MEMORY_DB = 'true';
@@ -12,6 +12,8 @@ process.env.SUPER_ADMIN_SETUP_TOKEN =
   process.env.SUPER_ADMIN_SETUP_TOKEN ?? 'test-setup-token';
 process.env.CORS_ALLOW_ALL = 'true';
 process.env.FRONTEND_URL = 'http://localhost:8080';
+process.env.API_PUBLIC_URL = 'http://localhost:5001';
+process.env.PAYMENT_RETURN_BASE_URL = 'http://localhost:8080';
 process.env.DEV_SUPER_ADMIN_EMAIL = 'superadmin@test.com';
 process.env.DEV_SUPER_ADMIN_PASSWORD = 'password123';
 process.env.DEV_SUPER_ADMIN_NAME = 'Test Super Admin';

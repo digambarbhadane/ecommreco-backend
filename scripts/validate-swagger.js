@@ -3,7 +3,7 @@ const https = require('https');
 const http = require('http');
 
 const host = process.env.SWAGGER_HOST || 'localhost';
-const port = process.env.SWAGGER_PORT || '5000';
+const port = process.env.SWAGGER_PORT || '5001';
 const protocol = process.env.SWAGGER_HTTPS === 'true' ? https : http;
 
 const path = process.env.SWAGGER_JSON_PATH || '/api/v1/docs-json';

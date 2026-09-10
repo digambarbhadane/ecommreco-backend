@@ -50,7 +50,10 @@ export function mapRawRowToMyntraPgRowData(
   return rowData;
 }
 
-export function pickString(rowData: Record<string, unknown>, ...keys: string[]): string {
+export function pickString(
+  rowData: Record<string, unknown>,
+  ...keys: string[]
+): string {
   for (const key of keys) {
     const value = rowData[key];
     if (value === null || value === undefined) continue;
@@ -60,7 +63,10 @@ export function pickString(rowData: Record<string, unknown>, ...keys: string[]):
   return '';
 }
 
-export function pickNumber(rowData: Record<string, unknown>, ...keys: string[]): number {
+export function pickNumber(
+  rowData: Record<string, unknown>,
+  ...keys: string[]
+): number {
   for (const key of keys) {
     const num = coercePaymentNumber(rowData[key]);
     if (num !== undefined) return num;
@@ -106,7 +112,11 @@ export function applyMyntraPgFieldCatalogAliases(
 ): Record<string, unknown> {
   const out = { ...rowData };
   for (const field of catalog) {
-    if (out[field.key] !== undefined && out[field.key] !== null && out[field.key] !== '') {
+    if (
+      out[field.key] !== undefined &&
+      out[field.key] !== null &&
+      out[field.key] !== ''
+    ) {
       continue;
     }
     for (const alias of field.aliases ?? []) {
@@ -211,7 +221,11 @@ export function buildMyntraPgRowKey(
   rowData: Record<string, unknown>,
   sourceRowNumber: number,
 ): string {
-  const orderReleaseId = pickString(rowData, 'order_release_id', 'seller_order_id');
+  const orderReleaseId = pickString(
+    rowData,
+    'order_release_id',
+    'seller_order_id',
+  );
   const orderLineId = pickString(rowData, 'order_line_id');
   const returnId = pickString(rowData, 'return_id');
   const sku = pickString(rowData, 'sku_code');
@@ -226,8 +240,11 @@ export function buildMyntraPgRowKey(
     .digest('hex');
 }
 
-export function rowHasMeaningfulData(rowData: Record<string, unknown>): boolean {
+export function rowHasMeaningfulData(
+  rowData: Record<string, unknown>,
+): boolean {
   return Object.values(rowData).some(
-    (value) => value !== null && value !== undefined && String(value).trim() !== '',
+    (value) =>
+      value !== null && value !== undefined && String(value).trim() !== '',
   );
 }

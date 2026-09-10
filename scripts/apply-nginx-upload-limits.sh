@@ -36,7 +36,7 @@ UPDATED=0
 shopt -s nullglob
 for site in /etc/nginx/sites-enabled/*; do
   [[ -f "$site" ]] || continue
-  if grep -qE 'api-dev\.ecommreco\.com|api-uat\.ecommreco\.com|api\.ecommreco\.com|127\.0\.0\.1:5000|proxy_pass' "$site"; then
+  if grep -qE 'api-dev\.ecommreco\.com|api-uat\.ecommreco\.com|api\.ecommreco\.com|127\.0\.0\.1:5001|proxy_pass' "$site"; then
     patch_site_file "$site"
     UPDATED=1
   fi

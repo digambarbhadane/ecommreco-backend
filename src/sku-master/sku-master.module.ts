@@ -11,8 +11,14 @@ import {
 import { Seller, SellerSchema } from '../sellers/schemas/seller.schema';
 import { User, UserSchema } from '../users/schemas/user.schema';
 import { Gst, GstSchema } from '../gsts/schemas/gst.schema';
-import { ImportUpload, ImportUploadSchema } from '../report-import/schemas/import-upload.schema';
-import { ImportRow, ImportRowSchema } from '../report-import/schemas/import-row.schema';
+import {
+  ImportUpload,
+  ImportUploadSchema,
+} from '../report-import/schemas/import-upload.schema';
+import {
+  ImportRow,
+  ImportRowSchema,
+} from '../report-import/schemas/import-row.schema';
 import {
   Marketplace,
   MarketplaceSchema,

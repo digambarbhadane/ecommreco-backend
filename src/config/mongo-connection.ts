@@ -16,7 +16,8 @@ export function buildAtlasMongoUri(params: {
   const pass = encodeMongoPassword(params.password);
   const host = params.host.replace(/^\/+|\/+$/g, '');
   const db = params.database.replace(/^\/+|\/+$/g, '');
-  const query = params.options?.replace(/^\?/, '') ?? 'retryWrites=true&w=majority';
+  const query =
+    params.options?.replace(/^\?/, '') ?? 'retryWrites=true&w=majority';
   return `mongodb+srv://${user}:${pass}@${host}/${db}?${query}`;
 }
 

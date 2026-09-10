@@ -1,4 +1,9 @@
-import { BadRequestException, Inject, Injectable, forwardRef } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  forwardRef,
+} from '@nestjs/common';
 import { UploadReportDto } from '../dto/upload-report.dto';
 import { collectUploadedSlotsFromFiles } from '../import-slot.constants';
 import type { MarketplaceUploadKey } from '../marketplace-upload.routes';
@@ -44,7 +49,9 @@ export class ImportJobOrchestratorService {
       );
     }
     if (!dto.reportMonth) {
-      throw new BadRequestException('reportMonth is required for marketplace imports');
+      throw new BadRequestException(
+        'reportMonth is required for marketplace imports',
+      );
     }
 
     const isAmazon = marketplaceIdentifier.includes('amazon');
@@ -83,12 +90,21 @@ export class ImportJobOrchestratorService {
       if (slot === 'paymentReportFiles' && Array.isArray(file)) {
         for (const item of file) {
           if (!item?.buffer?.length) continue;
-          const contentHash = this.validation.computeFileHash(item.buffer);
-          const paymentSlot = buildAmazonPaymentSlotKey(contentHash);
-          storedFiles[paymentSlot] = item;
-          fileSize += item.buffer.length;
-          if (!uploadedSlots.includes(paymentSlot)) {
-            uploadedSlots.push(paymentSlot);
+          if (isAmazon) {
+            const contentHash = this.validation.computeFileHash(item.buffer);
+            const paymentSlot = buildAmazonPaymentSlotKey(contentHash);
+            storedFiles[paymentSlot] = item;
+            fileSize += item.buffer.length;
+            if (!uploadedSlots.includes(paymentSlot)) {
+              uploadedSlots.push(paymentSlot);
+            }
+          } else {
+            // Meesho / Flipkart / Myntra: keep the singular paymentReportFile slot.
+            storedFiles.paymentReportFile = item;
+            fileSize += item.buffer.length;
+            if (!uploadedSlots.includes('paymentReportFile')) {
+              uploadedSlots.push('paymentReportFile');
+            }
           }
         }
         continue;
@@ -117,7 +133,10 @@ export class ImportJobOrchestratorService {
 
     const storeTimer = new ImportPerformanceTimer();
     storeTimer.startStage('fileUpload');
-    const storagePath = await this.fileStore.saveJobFiles(job.jobId, storedFiles);
+    const storagePath = await this.fileStore.saveJobFiles(
+      job.jobId,
+      storedFiles,
+    );
     storeTimer.endStage('fileUpload');
     const fileUploadMs =
       options?.fileUploadMs ?? storeTimer.getTimings().fileUploadMs;

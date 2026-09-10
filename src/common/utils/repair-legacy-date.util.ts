@@ -61,6 +61,34 @@ export function repairDateToIso(
   reportMonth?: string,
 ): string | undefined {
   if (value == null || value === '') return undefined;
+
+  // Prefer explicit DMY (common in Myntra/import files) before Date() MDY ambiguity.
+  // Example: "12-06-2026" must stay 2026-06-12, not 2026-12-06.
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    const dmy = trimmed.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/);
+    if (dmy) {
+      const day = Number(dmy[1]);
+      const month = Number(dmy[2]);
+      let year = Number(dmy[3]);
+      if (year < 100) {
+        const full = 2000 + year;
+        year = isReasonableYear(full) ? full : 1900 + year;
+      }
+      if (day >= 1 && day <= 31 && month >= 1 && month <= 12) {
+        const date = new Date(Date.UTC(year, month - 1, day));
+        if (
+          date.getUTCFullYear() === year &&
+          date.getUTCMonth() === month - 1 &&
+          date.getUTCDate() === day &&
+          isReasonableYear(year)
+        ) {
+          return date.toISOString().slice(0, 10);
+        }
+      }
+    }
+  }
+
   const repaired = repairLegacyCorruptedDate(value, reportMonth);
   if (!repaired) return undefined;
   return repaired.toISOString().slice(0, 10);
@@ -100,5 +128,29 @@ export function repairImportRowDates<T extends Record<string, unknown>>(
       }
     }
   }
+
+  // Prefer Myntra-authentic invoice dates when present.
+  // RTO → orderCancelDate; Customer Return → frRefundedDate; SALE packed → order_packed_date.
+  // Do not overwrite other marketplaces that lack these Myntra-specific fields/types.
+  const docType = String(next.documentType ?? '').trim();
+  if (docType === 'RTO Return') {
+    const cancelIso = next.orderCancelDate;
+    if (typeof cancelIso === 'string' && cancelIso.trim()) {
+      (next as Record<string, unknown>).invoiceDate = cancelIso;
+    }
+  } else if (docType === 'Customer Return') {
+    const refundedIso = next.frRefundedDate;
+    if (typeof refundedIso === 'string' && refundedIso.trim()) {
+      (next as Record<string, unknown>).invoiceDate = refundedIso;
+    }
+  } else {
+    // Myntra GSTR Packed date is the authentic sale invoice date. Stored invoiceDate
+    // can be an MDY-swapped ISO of the same DMY value (e.g. packed 12-06-2026 → 2026-12-06).
+    const packedIso = next.order_packed_date;
+    if (typeof packedIso === 'string' && packedIso.trim()) {
+      (next as Record<string, unknown>).invoiceDate = packedIso;
+    }
+  }
+
   return next;
 }

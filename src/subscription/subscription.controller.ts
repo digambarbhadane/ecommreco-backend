@@ -1,8 +1,4 @@
-import {
-  ApiTags,
-  ApiOperation,
-  ApiBearerAuth,
-} from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import {
   Body,
   Controller,
@@ -94,7 +90,10 @@ export class SubscriptionController {
   }
 
   @Post('assign')
-  @ApiOperation({ summary: 'Assign subscription to lead', description: 'Assign a subscription package to a lead.' })
+  @ApiOperation({
+    summary: 'Assign subscription to lead',
+    description: 'Assign a subscription package to a lead.',
+  })
   @Roles('super_admin', 'sales_manager')
   assignSubscription(
     @Body() dto: AssignSubscriptionDto,
@@ -114,7 +113,10 @@ export class SubscriptionController {
   }
 
   @Post(':leadId/send-payment-link')
-  @ApiOperation({ summary: 'Send payment link email', description: 'Send Cashfree payment link email to lead.' })
+  @ApiOperation({
+    summary: 'Send payment link email',
+    description: 'Send Cashfree payment link email to lead.',
+  })
   @Roles('super_admin', 'sales_manager')
   sendPaymentLinkEmail(
     @Param('leadId') leadId: string,

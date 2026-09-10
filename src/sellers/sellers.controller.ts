@@ -44,7 +44,10 @@ export class SellersController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'List sellers', description: 'Returns paginated list of sellers based on user role.' })
+  @ApiOperation({
+    summary: 'List sellers',
+    description: 'Returns paginated list of sellers based on user role.',
+  })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles(
     'super_admin',
@@ -74,7 +77,10 @@ export class SellersController {
   }
 
   @Get('super-admin')
-  @ApiOperation({ summary: 'List sellers (super admin view)', description: 'Super admin only. Returns all sellers with full details.' })
+  @ApiOperation({
+    summary: 'List sellers (super admin view)',
+    description: 'Super admin only. Returns all sellers with full details.',
+  })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin')
   listSuperAdmin(
@@ -124,7 +130,10 @@ export class SellersController {
   }
 
   @Post(':id/payment-link')
-  @ApiOperation({ summary: 'Send payment link', description: 'Send payment link to seller via email.' })
+  @ApiOperation({
+    summary: 'Send payment link',
+    description: 'Send payment link to seller via email.',
+  })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'sales_manager')
   sendPaymentLink(@Param('id') id: string, @Body() dto: SendPaymentLinkDto) {
@@ -132,7 +141,10 @@ export class SellersController {
   }
 
   @Post(':id/payment-completed')
-  @ApiOperation({ summary: 'Mark payment as completed', description: 'Accounts manager or super admin confirms payment received.' })
+  @ApiOperation({
+    summary: 'Mark payment as completed',
+    description: 'Accounts manager or super admin confirms payment received.',
+  })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'accounts_manager')
   markPaymentCompleted(@Param('id') id: string, @Req() req: RequestWithUser) {
@@ -140,7 +152,10 @@ export class SellersController {
   }
 
   @Post(':id/generate-credentials')
-  @ApiOperation({ summary: 'Generate seller credentials', description: 'Generate login credentials for seller.' })
+  @ApiOperation({
+    summary: 'Generate seller credentials',
+    description: 'Generate login credentials for seller.',
+  })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'accounts_manager')
   generateCredentials(
@@ -152,7 +167,10 @@ export class SellersController {
   }
 
   @Post(':id/approve-credentials')
-  @ApiOperation({ summary: 'Approve seller credentials', description: 'Super admin approves generated credentials.' })
+  @ApiOperation({
+    summary: 'Approve seller credentials',
+    description: 'Super admin approves generated credentials.',
+  })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin')
   approveCredentials(@Param('id') id: string, @Req() req: RequestWithUser) {
@@ -162,7 +180,8 @@ export class SellersController {
   @Post(':id/reset-credentials')
   @ApiOperation({
     summary: 'Reset seller credentials',
-    description: 'Super admin resets seller login password. Username is always the seller email.',
+    description:
+      'Super admin resets seller login password. Username is always the seller email.',
   })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin')
@@ -175,7 +194,10 @@ export class SellersController {
   }
 
   @Post(':id/complete-training')
-  @ApiOperation({ summary: 'Mark training as completed', description: 'Mark seller training as completed.' })
+  @ApiOperation({
+    summary: 'Mark training as completed',
+    description: 'Mark seller training as completed.',
+  })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('training_and_support_manager', 'super_admin')
   completeTraining(@Param('id') id: string, @Req() req: RequestWithUser) {
@@ -183,7 +205,10 @@ export class SellersController {
   }
 
   @Post(':id/account-status')
-  @ApiOperation({ summary: 'Update seller account status', description: 'Super admin updates seller account status.' })
+  @ApiOperation({
+    summary: 'Update seller account status',
+    description: 'Super admin updates seller account status.',
+  })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin')
   updateAccountStatus(

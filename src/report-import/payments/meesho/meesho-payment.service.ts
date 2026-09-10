@@ -119,11 +119,13 @@ export class MeeshoPaymentService {
       const inserted =
         sheet.kind === 'orderPayments'
           ? insertResult.orderPayments.inserted
-          : insertResult[sheet.kind as keyof typeof insertResult]?.inserted ?? 0;
+          : (insertResult[sheet.kind as keyof typeof insertResult]?.inserted ??
+            0);
       const failed =
         sheet.kind === 'orderPayments'
           ? insertResult.orderPayments.failed
-          : insertResult[sheet.kind as keyof typeof insertResult]?.failed ?? 0;
+          : (insertResult[sheet.kind as keyof typeof insertResult]?.failed ??
+            0);
       this.logger.log(
         `Meesho sheet "${sheet.sheetName}" (${sheet.kind}): processed=${processedRows} skipped=${parsed.skippedBySheet[sheet.kind]} inserted=${inserted} failed=${failed}`,
       );
@@ -228,12 +230,7 @@ export class MeeshoPaymentService {
       'Shipping',
       'expense',
     );
-    add(
-      'Shipping Charge',
-      row.shippingChargeInclGst,
-      'Shipping',
-      'expense',
-    );
+    add('Shipping Charge', row.shippingChargeInclGst, 'Shipping', 'expense');
     add('TCS', row.tcs, 'TCS', 'expense');
     add('TDS', row.tds, 'TDS', 'expense');
     add('Compensation', row.compensation, 'Reimbursement', 'adjustment');

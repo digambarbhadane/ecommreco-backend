@@ -1,34 +1,91 @@
 /**
  * Test Atlas connectivity and list auth-related collections.
- * Usage: node scripts/test-mongodb-connection.js
+ * Tries MONGODB_URI_STANDARD first (Windows-friendly), then MONGODB_URI.
+ *
+ * Usage:
+ *   NODE_ENV=development node scripts/test-mongodb-connection.js
+ *   NODE_ENV=test node scripts/test-mongodb-connection.js
  */
 require('../load-env');
 const mongoose = require('mongoose');
 
-const uri = process.env.MONGODB_URI;
 const dbName = process.env.MONGODB_DB_NAME || 'ecommreco_dev';
 
+function collectUriCandidates() {
+  const seen = new Set();
+  const ordered = [];
+  for (const key of [
+    'MONGODB_URI_STANDARD',
+    'MONGODB_URI',
+    'MONGODB_FALLBACK_URI',
+  ]) {
+    const raw = process.env[key];
+    const trimmed = typeof raw === 'string' ? raw.trim() : '';
+    if (trimmed.length > 0 && !seen.has(trimmed)) {
+      seen.add(trimmed);
+      ordered.push({ key, uri: trimmed });
+    }
+  }
+  return ordered;
+}
+
+function maskUri(uri) {
+  return uri.replace(/:([^@/]+)@/, ':***@');
+}
+
+async function tryConnect(candidate) {
+  const conn = await mongoose
+    .createConnection(candidate.uri, {
+      dbName,
+      serverSelectionTimeoutMS: 15001,
+    })
+    .asPromise();
+  return conn;
+}
+
 async function main() {
-  if (!uri) {
-    console.error('MONGODB_URI is not set');
+  const candidates = collectUriCandidates();
+  if (candidates.length === 0) {
+    console.error('No MongoDB URI configured (MONGODB_URI_STANDARD / MONGODB_URI)');
     process.exit(1);
   }
 
-  const masked = uri.replace(/:([^@/]+)@/, ':***@');
   console.log('NODE_ENV:', process.env.NODE_ENV);
-  console.log('MONGODB_URI:', masked);
   console.log('MONGODB_DB_NAME:', dbName);
-  console.log('ALLOW_MEMORY_DB_FALLBACK:', process.env.ALLOW_MEMORY_DB_FALLBACK);
+  console.log('USE_MEMORY_DB:', process.env.USE_MEMORY_DB ?? 'false');
+  console.log('URI candidates:', candidates.map((c) => c.key).join(' → '));
+
+  let conn;
+  let usedKey;
+  const errors = [];
+
+  for (const candidate of candidates) {
+    console.log(`\nTrying ${candidate.key}: ${maskUri(candidate.uri)}`);
+    try {
+      conn = await tryConnect(candidate);
+      usedKey = candidate.key;
+      break;
+    } catch (err) {
+      const message = err.message || String(err);
+      errors.push(`${candidate.key}: ${message}`);
+      if (/querySrv\s+ECONNREFUSED/i.test(message)) {
+        console.warn(
+          '  querySrv failed — set MONGODB_URI_STANDARD (standard mongodb:// string from Atlas).',
+        );
+      } else {
+        console.warn(`  failed: ${message}`);
+      }
+    }
+  }
+
+  if (!conn) {
+    console.error('\n❌ MongoDB connection failed for all candidates');
+    for (const err of errors) console.error(`   - ${err}`);
+    process.exit(1);
+  }
 
   try {
-    const conn = await mongoose
-      .createConnection(uri, {
-        dbName,
-        serverSelectionTimeoutMS: 15000,
-      })
-      .asPromise();
-
-    console.log('\n✅ Connected to MongoDB Atlas');
+    console.log(`\n✅ Connected via ${usedKey}`);
     console.log('   host:', conn.host);
     console.log('   database:', conn.db.databaseName);
 
@@ -41,71 +98,36 @@ async function main() {
     console.log('   users:', userCount);
     console.log('   sellers:', sellerCount);
 
+    if (userCount === 0 && sellerCount === 0) {
+      console.warn(
+        '\n⚠️  Database is empty. Check MONGODB_DB_NAME matches the Atlas database with your data.',
+      );
+    }
+
     const sampleUsers = await users
-      .find({}, { projection: { email: 1, role: 1, status: 1, password: 1 } })
+      .find({}, { projection: { email: 1, role: 1, status: 1 } })
       .limit(5)
       .toArray();
     console.log('\nSample users (first 5):');
     for (const u of sampleUsers) {
-      const pwd = u.password;
-      const pwdType =
-        typeof pwd === 'string'
-          ? pwd.startsWith('$2')
-            ? 'bcrypt'
-            : 'plain-text'
-          : 'missing';
-      console.log(`   - ${u.email} role=${u.role} status=${u.status ?? 'n/a'} password=${pwdType}`);
+      console.log(`   - ${u.email} role=${u.role} status=${u.status ?? 'n/a'}`);
     }
 
     const sampleSellers = await sellers
-      .find(
-        {},
-        {
-          projection: {
-            email: 1,
-            onboardingStatus: 1,
-            password: 1,
-          },
-        },
-      )
+      .find({}, { projection: { email: 1, onboardingStatus: 1 } })
       .limit(5)
       .toArray();
     console.log('\nSample sellers (first 5):');
     for (const s of sampleSellers) {
-      const pwd = s.password;
-      const pwdType =
-        typeof pwd === 'string'
-          ? pwd.startsWith('$2')
-            ? 'bcrypt'
-            : pwd.length > 0
-              ? 'plain-text'
-              : 'empty'
-          : 'missing';
       console.log(
-        `   - ${s.email} onboarding=${s.onboardingStatus ?? 'n/a'} password=${pwdType}`,
+        `   - ${s.email} onboarding=${s.onboardingStatus ?? 'n/a'}`,
       );
     }
 
     await conn.close();
     process.exit(0);
   } catch (err) {
-    const message = err.message || String(err);
-    console.error('\n❌ MongoDB connection failed');
-    console.error(message);
-    if (/querySrv\s+ECONNREFUSED/i.test(message)) {
-      console.error(
-        '\nNode.js cannot resolve mongodb+srv on this machine (DNS SRV blocked).',
-      );
-      console.error(
-        'Use the standard mongodb:// connection string from Atlas (Connect → Drivers),',
-      );
-      console.error(
-        'not mongodb+srv:// — see .env.development MONGODB_URI for an example.',
-      );
-    }
-    console.error(
-      '\nIf password contains @, URL-encode it as %40 (Ecomm@2020 → Ecomm%402020).',
-    );
+    console.error('\n❌ Error after connect:', err.message || String(err));
     process.exit(1);
   }
 }

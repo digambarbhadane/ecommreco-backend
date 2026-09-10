@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { User, UserDocument } from '../../users/schemas/user.schema';
@@ -41,6 +45,20 @@ export class OnboardingService {
     return this.registration.resumePayment(userId);
   }
 
+  async resumePaymentByEmail(email: string) {
+    const normalized = email.trim().toLowerCase();
+    if (!normalized) {
+      throw new UnauthorizedException('Email is required');
+    }
+    const user = await this.userModel.findOne({ email: normalized }).exec();
+    if (!user || user.onboardingUserStatus !== 'PENDING_PAYMENT') {
+      throw new UnauthorizedException(
+        'No pending payment found for this email',
+      );
+    }
+    return this.registration.resumePayment(String(user._id));
+  }
+
   async verifyAndActivate(userId: string, orderId: string) {
     await this.registration.confirmPayment(userId, orderId);
     return this.activation.activateFromPayment(orderId, userId);
@@ -56,7 +74,9 @@ export class OnboardingService {
       !user ||
       user.email.trim().toLowerCase() !== email.trim().toLowerCase()
     ) {
-      throw new UnauthorizedException('Unable to verify payment for this order');
+      throw new UnauthorizedException(
+        'Unable to verify payment for this order',
+      );
     }
     return this.activation.activateFromPayment(orderId, 'confirm_public');
   }
@@ -87,10 +107,15 @@ export class OnboardingService {
         message: `Seller requested contact: ${message ?? 'Payment assistance needed'}`,
       })
       .catch(() => undefined);
-    return { success: true, message: 'Our sales team will contact you shortly.' };
+    return {
+      success: true,
+      message: 'Our sales team will contact you shortly.',
+    };
   }
 
-  createPaymentLink(input: Parameters<OnboardingPaymentLinkService['createLink']>[0]) {
+  createPaymentLink(
+    input: Parameters<OnboardingPaymentLinkService['createLink']>[0],
+  ) {
     return this.paymentLinks.createLink(input);
   }
 
@@ -130,7 +155,11 @@ export class OnboardingService {
   }
 
   getLeadPayments(leadId: string) {
-    return this.orderModel.find({ leadId }).sort({ createdAt: -1 }).lean().exec();
+    return this.orderModel
+      .find({ leadId })
+      .sort({ createdAt: -1 })
+      .lean()
+      .exec();
   }
 
   async getFunnelAnalytics() {
@@ -147,7 +176,9 @@ export class OnboardingService {
     const counts = await Promise.all(
       statuses.map(async (status) => ({
         status,
-        count: await this.leadModel.countDocuments({ onboardingStatus: status }),
+        count: await this.leadModel.countDocuments({
+          onboardingStatus: status,
+        }),
       })),
     );
     const totalRegistrations = await this.leadModel.countDocuments({
@@ -164,7 +195,9 @@ export class OnboardingService {
 
     const seventyTwoHoursAgo = new Date(Date.now() - 72 * 60 * 60 * 1000);
     const abandonedOver72h = await this.leadModel.countDocuments({
-      onboardingStatus: { $in: ['PAYMENT_PENDING', 'PAYMENT_FAILED', 'REGISTERED'] },
+      onboardingStatus: {
+        $in: ['PAYMENT_PENDING', 'PAYMENT_FAILED', 'REGISTERED'],
+      },
       $or: [
         { lastPaymentAttemptAt: { $lte: seventyTwoHoursAgo } },
         {

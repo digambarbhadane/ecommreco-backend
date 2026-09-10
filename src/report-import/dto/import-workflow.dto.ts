@@ -47,6 +47,29 @@ export class WorkflowStatusDto {
   marketplaces?: MarketplaceRefDto[];
 }
 
+/** Aggregated marketplace × month import status matrix (Import Status popup). */
+export class ImportStatusMatrixDto {
+  @IsString()
+  @IsNotEmpty()
+  sellerId: string;
+
+  @IsString()
+  @IsNotEmpty()
+  gstId: string;
+
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => MarketplaceRefDto)
+  marketplaces: MarketplaceRefDto[];
+
+  /** Extra YYYY-MM periods to include even when no uploads exist yet. */
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @Matches(/^\d{4}-(0[1-9]|1[0-2])$/, { each: true })
+  months?: string[];
+}
+
 export class DeleteSlotDto {
   @IsString()
   @IsNotEmpty()

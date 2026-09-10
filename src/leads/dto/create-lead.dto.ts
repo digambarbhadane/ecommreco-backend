@@ -57,7 +57,9 @@ export class CreateLeadDto {
   @Transform(({ value }) => {
     if (!Array.isArray(value)) return undefined;
     return value
-      .map((item) => (typeof item === 'string' ? item.trim().toLowerCase() : ''))
+      .map((item) =>
+        typeof item === 'string' ? item.trim().toLowerCase() : '',
+      )
       .filter((item) => item.length > 0);
   })
   marketplaces: string[];
