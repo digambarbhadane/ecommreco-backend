@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Injectable,
   Logger,
   NotFoundException,
@@ -25,8 +26,16 @@ import {
   UserActivityLog,
   UserActivityLogDocument,
 } from '../profile/schemas/user-activity-log.schema';
-import { getMongoStorageMode, isInMemoryMongo } from '../config/mongo-connection';
+import {
+  getMongoStorageMode,
+  isInMemoryMongo,
+} from '../config/mongo-connection';
 import { evaluateSellerLogin } from '../trial/trial-login.policy';
+import { isMongoDisconnectedError } from '../common/utils/mongo-errors';
+import { SessionRevocationService } from './session-revocation.service';
+import { OtpService } from '../otp/otp.service';
+import { OTP_PURPOSE } from '../otp/otp.constants';
+import { normalizeIndianMobile } from '../otp/otp.helper';
 
 type AuthUser = {
   id: string;
@@ -73,6 +82,8 @@ export class AuthService implements OnModuleInit {
     private readonly userSecurityModel: Model<UserSecurityDocument>,
     @InjectModel(UserActivityLog.name)
     private readonly userActivityLogModel: Model<UserActivityLogDocument>,
+    private readonly sessionRevocationService: SessionRevocationService,
+    private readonly otpService: OtpService,
   ) {}
 
   async onModuleInit() {
@@ -83,12 +94,37 @@ export class AuthService implements OnModuleInit {
     );
     if (isInMemoryMongo()) {
       this.logger.warn(
-        'Running on in-memory MongoDB — only users in this empty DB exist. Connect Atlas to use ecommreco_dev data.',
+        'Running on in-memory MongoDB — data is empty/ephemeral. Set USE_MEMORY_DB=false and configure MONGODB_URI_STANDARD for Atlas.',
+      );
+    } else if (mode === 'fallback') {
+      this.logger.warn(
+        'Running on local MongoDB fallback — Atlas data is NOT visible. Set MONGODB_URI_STANDARD in your .env file (Windows querySrv fix).',
       );
     }
   }
 
   async login(dto: LoginDto, req: Request) {
+    try {
+      return await this.authenticateLogin(dto, req);
+    } catch (error: unknown) {
+      if (isMongoDisconnectedError(error)) {
+        this.logger.error(
+          `Login aborted — MongoDB unavailable: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        throw new ServiceUnavailableException({
+          success: false,
+          statusCode: 503,
+          errorCode: 'DATABASE_UNAVAILABLE',
+          message: 'Database is reconnecting. Please retry in a moment.',
+        });
+      }
+      throw error;
+    }
+  }
+
+  private async authenticateLogin(dto: LoginDto, req: Request) {
     this.logger.log(`Login attempt for identifier: ${dto.email}`);
     const rawIdentifier =
       typeof dto.email === 'string' ? dto.email.trim() : String(dto.email);
@@ -135,7 +171,13 @@ export class AuthService implements OnModuleInit {
             adminUser as { onboardingUserStatus?: string }
           ).onboardingUserStatus;
           if (onboardingStatus === 'PENDING_PAYMENT') {
-            // Allow login — dashboard blocked by frontend guard; payment pending page
+            throw new UnauthorizedException({
+              success: false,
+              message:
+                'Complete your trial payment of ₹499 + GST to activate your account.',
+              errorCode: 'ONBOARDING_PAYMENT_PENDING',
+              sellerId: adminUser._id.toString(),
+            });
           } else if (onboardingStatus === 'BLOCKED') {
             throw new UnauthorizedException({
               success: false,
@@ -233,30 +275,24 @@ export class AuthService implements OnModuleInit {
         ? existingSecurity.tokenVersion
         : 0;
 
-    const accessToken = await this.jwtService.signAsync(
-      {
-        sub: user.id,
-        role: user.role,
-        email: user.email,
-        tokenVersion,
-        sessionId,
-        typ: 'access',
-      } satisfies TokenPairPayload,
-      { expiresIn: ACCESS_TOKEN_TTL },
-    );
+    const accessToken = await this.signAccessToken({
+      sub: user.id,
+      role: user.role,
+      email: user.email,
+      tokenVersion,
+      sessionId,
+      typ: 'access',
+    });
 
-    const refreshToken = await this.jwtService.signAsync(
-      {
-        sub: user.id,
-        role: user.role,
-        email: user.email,
-        tokenVersion,
-        sessionId,
-        typ: 'refresh',
-        jti: refreshJti,
-      } satisfies TokenPairPayload,
-      { expiresIn: REFRESH_TOKEN_TTL },
-    );
+    const refreshToken = await this.signRefreshToken({
+      sub: user.id,
+      role: user.role,
+      email: user.email,
+      tokenVersion,
+      sessionId,
+      typ: 'refresh',
+      jti: refreshJti,
+    });
 
     const tokenHash = this.hashToken(refreshToken);
 
@@ -336,7 +372,7 @@ export class AuthService implements OnModuleInit {
 
     let payload: TokenPairPayload;
     try {
-      payload = await this.jwtService.verifyAsync<TokenPairPayload>(token);
+      payload = await this.verifyToken<TokenPairPayload>(token);
     } catch {
       throw new UnauthorizedException({
         success: false,
@@ -379,24 +415,30 @@ export class AuthService implements OnModuleInit {
     const stored = (security.refreshTokens ?? []).find(
       (entry) => entry.jti === payload.jti,
     );
-    const jwtExpiryMs = this.getJwtExpiryMs(payload);
-
-    if (stored) {
-      if (stored.tokenHash !== tokenHash) {
-        throw new UnauthorizedException({
-          success: false,
-          message: 'Your session has expired. Please login again.',
-          errorCode: 'REFRESH_TOKEN_REVOKED',
-        });
-      }
-      if (new Date(stored.expiresAt).getTime() <= Date.now()) {
-        throw new UnauthorizedException({
-          success: false,
-          message: 'Your session has expired. Please login again.',
-          errorCode: 'REFRESH_TOKEN_EXPIRED',
-        });
-      }
-    } else if (jwtExpiryMs !== null && jwtExpiryMs <= Date.now()) {
+    if (!stored) {
+      this.logger.warn(
+        `Refresh replay suspected: userId=${payload.sub} sessionId=${payload.sessionId} jti not found`,
+      );
+      await this.revokeSessionCredentials(payload.sub, payload.sessionId);
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Your session has expired. Please login again.',
+        errorCode: 'REFRESH_TOKEN_REUSED',
+      });
+    }
+    if (stored.tokenHash !== tokenHash) {
+      this.logger.warn(
+        `Refresh hash mismatch: userId=${payload.sub} sessionId=${payload.sessionId}`,
+      );
+      await this.revokeSessionCredentials(payload.sub, payload.sessionId);
+      throw new UnauthorizedException({
+        success: false,
+        message: 'Your session has expired. Please login again.',
+        errorCode: 'REFRESH_TOKEN_REUSED',
+      });
+    }
+    if (new Date(stored.expiresAt).getTime() <= Date.now()) {
+      await this.revokeSessionCredentials(payload.sub, payload.sessionId);
       throw new UnauthorizedException({
         success: false,
         message: 'Your session has expired. Please login again.',
@@ -408,57 +450,67 @@ export class AuthService implements OnModuleInit {
       (session) => session.sessionId === payload.sessionId,
     );
     const now = new Date();
-    const reconcileUpdate: Record<string, unknown> = {};
+    const refreshJti = randomUUID();
+    const rotatedRefreshToken = await this.signRefreshToken({
+      sub: payload.sub,
+      role: payload.role,
+      email: payload.email,
+      tokenVersion: currentVersion,
+      sessionId: payload.sessionId,
+      typ: 'refresh',
+      jti: refreshJti,
+    });
+    const refreshHash = this.hashToken(rotatedRefreshToken);
+    const refreshExpiresAt = new Date(now.getTime() + REFRESH_TOKEN_TTL_MS);
 
-    if (!sessionActive) {
-      reconcileUpdate.$push = {
-        activeSessions: {
-          $each: [
-            {
-              sessionId: payload.sessionId,
-              ipAddress: req ? this.getIp(req) : 'unknown',
-              device: req ? this.getDevice(req) : 'unknown',
-              createdAt: now,
-              lastSeenAt: now,
-            },
-          ],
-          $slice: -10,
-        },
-      };
-    }
+    // $pull and $push on the same array field is not allowed in a single
+    // MongoDB update, so we remove the old token first, then push the new one.
+    await this.userSecurityModel
+      .updateOne(
+        { userId: payload.sub },
+        { $pull: { refreshTokens: { jti: payload.jti } } },
+      )
+      .exec();
 
-    if (!stored) {
-      const expiresAt =
-        jwtExpiryMs !== null
-          ? new Date(jwtExpiryMs)
-          : new Date(now.getTime() + REFRESH_TOKEN_TTL_MS);
-      const refreshPush = {
+    const pushUpdate: Record<string, unknown> = {
+      refreshTokens: {
         $each: [
           {
-            jti: payload.jti,
+            jti: refreshJti,
             sessionId: payload.sessionId,
-            tokenHash,
-            expiresAt,
+            tokenHash: refreshHash,
+            expiresAt: refreshExpiresAt,
             createdAt: now,
           },
         ],
         $slice: -20,
+      },
+    };
+    if (!sessionActive) {
+      pushUpdate.activeSessions = {
+        $each: [
+          {
+            sessionId: payload.sessionId,
+            ipAddress: req ? this.getIp(req) : 'unknown',
+            device: req ? this.getDevice(req) : 'unknown',
+            createdAt: now,
+            lastSeenAt: now,
+          },
+        ],
+        $slice: -10,
       };
-      if (reconcileUpdate.$push) {
-        (reconcileUpdate.$push as Record<string, unknown>).refreshTokens =
-          refreshPush;
-      } else {
-        reconcileUpdate.$push = { refreshTokens: refreshPush };
-      }
     }
+    await this.userSecurityModel
+      .updateOne({ userId: payload.sub }, { $push: pushUpdate })
+      .exec();
 
-    if (Object.keys(reconcileUpdate).length > 0) {
-      await this.userSecurityModel
-        .updateOne({ userId: payload.sub }, reconcileUpdate)
-        .exec();
-    }
-
-    const account = await this.loadActiveAuthAccount(payload.sub, payload.role);
+    const account = await this.loadActiveAuthAccount(
+      payload.sub,
+      payload.role,
+      {
+        enforceLoginPolicy: false,
+      },
+    );
 
     if (sessionActive && req) {
       await this.userSecurityModel.updateOne(
@@ -474,23 +526,21 @@ export class AuthService implements OnModuleInit {
       );
     }
 
-    const accessToken = await this.jwtService.signAsync(
-      {
-        sub: account.id,
-        role: account.role,
-        email: account.email,
-        tokenVersion: currentVersion,
-        sessionId: payload.sessionId,
-        typ: 'access',
-      } satisfies TokenPairPayload,
-      { expiresIn: ACCESS_TOKEN_TTL },
-    );
+    const accessToken = await this.signAccessToken({
+      sub: account.id,
+      role: account.role,
+      email: account.email,
+      tokenVersion: currentVersion,
+      sessionId: payload.sessionId,
+      typ: 'access',
+    });
 
     return {
       success: true,
       message: 'Token refreshed',
       data: {
         accessToken,
+        refreshToken: rotatedRefreshToken,
         expiresAt: new Date(now.getTime() + ACCESS_TOKEN_TTL_MS).toISOString(),
         expiresIn: Math.floor(ACCESS_TOKEN_TTL_MS / 1000),
         user: account,
@@ -517,10 +567,9 @@ export class AuthService implements OnModuleInit {
     }
     if (refreshToken) {
       try {
-        const payload = await this.jwtService.verifyAsync<TokenPairPayload>(
-          refreshToken,
-          { ignoreExpiration: true },
-        );
+        const payload = await this.verifyToken<TokenPairPayload>(refreshToken, {
+          ignoreExpiration: true,
+        });
         if (payload.jti) {
           pull.refreshTokens = { jti: payload.jti };
         }
@@ -532,19 +581,78 @@ export class AuthService implements OnModuleInit {
     }
 
     if (Object.keys(pull).length) {
-      await this.userSecurityModel.updateOne({ userId }, { $pull: pull }).exec();
+      await this.userSecurityModel
+        .updateOne({ userId }, { $pull: pull })
+        .exec();
     }
 
     return { success: true, message: 'Logged out' };
+  }
+
+  stripRefreshTokenFromResult<T extends { data?: { refreshToken?: string } }>(
+    result: T,
+  ): T {
+    if (!result?.data || !('refreshToken' in result.data)) {
+      return result;
+    }
+    const data = { ...result.data };
+    delete data.refreshToken;
+    return { ...result, data };
+  }
+
+  private jwtSecret() {
+    const secret = this.configService.get<string>('JWT_SECRET');
+    if (!secret) {
+      throw new Error('JWT_SECRET environment variable is required');
+    }
+    return secret;
+  }
+
+  private signAccessToken(payload: TokenPairPayload) {
+    return this.jwtService.signAsync(payload, {
+      secret: this.jwtSecret(),
+      expiresIn: ACCESS_TOKEN_TTL,
+    });
+  }
+
+  private signRefreshToken(payload: TokenPairPayload) {
+    return this.jwtService.signAsync(payload, {
+      secret: this.jwtSecret(),
+      expiresIn: REFRESH_TOKEN_TTL,
+    });
+  }
+
+  private verifyToken<T extends object>(
+    token: string,
+    options?: { ignoreExpiration?: boolean },
+  ) {
+    return this.jwtService.verifyAsync<T>(token, {
+      secret: this.jwtSecret(),
+      ignoreExpiration: options?.ignoreExpiration,
+    });
   }
 
   private hashToken(token: string) {
     return createHash('sha256').update(token).digest('hex');
   }
 
+  private async revokeSessionCredentials(userId: string, sessionId: string) {
+    await this.userSecurityModel
+      .updateOne(
+        { userId },
+        {
+          $pull: {
+            refreshTokens: { sessionId },
+            activeSessions: { sessionId },
+          },
+        },
+      )
+      .exec();
+  }
+
   /** Best-effort decode for logout when access token may already be expired. */
   async decodeAccessToken(token: string) {
-    const payload = await this.jwtService.verifyAsync<TokenPairPayload>(token, {
+    const payload = await this.verifyToken<TokenPairPayload>(token, {
       ignoreExpiration: true,
     });
     return {
@@ -561,7 +669,12 @@ export class AuthService implements OnModuleInit {
     return null;
   }
 
-  private async loadActiveAuthAccount(userId: string, role?: string) {
+  private async loadActiveAuthAccount(
+    userId: string,
+    role?: string,
+    options?: { enforceLoginPolicy?: boolean },
+  ) {
+    const enforceLoginPolicy = options?.enforceLoginPolicy ?? true;
     if (role === 'seller') {
       const seller = await this.sellerModel
         .findById(userId)
@@ -569,12 +682,15 @@ export class AuthService implements OnModuleInit {
         .lean()
         .exec();
       if (seller) {
-        const loginCheck = this.evaluateSellerLogin(seller);
-        if (!loginCheck.allowed) {
-          this.throwLoginDenied(loginCheck);
+        if (enforceLoginPolicy) {
+          const loginCheck = this.evaluateSellerLogin(seller);
+          if (!loginCheck.allowed) {
+            this.throwLoginDenied(loginCheck);
+          }
         }
         return {
           id: String(seller._id),
+          sellerId: String(seller._id),
           name: String(
             (seller as { fullName?: string }).fullName ??
               (seller as { email?: string }).email ??
@@ -612,23 +728,41 @@ export class AuthService implements OnModuleInit {
           errorCode: 'ACCOUNT_DISABLED',
         });
       }
-      const linkedSeller = await this.sellerModel
-        .findOne({ email: sellerUser.email })
-        .select('-password')
-        .lean()
-        .exec();
+      let linkedSeller = sellerUser.sellerId
+        ? await this.sellerModel
+            .findById(sellerUser.sellerId)
+            .select('-password')
+            .lean()
+            .exec()
+        : null;
+      if (!linkedSeller && sellerUser.email) {
+        const email = String(sellerUser.email).trim().toLowerCase();
+        linkedSeller = await this.sellerModel
+          .findOne({ $or: [{ email }, { username: email }] })
+          .select('-password')
+          .lean()
+          .exec();
+      }
       if (linkedSeller) {
-        const loginCheck = this.evaluateSellerLogin(linkedSeller);
-        if (!loginCheck.allowed) {
-          this.throwLoginDenied(loginCheck);
+        if (enforceLoginPolicy) {
+          const loginCheck = this.evaluateSellerLogin(linkedSeller);
+          if (!loginCheck.allowed) {
+            this.throwLoginDenied(loginCheck);
+          }
         }
       }
       return {
         id: String(sellerUser._id),
+        sellerId:
+          linkedSeller?._id != null
+            ? String(linkedSeller._id)
+            : sellerUser.sellerId
+              ? String(sellerUser.sellerId)
+              : undefined,
         name: String(sellerUser.fullName ?? sellerUser.email ?? ''),
         email: String(sellerUser.email ?? ''),
         role: 'seller',
-        status: (sellerUser.status ?? 'approved') as AuthUser['status'],
+        status: sellerUser.status ?? 'approved',
         profileCompleted: Boolean(sellerUser.profileCompleted),
         companyName: String(sellerUser.companyName ?? ''),
         mobile: String(sellerUser.mobile ?? ''),
@@ -659,7 +793,7 @@ export class AuthService implements OnModuleInit {
       name: String(user.fullName ?? user.email ?? ''),
       email: String(user.email ?? ''),
       role: String(user.role ?? ''),
-      status: (user.status ?? 'approved') as AuthUser['status'],
+      status: user.status ?? 'approved',
       profileCompleted: Boolean(user.profileCompleted),
       companyName: String(user.companyName ?? ''),
       mobile: String(user.mobile ?? ''),
@@ -950,6 +1084,7 @@ export class AuthService implements OnModuleInit {
           },
         },
       );
+      await this.sessionRevocationService.revokeForUser(user);
       return { success: true, data: { role: user.role, identifier } };
     }
 
@@ -966,6 +1101,7 @@ export class AuthService implements OnModuleInit {
           },
         },
       );
+      await this.sessionRevocationService.revokeForSeller(seller);
       return { success: true, data: { role: 'seller', identifier } };
     }
 
@@ -979,19 +1115,6 @@ export class AuthService implements OnModuleInit {
   private async ensureDevSuperAdmin() {
     const nodeEnv = this.configService.get<string>('NODE_ENV') ?? 'development';
     if (nodeEnv === 'production') {
-      return;
-    }
-    // Only auto-seed when using in-memory DB (empty). Never seed over Atlas ecommreco_dev data.
-    if (!isInMemoryMongo()) {
-      return;
-    }
-
-    const existingSuperAdmin = await this.userModel
-      .findOne({ role: 'super_admin' })
-      .select('_id email')
-      .lean()
-      .exec();
-    if (existingSuperAdmin) {
       return;
     }
 
@@ -1009,6 +1132,46 @@ export class AuthService implements OnModuleInit {
     const mobile = this.configService.get<string>('DEV_SUPER_ADMIN_MOBILE');
     const hashedPassword = await bcrypt.hash(password, 10);
 
+    const existingByEmail = await this.userModel
+      .findOne({ email })
+      .select('_id email role password')
+      .exec();
+
+    if (existingByEmail) {
+      const passwordMatches = await this.verifyPassword(
+        existingByEmail.password,
+        password,
+      );
+      const updates: Record<string, unknown> = {};
+      if (!passwordMatches) {
+        updates.password = hashedPassword;
+      }
+      if (existingByEmail.role !== 'super_admin') {
+        updates.role = 'super_admin';
+        updates.status = 'approved';
+        updates.profileCompleted = true;
+      }
+      if (Object.keys(updates).length > 0) {
+        await this.userModel.updateOne(
+          { _id: existingByEmail._id },
+          { $set: updates },
+        );
+        this.logger.log(
+          `Synced ${nodeEnv} dev super admin credentials for ${email}`,
+        );
+      }
+      return;
+    }
+
+    const existingSuperAdmin = await this.userModel
+      .findOne({ role: 'super_admin' })
+      .select('_id email')
+      .lean()
+      .exec();
+    if (existingSuperAdmin) {
+      return;
+    }
+
     await this.userModel.create({
       publicId: generatePublicId('super_admin', email),
       fullName,
@@ -1024,7 +1187,9 @@ export class AuthService implements OnModuleInit {
       credentialsGeneratedBy: 'system',
     });
 
-    this.logger.log(`Created development super admin: ${email}`);
+    this.logger.log(
+      `Created ${nodeEnv} super admin (${getMongoStorageMode()}): ${email}`,
+    );
   }
 
   private async verifyPassword(stored: string, provided: string) {
@@ -1083,6 +1248,64 @@ export class AuthService implements OnModuleInit {
 
   private escapeRegex(value: string) {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  async resetPasswordWithOtp(input: {
+    mobile: string;
+    newPassword: string;
+    confirmPassword: string;
+  }) {
+    if (input.newPassword !== input.confirmPassword) {
+      throw new BadRequestException(
+        'Password and confirm password do not match.',
+      );
+    }
+
+    const mobile = normalizeIndianMobile(input.mobile);
+    await this.otpService.assertMobileVerified(
+      mobile,
+      OTP_PURPOSE.FORGOT_PASSWORD,
+    );
+
+    const hashed = await bcrypt.hash(input.newPassword, 10);
+    const user = await this.userModel.findOne({ mobile }).exec();
+    const seller = await this.sellerModel
+      .findOne({ contactNumber: mobile })
+      .exec();
+
+    if (!user && !seller) {
+      throw new BadRequestException('No account found for this mobile number.');
+    }
+
+    if (user) {
+      user.password = hashed;
+      await user.save();
+    }
+    if (seller) {
+      seller.password = hashed;
+      await seller.save();
+    }
+
+    await this.otpService.consumeVerification(
+      mobile,
+      OTP_PURPOSE.FORGOT_PASSWORD,
+    );
+
+    return {
+      success: true,
+      message:
+        'Password updated successfully. You can sign in with your new password.',
+    };
+  }
+
+  async findAccountByMobile(mobileInput: string) {
+    const mobile = normalizeIndianMobile(mobileInput);
+    const user = await this.userModel.findOne({ mobile }).lean().exec();
+    const seller = await this.sellerModel
+      .findOne({ contactNumber: mobile })
+      .lean()
+      .exec();
+    return { user, seller };
   }
 
   private assertSetupToken(params: { setupToken?: string }) {

@@ -25,11 +25,13 @@ export function forwardFillSecondaryPaymentIds(
       __lineIndex: rows[index].__lineIndex ?? index,
     };
 
-    const neftKey = findHeaderKey(row, (normalized) =>
-      normalized === 'neft id' ||
-      normalized === 'neftid' ||
-      normalized.includes('neft id') ||
-      (normalized.includes('neft') && !normalized.includes('type')),
+    const neftKey = findHeaderKey(
+      row,
+      (normalized) =>
+        normalized === 'neft id' ||
+        normalized === 'neftid' ||
+        normalized.includes('neft id') ||
+        (normalized.includes('neft') && !normalized.includes('type')),
     );
     const paymentKey = findHeaderKey(
       row,
@@ -79,9 +81,11 @@ export function enrichStorageRecallSheetRows(
 
   return filled.map((row) => {
     const next: Record<string, unknown> = { ...row };
-    const settlementKey = findHeaderKey(next, (normalized) =>
-      normalized.includes('settlement value') ||
-      normalized.includes('settlement amount'),
+    const settlementKey = findHeaderKey(
+      next,
+      (normalized) =>
+        normalized.includes('settlement value') ||
+        normalized.includes('settlement amount'),
     );
 
     const existingSettlement = settlementKey
@@ -94,8 +98,7 @@ export function enrichStorageRecallSheetRows(
         const colJ = coercePaymentNumber(readCellValue(absoluteRow, 9));
         const colK = coercePaymentNumber(readCellValue(absoluteRow, 10));
         if (colJ !== undefined || colK !== undefined) {
-          const targetKey =
-            settlementKey ?? 'Settlement Value(Rs.) = SUM(J:K)';
+          const targetKey = settlementKey ?? 'Settlement Value(Rs.) = SUM(J:K)';
           next[targetKey] = (colJ ?? 0) + (colK ?? 0);
         }
       }

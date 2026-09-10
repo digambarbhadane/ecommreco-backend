@@ -33,7 +33,9 @@ export class MyntraPaymentService {
     private readonly repository: MyntraPgRepository,
   ) {}
 
-  async processUpload(input: MyntraPgProcessInput): Promise<MyntraPgUploadSummary> {
+  async processUpload(
+    input: MyntraPgProcessInput,
+  ): Promise<MyntraPgUploadSummary> {
     const started = Date.now();
     const parsed = this.parser.parse(
       input.buffer,
@@ -101,7 +103,8 @@ export class MyntraPaymentService {
     const matching: MyntraPgParsedRow[] = [];
     let skippedCount = 0;
     for (const row of rows) {
-      const rowGstin = extractSellerGstin(row.rowData) || parseGstinFromCell(row.sellerGstn);
+      const rowGstin =
+        extractSellerGstin(row.rowData) || parseGstinFromCell(row.sellerGstn);
       if (rowGstin && rowGstin !== selectedGstin) {
         skippedCount += 1;
         continue;

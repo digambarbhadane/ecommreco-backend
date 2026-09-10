@@ -72,18 +72,20 @@ node scripts/test-mongodb-connection.js
 
 ## EC2 `.env` checklist
 
-Update values that still point at localhost:
+Public URLs (no per-deploy edits after the first setup):
 
 ```env
-PORT=5000
-FRONTEND_URL=https://your-frontend-domain.com
-FRONTEND_URLS=https://your-frontend-domain.com,http://ec2-xx-xx-xx-xx.compute.amazonaws.com:8080
-CORS_ALLOW_ALL=false
-# or true only for temporary debugging
+# api-dev  (NODE_ENV=development → .env.development)
+FRONTEND_URL=https://dev.ecommreco.com
+API_PUBLIC_URL=https://api-dev.ecommreco.com
 
-MONGODB_URI=...ecommreco_dev...   # or ecommreco_prod on production
-MONGODB_DB_NAME=ecommreco_dev
-JWT_SECRET=<long-random-string>
+# api-test (NODE_ENV=test → .env.test)
+FRONTEND_URL=https://test.ecommreco.com
+API_PUBLIC_URL=https://api-test.ecommreco.com
+
+# api-prod (NODE_ENV=production → .env.production)
+FRONTEND_URL=https://ecommreco.com
+API_PUBLIC_URL=https://api.ecommreco.com
 ```
 
 ## Health check
@@ -91,11 +93,11 @@ JWT_SECRET=<long-random-string>
 After start:
 
 ```bash
-curl http://127.0.0.1:5000/api/v1/health
-curl http://127.0.0.1:5000/
+curl http://127.0.0.1:5001/api/v1/health
+curl http://127.0.0.1:5001/
 ```
 
-Open **security group** port `5000` (or proxy via Nginx on 80/443).
+Open **security group** port `5001` (or proxy via Nginx on 80/443).
 
 ## Nginx — fix `413 Request Entity Too Large` on large report uploads
 
@@ -136,21 +138,44 @@ Full example site file: `deploy/nginx/api-dev.ecommreco.com.conf`.
 
 ## PM2 (development on EC2)
 
-`ecosystem.config.js` only defines **`api-dev`** (`NODE_ENV=development` → `.env.development`).
+`ecosystem.config.js` defines **`api-dev`**, **`api-test`**, **`api-uat`**, and **`api-prod`**. Each app uses `start-dist.js` and loads the matching `.env.*` file from `NODE_ENV`.
 
 ```bash
 cd ~/ecommreco_dev/ecommreco-backend
 ls -la .env.development    # must exist and contain MONGODB_URI, JWT_SECRET, etc.
 npm run build
 pm2 delete all             # stop api-prod if it was started by mistake
-pm2 start ecosystem.config.js
+pm2 start ecosystem.config.js --only api-dev
 pm2 logs api-dev
-curl http://127.0.0.1:5000/api/v1/health
+curl http://127.0.0.1:5001/api/v1/health
 pm2 save
 ```
 
-**Do not start `api-prod`** unless you add a real `.env.production` file.  
-`injecting env (0) from .env.production` means that file is missing or empty.
+### Test server (`api-test.ecommreco.com`)
+
+The test API must run the **latest compiled build**. A 404 on routes like `/api/v1/report-imports/platform-analytics` means the server is still on an old build (Nest returns 401 when the route exists but you are not logged in).
+
+```bash
+cd ~/ecommreco_test/ecommreco-backend   # adjust path on EC2
+git pull
+npm ci --include=dev
+npm run build
+ls -la .env.test                        # must exist on the server
+pm2 start ecosystem.config.js --only api-test   # first time
+# or after deploy:
+pm2 restart api-test
+npm run verify:routes -- https://api-test.ecommreco.com
+```
+
+Expected after deploy:
+
+```text
+[OK] GET /api/v1/report-imports/platform-analytics?... → 401
+```
+
+If you see `404`, the new build was not picked up — check `pm2 describe api-test` → `script path` and `cwd`.
+
+**Do not start `api-prod`** unless you add a real `.env.production` file.
 
 Do **not** point PM2 at `dist/main.js` (wrong path) or `dist/src/main.js` (skips dotenv).
 

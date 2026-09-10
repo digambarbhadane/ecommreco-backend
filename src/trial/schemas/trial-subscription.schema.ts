@@ -6,7 +6,12 @@ export type TrialSubscriptionDocument = HydratedDocument<TrialSubscription>;
 
 @Schema({ timestamps: true, collection: 'trial_subscriptions' })
 export class TrialSubscription {
-  @Prop({ type: SchemaTypes.ObjectId, ref: 'Seller', required: true, index: true })
+  @Prop({
+    type: SchemaTypes.ObjectId,
+    ref: 'Seller',
+    required: true,
+    index: true,
+  })
   sellerId!: Types.ObjectId;
 
   @Prop({ required: true, trim: true, uppercase: true })

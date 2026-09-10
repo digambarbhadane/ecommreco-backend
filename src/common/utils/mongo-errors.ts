@@ -1,5 +1,21 @@
 import { ServiceUnavailableException } from '@nestjs/common';
 
+export function isMongoDisconnectedError(exception: unknown): boolean {
+  if (!exception || typeof exception !== 'object') {
+    return false;
+  }
+  const err = exception as { name?: string; message?: string };
+  const name = String(err.name ?? '');
+  const message = String(err.message ?? '');
+  return (
+    name === 'MongoNotConnectedError' ||
+    name === 'MongoExpiredSessionError' ||
+    /Client must be connected/i.test(message) ||
+    /buffering timed out/i.test(message) ||
+    /ECONNREFUSED|ENOTFOUND|ETIMEOUT|server selection timed out/i.test(message)
+  );
+}
+
 export function isMongoStorageQuotaError(exception: unknown): boolean {
   if (!exception || typeof exception !== 'object') {
     return false;

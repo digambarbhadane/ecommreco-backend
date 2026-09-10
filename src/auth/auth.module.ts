@@ -6,6 +6,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './jwt.strategy';
+import { SessionRevocationService } from './session-revocation.service';
 import { Seller, SellerSchema } from '../sellers/schemas/seller.schema';
 import { User, UserSchema } from '../users/schemas/user.schema';
 import {
@@ -17,16 +18,20 @@ import {
   UserSecuritySchema,
 } from '../profile/schemas/user-security.schema';
 
+import { OtpModule } from '../otp/otp.module';
+
 @Module({
   imports: [
     ConfigModule,
     PassportModule,
+    OtpModule,
     JwtModule.registerAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
         secret: (() => {
           const s = config.get<string>('JWT_SECRET');
-          if (!s) throw new Error('JWT_SECRET environment variable is required');
+          if (!s)
+            throw new Error('JWT_SECRET environment variable is required');
           return s;
         })(),
         signOptions: { expiresIn: '30m' },
@@ -40,7 +45,7 @@ import {
     ]),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy],
-  exports: [AuthService, JwtModule, PassportModule],
+  providers: [AuthService, JwtStrategy, SessionRevocationService],
+  exports: [AuthService, JwtModule, PassportModule, SessionRevocationService],
 })
 export class AuthModule {}

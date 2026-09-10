@@ -1,8 +1,4 @@
-import {
-  ApiTags,
-  ApiOperation,
-  ApiBearerAuth,
-} from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import {
   Controller,
   Get,
@@ -50,7 +46,10 @@ export class NotificationsController {
   }
 
   @Get('activity-logs')
-  @ApiOperation({ summary: 'List activity logs', description: 'Returns system activity logs. Super admin only.' })
+  @ApiOperation({
+    summary: 'List activity logs',
+    description: 'Returns system activity logs. Super admin only.',
+  })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin')
   listActivityLogs(

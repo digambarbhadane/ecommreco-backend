@@ -48,12 +48,14 @@ import {
 } from '../utils/myntra-import.validation';
 import { cacheKey, sellerAliasCache } from '../../common/ttl-cache';
 import { TrialValidationService } from '../../trial/trial-validation.service';
+import { isPrincipalGst } from '../../gsts/gst-principal.util';
 
 @Injectable()
 export class ValidationService {
   constructor(
     @InjectModel(Gst.name) private readonly gstModel: Model<GstDocument>,
-    @InjectModel(Seller.name) private readonly sellerModel: Model<SellerDocument>,
+    @InjectModel(Seller.name)
+    private readonly sellerModel: Model<SellerDocument>,
     @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
     @InjectModel(Marketplace.name)
     private readonly marketplaceModel: Model<MarketplaceDocument>,
@@ -82,7 +84,7 @@ export class ValidationService {
     const sellerIdAliases = this.getSellerIdAliases(seller, payload.sellerId);
     const requestedGstId = String(payload.gstId ?? '').trim();
 
-    let gst = await this.findGstForSeller(requestedGstId, sellerIdAliases);
+    const gst = await this.findGstForSeller(requestedGstId, sellerIdAliases);
     if (!gst) {
       throw new NotFoundException('Selected GST profile not found');
     }
@@ -118,11 +120,17 @@ export class ValidationService {
             .lean()
             .exec()
         : null;
-      platformName = String(platform?.name ?? '').trim().toLowerCase();
-      platformSlug = String(platform?.slug ?? '').trim().toLowerCase();
+      platformName = String(platform?.name ?? '')
+        .trim()
+        .toLowerCase();
+      platformSlug = String(platform?.slug ?? '')
+        .trim()
+        .toLowerCase();
     }
 
-    const storeName = String(marketplace.storeName ?? '').trim().toLowerCase();
+    const storeName = String(marketplace.storeName ?? '')
+      .trim()
+      .toLowerCase();
     const marketplaceIdentifier = `${platformName} ${platformSlug} ${storeName}`
       .trim()
       .toLowerCase();
@@ -134,6 +142,53 @@ export class ValidationService {
       canonicalSellerId: this.getSellerObjectIdString(seller),
       sellerIdAliases,
     };
+  }
+
+  async assertMainGstForPaymentUpload(gstId: string, sellerId: string) {
+    const seller = await this.findSellerByIdentifier(sellerId);
+    const sellerIdAliases = seller
+      ? this.getSellerIdAliases(seller, sellerId)
+      : [String(sellerId ?? '').trim()].filter(Boolean);
+    const gst = await this.findGstForSeller(
+      String(gstId ?? '').trim(),
+      sellerIdAliases,
+    );
+    if (!gst) {
+      throw new NotFoundException('Selected GST profile not found');
+    }
+    const pan =
+      String(gst.panNumber ?? '')
+        .trim()
+        .toUpperCase() ||
+      String(gst.gstNumber ?? '')
+        .trim()
+        .toUpperCase()
+        .slice(2, 12);
+    const siblings = await this.gstModel
+      .find({
+        sellerId: { $in: sellerIdAliases },
+      })
+      .sort({ createdAt: 1 })
+      .lean()
+      .exec();
+    const pool = pan
+      ? siblings.filter((item) => {
+          const itemPan =
+            String(item.panNumber ?? '')
+              .trim()
+              .toUpperCase() ||
+            String(item.gstNumber ?? '')
+              .trim()
+              .toUpperCase()
+              .slice(2, 12);
+          return itemPan === pan;
+        })
+      : siblings;
+    if (!isPrincipalGst(gst, pool.length ? pool : [gst])) {
+      throw new BadRequestException(
+        'Payment reports can only be uploaded for the main GST of this PAN. APOB GST numbers cannot upload payment files.',
+      );
+    }
   }
 
   async resolveSellerIdAliases(identifier: string): Promise<string[]> {
@@ -271,9 +326,12 @@ export class ValidationService {
           : 'Marketplace: Amazon';
 
       throw new BadRequestException(
-        ['GSTIN validation failed.', prefix, '', ...problems.map((p) => `• ${p}`)].join(
-          '\n',
-        ),
+        [
+          'GSTIN validation failed.',
+          prefix,
+          '',
+          ...problems.map((p) => `• ${p}`),
+        ].join('\n'),
       );
     }
 
@@ -301,8 +359,7 @@ export class ValidationService {
     context?: { reportLabel?: string; fileName?: string },
   ) {
     const mapping =
-      mappingOverride ??
-      resolveMarketplaceImportMapping(marketplaceIdentifier);
+      mappingOverride ?? resolveMarketplaceImportMapping(marketplaceIdentifier);
     const filtered = filterRowsBySelectedGstin(
       rows,
       mapping,
@@ -331,9 +388,12 @@ export class ValidationService {
         : `Marketplace: ${mapping.displayName}`;
 
     throw new BadRequestException(
-      [`GSTIN validation failed.`, prefix, '', ...problems.map((p) => `• ${p}`)].join(
-        '\n',
-      ),
+      [
+        `GSTIN validation failed.`,
+        prefix,
+        '',
+        ...problems.map((p) => `• ${p}`),
+      ].join('\n'),
     );
   }
 
@@ -447,8 +507,13 @@ export class ValidationService {
     maxInvoiceDate?: string;
     totalRecords: number;
     excludeUploadId?: string;
+    /** Month-wise imports must only collide within the same report month. */
+    reportMonth?: string;
   }) {
-    const baseFilter = this.successfulUploadFilter(payload, payload.excludeUploadId);
+    const baseFilter = this.successfulUploadFilter(
+      payload,
+      payload.excludeUploadId,
+    );
 
     const byHash = await this.uploadModel
       .findOne({
@@ -483,9 +548,15 @@ export class ValidationService {
     marketplace: string;
     fileHashes: string[];
     excludeUploadId?: string;
+    /** Month-wise imports must only collide within the same report month. */
+    reportMonth?: string;
   }) {
     const uniqueHashes = Array.from(
-      new Set(payload.fileHashes.filter((hash) => typeof hash === 'string' && hash.length > 0)),
+      new Set(
+        payload.fileHashes.filter(
+          (hash) => typeof hash === 'string' && hash.length > 0,
+        ),
+      ),
     );
     if (!uniqueHashes.length) return;
 
@@ -511,9 +582,19 @@ export class ValidationService {
     }
   }
 
-  /** Only block when a prior import completed with saved rows. */
+  /**
+   * Only block when a prior import completed with saved rows.
+   * When reportMonth is provided, duplicates are scoped to that month so a
+   * Meesho/Myntra/Amazon/Flipkart file imported for January does not block
+   * uploading (possibly identical-named) reports for February.
+   */
   private successfulUploadFilter(
-    payload: { sellerId: string; gstin: string; marketplace: string },
+    payload: {
+      sellerId: string;
+      gstin: string;
+      marketplace: string;
+      reportMonth?: string;
+    },
     excludeUploadId?: string,
   ): Record<string, unknown> {
     const filter: Record<string, unknown> = {
@@ -523,16 +604,17 @@ export class ValidationService {
       status: 'completed',
       totalRecords: { $gt: 0 },
     };
+    const reportMonth = String(payload.reportMonth ?? '').trim();
+    if (reportMonth) {
+      filter.reportMonth = reportMonth;
+    }
     if (excludeUploadId && Types.ObjectId.isValid(excludeUploadId)) {
       filter._id = { $ne: new Types.ObjectId(excludeUploadId) };
     }
     return filter;
   }
 
-  private async findGstForSeller(
-    gstId: string,
-    sellerIdAliases: string[],
-  ) {
+  private async findGstForSeller(gstId: string, sellerIdAliases: string[]) {
     const value = String(gstId ?? '').trim();
     if (!value) return null;
 
@@ -566,7 +648,9 @@ export class ValidationService {
 
     const user = await this.findSellerUserByIdentifier(value);
     if (!user) return null;
-    const email = String(user.email ?? '').trim().toLowerCase();
+    const email = String(user.email ?? '')
+      .trim()
+      .toLowerCase();
     if (!email) return null;
     return this.sellerModel
       .findOne({
@@ -594,7 +678,7 @@ export class ValidationService {
 
   private getSellerObjectIdString(seller: SellerDocument) {
     const id = seller?._id as Types.ObjectId | string | undefined;
-    return typeof id === 'string' ? id : id?.toString?.() ?? '';
+    return typeof id === 'string' ? id : (id?.toString?.() ?? '');
   }
 
   private getSellerIdAliases(seller: SellerDocument, requestedId?: string) {
@@ -614,15 +698,18 @@ export class ValidationService {
     _id?: unknown;
     totalRecords?: number;
     createdAt?: Date;
+    reportMonth?: string;
   }) {
     const when =
       existing.createdAt instanceof Date
         ? existing.createdAt.toISOString().slice(0, 10)
         : 'a previous date';
     const count = Number(existing.totalRecords ?? 0);
+    const month = String(existing.reportMonth ?? '').trim();
+    const monthLabel = month ? ` for ${month}` : '';
     return new BadRequestException(
       count > 0
-        ? `These report files were already imported successfully (${count} records on ${when}). Open Imported Data to view them, or upload different files.`
+        ? `These report files were already imported successfully${monthLabel} (${count} records on ${when}). Open Imported Data to view them, or upload different files for this month.`
         : 'File already uploaded',
     );
   }

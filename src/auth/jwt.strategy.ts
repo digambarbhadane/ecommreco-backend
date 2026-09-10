@@ -14,7 +14,10 @@ import {
   UserSecurity,
   UserSecurityDocument,
 } from '../profile/schemas/user-security.schema';
-import { evaluateSellerLogin, type SellerLoginSnapshot } from '../trial/trial-login.policy';
+import {
+  evaluateSellerLogin,
+  type SellerLoginSnapshot,
+} from '../trial/trial-login.policy';
 
 type JwtPayload = {
   sub: string;
@@ -25,6 +28,13 @@ type JwtPayload = {
 };
 
 const disabledStatuses = new Set(['blocked', 'rejected']);
+
+function toId(value: unknown): string | undefined {
+  if (value == null) return undefined;
+  const text = String(value).trim();
+  if (!text || text === '[object Object]') return undefined;
+  return text;
+}
 
 function assertSellerSessionAccess(seller: SellerLoginSnapshot) {
   const access = evaluateSellerLogin(seller, { requirePassword: false });
@@ -61,7 +71,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
   async validate(payload: JwtPayload) {
     if (payload.typ === 'refresh') {
-      throw new UnauthorizedException('Refresh token cannot be used as access token');
+      throw new UnauthorizedException(
+        'Refresh token cannot be used as access token',
+      );
     }
 
     const { sub: id, role } = payload;
@@ -75,10 +87,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         .exec();
       const currentVersion =
         typeof security?.tokenVersion === 'number' ? security.tokenVersion : 0;
-      if (
-        typeof tokenVersion === 'number' &&
-        tokenVersion !== currentVersion
-      ) {
+      if (typeof tokenVersion === 'number' && tokenVersion !== currentVersion) {
         throw new UnauthorizedException();
       }
 
@@ -90,9 +99,12 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
           .exec();
         if (seller) {
           assertSellerSessionAccess(seller);
+          const sellerId = seller._id.toString();
           return {
             ...seller,
-            id: seller._id.toString(),
+            id: sellerId,
+            sub: sellerId,
+            sellerId,
             role: 'seller',
             sessionId,
           };
@@ -107,17 +119,31 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
           if (disabledStatuses.has(String(sellerUser.status ?? ''))) {
             throw new UnauthorizedException();
           }
-          const linkedSeller = await this.sellerModel
-            .findOne({ email: sellerUser.email })
-            .select('-password')
-            .lean()
-            .exec();
+          let linkedSeller = sellerUser.sellerId
+            ? await this.sellerModel
+                .findById(sellerUser.sellerId)
+                .select('-password')
+                .lean()
+                .exec()
+            : null;
+          if (!linkedSeller && sellerUser.email) {
+            const email = String(sellerUser.email).trim().toLowerCase();
+            linkedSeller = await this.sellerModel
+              .findOne({ $or: [{ email }, { username: email }] })
+              .select('-password')
+              .lean()
+              .exec();
+          }
           if (linkedSeller) {
             assertSellerSessionAccess(linkedSeller);
           }
+          const userId = sellerUser._id.toString();
           return {
             ...sellerUser,
-            id: sellerUser._id.toString(),
+            id: userId,
+            sub: userId,
+            sellerId:
+              toId(linkedSeller?._id) ?? toId(sellerUser.sellerId) ?? userId,
             role: 'seller',
             sessionId,
           };
@@ -139,6 +165,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
           return {
             ...user,
             id: user._id.toString(),
+            sub: user._id.toString(),
+            sellerId: toId(user.sellerId),
             role: user.role,
             sessionId,
           };
@@ -151,9 +179,12 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
           .exec();
         if (seller) {
           assertSellerSessionAccess(seller);
+          const sellerId = seller._id.toString();
           return {
             ...seller,
-            id: seller._id.toString(),
+            id: sellerId,
+            sub: sellerId,
+            sellerId,
             role: 'seller',
             sessionId,
           };
@@ -173,7 +204,13 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       if (disabledStatuses.has(String(user.status ?? ''))) {
         throw new UnauthorizedException();
       }
-      return { ...user, id: user._id.toString(), sessionId };
+      return {
+        ...user,
+        id: user._id.toString(),
+        sub: user._id.toString(),
+        sellerId: toId(user.sellerId),
+        sessionId,
+      };
     } catch (err) {
       if (err instanceof UnauthorizedException) {
         throw err;

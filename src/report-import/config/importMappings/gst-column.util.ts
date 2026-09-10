@@ -4,11 +4,9 @@ import { MarketplaceImportMapping } from './types';
 import { flipkartImportMapping } from './flipkart.mapping';
 
 /** Indian GSTIN pattern (15 chars) — allow digit 0 in entity position for loose match. */
-const GSTIN_IN_TEXT =
-  /[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z]/;
+const GSTIN_IN_TEXT = /[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z]/;
 
-const GSTIN_STRICT =
-  /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
+const GSTIN_STRICT = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
 
 export const isValidGstinFormat = (value: string): boolean => {
   if (!value || value.length !== 15) return false;
@@ -37,7 +35,8 @@ const scoreGstHeaderLabel = (header: string): number => {
   const norm = normalizeHeader(header);
   if (!norm) return 0;
   if (norm === 'seller gstin' || norm.includes('seller gstin')) return 100;
-  if (norm.includes('supplier gstin') || norm.includes('gstin of seller')) return 90;
+  if (norm.includes('supplier gstin') || norm.includes('gstin of seller'))
+    return 90;
   if (norm.includes('gst registration')) return 80;
   if (norm === 'gstin' || norm === 'gstin/uin') return 75;
   if (norm === 'gst no' || norm.includes('gst no')) return 50;
@@ -78,7 +77,10 @@ export const normalizeGstinValue = (raw: unknown): string | undefined =>
 const isExcludedNonSellerGstHeader = (normalizedHeader: string): boolean => {
   if (!normalizedHeader) return false;
   if (/\beco\s*tcs\b/.test(normalizedHeader)) return true;
-  if (/\bmarketplace\b/.test(normalizedHeader) && /\bgstin\b/.test(normalizedHeader)) {
+  if (
+    /\bmarketplace\b/.test(normalizedHeader) &&
+    /\bgstin\b/.test(normalizedHeader)
+  ) {
     return true;
   }
   if (
@@ -157,7 +159,8 @@ export const resolvePrimaryGstHeaderKey = (
 export const headerMatchesAnyExcelColumn = (
   headerKey: string,
   excelColumns: string[],
-): boolean => excelColumns.some((col) => headerMatchesExcelColumn(headerKey, col));
+): boolean =>
+  excelColumns.some((col) => headerMatchesExcelColumn(headerKey, col));
 
 export const extractGstinFromRow = (
   row: ParsedSheetRow,
@@ -227,7 +230,8 @@ export const hydrateFlipkartRowsWithProfileGstin = (
   mapping: MarketplaceImportMapping = flipkartImportMapping,
 ): ParsedSheetRow[] => {
   if (!rows.length) return rows;
-  if (!headersHaveGstColumn(fileHeaders, mapping.gstin.excelColumns)) return rows;
+  if (!headersHaveGstColumn(fileHeaders, mapping.gstin.excelColumns))
+    return rows;
 
   const profileGstin = resolveExpectedGstin(expectedGstin);
   if (!profileGstin) return rows;
@@ -438,9 +442,7 @@ export const collectGstinRowFilterProblems = (
         input.mapping.key === 'flipkart'
           ? 'No data rows were read from Sales Report or Cash Back Report. Check that those sheets contain invoice rows below the header.'
           : 'No data rows were read from the report.';
-      problems.push(
-        `GSTIN column "${gstColumn}" was found but ${fillHint}`,
-      );
+      problems.push(`GSTIN column "${gstColumn}" was found but ${fillHint}`);
       return problems;
     }
     if (fileGstins.size > 0) {

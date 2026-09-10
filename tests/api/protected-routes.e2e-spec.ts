@@ -65,4 +65,30 @@ describe('Protected routes API (e2e)', () => {
 
     expect([400, 404, 500]).toContain(res.status);
   });
+
+  it('GET /api/v1/report-imports/platform-analytics returns 401 without token', async () => {
+    await request(app.getHttpServer())
+      .get('/api/v1/report-imports/platform-analytics')
+      .query({ fromDate: '2026-07-05', toDate: '2026-08-03' })
+      .expect(401);
+  });
+
+  it('GET /api/v1/report-imports/platform-analytics returns 200 for super_admin', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/report-imports/platform-analytics')
+      .query({ fromDate: '2026-07-05', toDate: '2026-08-03' })
+      .set('Authorization', `Bearer ${superAdminToken}`)
+      .expect(200);
+
+    expect(res.body.success).toBe(true);
+    expect(res.body.data).toEqual(
+      expect.objectContaining({
+        period: expect.objectContaining({
+          fromDate: expect.any(String),
+          toDate: expect.any(String),
+        }),
+        kpis: expect.any(Object),
+      }),
+    );
+  });
 });

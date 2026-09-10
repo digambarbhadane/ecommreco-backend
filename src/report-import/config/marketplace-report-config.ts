@@ -22,7 +22,8 @@ export const MARKETPLACE_REPORT_DEFINITIONS: Record<
       slot: 'file',
       label: 'Sales Report',
       required: true,
-      description: 'Flipkart sales workbook with Sales Report and Cash Back sheets',
+      description:
+        'Flipkart sales workbook with Sales Report and Cash Back sheets',
     },
     {
       slot: 'returnReportFile',
@@ -50,7 +51,8 @@ export const MARKETPLACE_REPORT_DEFINITIONS: Record<
       slot: 'mtrB2bFile',
       label: 'MTR B2B Report',
       required: false,
-      description: 'Amazon Merchant Tax Report (B2B) — optional if you have B2B orders',
+      description:
+        'Amazon Merchant Tax Report (B2B) — optional if you have B2B orders',
     },
     {
       slot: 'amazonReturnReportFile',
@@ -90,19 +92,22 @@ export const MARKETPLACE_REPORT_DEFINITIONS: Record<
       slot: 'returnInTransitReportFile',
       label: 'Return In-Transit Report',
       required: true,
-      description: 'Meesho return in-transit report — Type of Return matched to TCS Sales Return orders',
+      description:
+        'Meesho return in-transit report — Type of Return matched to TCS Sales Return orders',
     },
     {
       slot: 'returnOutForDeliveryReportFile',
       label: 'Return Out for Delivery Report',
       required: true,
-      description: 'Meesho return out-for-delivery report — Type of Return matched to TCS Sales Return orders',
+      description:
+        'Meesho return out-for-delivery report — Type of Return matched to TCS Sales Return orders',
     },
     {
       slot: 'returnDeliveryCompleteReportFile',
       label: 'Return Delivery Complete Report',
       required: true,
-      description: 'Meesho return delivery-complete report — Type of Return matched to TCS Sales Return orders',
+      description:
+        'Meesho return delivery-complete report — Type of Return matched to TCS Sales Return orders',
     },
     {
       slot: 'paymentReportFile',
@@ -123,7 +128,8 @@ export const MARKETPLACE_REPORT_DEFINITIONS: Record<
       slot: 'salesRevenuePackedB2cFile',
       label: 'Sales Revenue Packed B2C',
       required: true,
-      description: 'Invoice number and packing date; primary row driver for import',
+      description:
+        'Invoice number and packing date; primary row driver for import',
     },
     {
       slot: 'gstrReportRtoFile',

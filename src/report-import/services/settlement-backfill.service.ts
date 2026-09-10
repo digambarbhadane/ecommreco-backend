@@ -61,8 +61,9 @@ export class SettlementBackfillService implements OnApplicationBootstrap {
       ]);
       let inserted = 0;
       const hasNormalizedTransactions =
-        (await db.collection('normalized_transactions').estimatedDocumentCount()) >
-        0;
+        (await db
+          .collection('normalized_transactions')
+          .estimatedDocumentCount()) > 0;
       if (!hasNormalizedTransactions) {
         inserted += await this.backfillAmazon();
         inserted += await this.backfillFlipkart();
@@ -173,18 +174,51 @@ export class SettlementBackfillService implements OnApplicationBootstrap {
       const definitions = [
         ['Commission', row.commission, 'Commission', 'expense', false],
         ['Fixed Fee', row.fixedFee, 'Fixed Fee', 'expense', false],
-        ['Collection Fee', row.collectionFee, 'Collection Fee', 'expense', false],
-        ['Pick and Pack Fee', row.pickAndPackFee, 'Logistics', 'expense', false],
+        [
+          'Collection Fee',
+          row.collectionFee,
+          'Collection Fee',
+          'expense',
+          false,
+        ],
+        [
+          'Pick and Pack Fee',
+          row.pickAndPackFee,
+          'Logistics',
+          'expense',
+          false,
+        ],
         ['Shipping Fee', row.shippingFee, 'Shipping', 'expense', false],
-        ['Reverse Shipping Fee', row.reverseShippingFee, 'Shipping', 'expense', false],
+        [
+          'Reverse Shipping Fee',
+          row.reverseShippingFee,
+          'Shipping',
+          'expense',
+          false,
+        ],
         ['TCS', row.tcs, 'TCS', 'expense', false],
         ['TDS', row.tds, 'TDS', 'expense', false],
-        ['GST on Marketplace Fees', row.gstOnMarketplaceFees, 'GST', 'expense', false],
+        [
+          'GST on Marketplace Fees',
+          row.gstOnMarketplaceFees,
+          'GST',
+          'expense',
+          false,
+        ],
         ['Taxes', row.taxes, 'Tax', 'expense', false],
-        ['Bank Settlement Value', row.bankSettlementValue, 'Settlement Credit', 'received', true],
+        [
+          'Bank Settlement Value',
+          row.bankSettlementValue,
+          'Settlement Credit',
+          'received',
+          true,
+        ],
       ] as const;
       return definitions
-        .filter(([, amount]) => Number.isFinite(Number(amount)) && Number(amount) !== 0)
+        .filter(
+          ([, amount]) =>
+            Number.isFinite(Number(amount)) && Number(amount) !== 0,
+        )
         .map(([name, amount, category, role, contributes]) => ({
           ...base,
           transactionType: role,
@@ -230,19 +264,58 @@ export class SettlementBackfillService implements OnApplicationBootstrap {
       const identity = `${base.orderId}:${settlementId}`;
       const definitions = [
         ['Fixed Fee', row.fixedFeeInclGst, 'Marketplace Fee', 'expense', false],
-        ['Warehousing Fee', row.warehousingFeeInclGst, 'Storage', 'expense', false],
-        ['Meesho Commission', row.meeshoCommissionInclGst, 'Commission', 'expense', false],
-        ['Return Shipping Charge', row.returnShippingChargeInclGst, 'Shipping', 'expense', false],
-        ['Shipping Charge', row.shippingChargeInclGst, 'Shipping', 'expense', false],
+        [
+          'Warehousing Fee',
+          row.warehousingFeeInclGst,
+          'Storage',
+          'expense',
+          false,
+        ],
+        [
+          'Meesho Commission',
+          row.meeshoCommissionInclGst,
+          'Commission',
+          'expense',
+          false,
+        ],
+        [
+          'Return Shipping Charge',
+          row.returnShippingChargeInclGst,
+          'Shipping',
+          'expense',
+          false,
+        ],
+        [
+          'Shipping Charge',
+          row.shippingChargeInclGst,
+          'Shipping',
+          'expense',
+          false,
+        ],
         ['TCS', row.tcs, 'TCS', 'expense', false],
         ['TDS', row.tds, 'TDS', 'expense', false],
-        ['Compensation', row.compensation, 'Reimbursement', 'adjustment', false],
+        [
+          'Compensation',
+          row.compensation,
+          'Reimbursement',
+          'adjustment',
+          false,
+        ],
         ['Claims', row.claims, 'Claims', 'adjustment', false],
         ['Recovery', row.recovery, 'Adjustment', 'expense', false],
-        ['Final Settlement Amount', row.finalSettlementAmount, 'Settlement Credit', 'received', true],
+        [
+          'Final Settlement Amount',
+          row.finalSettlementAmount,
+          'Settlement Credit',
+          'received',
+          true,
+        ],
       ] as const;
       return definitions
-        .filter(([, amount]) => Number.isFinite(Number(amount)) && Number(amount) !== 0)
+        .filter(
+          ([, amount]) =>
+            Number.isFinite(Number(amount)) && Number(amount) !== 0,
+        )
         .map(([name, amount, category, role, contributes]) => ({
           ...base,
           transactionType: role,
@@ -264,7 +337,10 @@ export class SettlementBackfillService implements OnApplicationBootstrap {
       .project({ slug: 1 })
       .toArray();
     const platformById = new Map(
-      platforms.map((item) => [String(item._id), String(item.slug).toLowerCase()]),
+      platforms.map((item) => [
+        String(item._id),
+        String(item.slug).toLowerCase(),
+      ]),
     );
     const links = await db
       .collection('marketplaces')
@@ -294,10 +370,7 @@ export class SettlementBackfillService implements OnApplicationBootstrap {
       if (!marketplace) return null;
       const flipkartClassification =
         marketplace === 'flipkart'
-          ? classifyFlipkartSettlementRow(
-              row.documentType,
-              row.voucherType,
-            )
+          ? classifyFlipkartSettlementRow(row.documentType, row.voucherType)
           : null;
       const isReturnDocument =
         flipkartClassification?.role === 'return' ||
@@ -311,9 +384,9 @@ export class SettlementBackfillService implements OnApplicationBootstrap {
             ? flipkartClassification.role === 'sale'
               ? invoiceAmount
               : 0
-            : row.totalSaleAmountInclShippingGst ??
+            : (row.totalSaleAmountInclShippingGst ??
                 (!isReturnDocument ? row.invoiceAmount : 0) ??
-                0,
+                0),
         ),
       );
       const returnAmount =
@@ -326,10 +399,10 @@ export class SettlementBackfillService implements OnApplicationBootstrap {
               ? flipkartClassification.role === 'return'
                 ? invoiceAmount
                 : 0
-              : row.meeshoReturnInvoiceAmount ??
+              : (row.meeshoReturnInvoiceAmount ??
                   row.totalSaleReturnAmountInclShippingGst ??
                   (isReturnDocument ? row.invoiceAmount : 0) ??
-                  0,
+                  0),
           ),
         );
       const orderDate = this.historicalOrderDate(
@@ -399,10 +472,9 @@ export class SettlementBackfillService implements OnApplicationBootstrap {
 
   private async consume(
     cursor: any,
-    mapper: (row: Record<string, any>) =>
-      | Record<string, unknown>
-      | Array<Record<string, unknown>>
-      | null,
+    mapper: (
+      row: Record<string, any>,
+    ) => Record<string, unknown> | Array<Record<string, unknown>> | null,
   ) {
     const target = this.connection.db!.collection('normalized_transactions');
     let operations: any[] = [];
@@ -480,9 +552,7 @@ export class SettlementBackfillService implements OnApplicationBootstrap {
       for (let month = 1; month <= 12; month += 1) {
         const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
         for (let day = 1; day <= daysInMonth; day += 1) {
-          const legacyParsed = new Date(
-            Date.UTC(2000 + day, month - 1, year),
-          );
+          const legacyParsed = new Date(Date.UTC(2000 + day, month - 1, year));
           if (legacyParsed.toISOString().slice(0, 10) === parsedDay) {
             candidates.push(new Date(Date.UTC(year, month - 1, day)));
           }

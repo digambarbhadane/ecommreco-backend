@@ -1,11 +1,4 @@
-import {
-  Controller,
-  Get,
-  Param,
-  Req,
-  Res,
-  UseGuards,
-} from '@nestjs/common';
+import { Controller, Get, Param, Req, Res, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
 import type { Request, Response } from 'express';
@@ -14,7 +7,13 @@ import { RolesGuard } from '../auth/roles.guard';
 import { BillingService } from './billing.service';
 
 type RequestWithUser = Request & {
-  user?: { id?: string; role?: string; email?: string; fullName?: string; name?: string };
+  user?: {
+    id?: string;
+    role?: string;
+    email?: string;
+    fullName?: string;
+    name?: string;
+  };
 };
 
 @ApiTags('Billing')

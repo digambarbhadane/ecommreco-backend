@@ -50,21 +50,16 @@ export class DisputeController {
     description:
       'Orders with incomplete payouts. Invoice age ≤30 days = due; >30 days = overdue. Over charges logic is pending.',
   })
-  list(
-    @Query() query: ListDisputesDto,
-    @Req() request: RequestWithUser,
-  ) {
+  list(@Query() query: ListDisputesDto, @Req() request: RequestWithUser) {
     return this.service.listDisputes(this.scopedQuery(query, request));
   }
 
   @Get('summary')
   @ApiOperation({
-    summary: 'Dispute summary cards (due, overdue, payout difference, over charges)',
+    summary:
+      'Dispute summary cards (due, overdue, payout difference, over charges)',
   })
-  summary(
-    @Query() query: ListDisputesDto,
-    @Req() request: RequestWithUser,
-  ) {
+  summary(@Query() query: ListDisputesDto, @Req() request: RequestWithUser) {
     return this.service.disputeSummary(this.scopedQuery(query, request));
   }
 }

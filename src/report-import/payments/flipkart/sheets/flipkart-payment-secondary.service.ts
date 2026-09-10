@@ -35,11 +35,15 @@ export type SecondarySheetProcessResult = {
 export class FlipkartPaymentSecondaryService {
   private readonly logger = new Logger(FlipkartPaymentSecondaryService.name);
 
-  constructor(private readonly repository: FlipkartPaymentSecondaryRepository) {}
+  constructor(
+    private readonly repository: FlipkartPaymentSecondaryRepository,
+  ) {}
 
   async processSecondarySheets(
     input: ProcessSecondarySheetsInput,
-  ): Promise<Record<FlipkartPaymentSecondarySheetKind, SecondarySheetProcessResult>> {
+  ): Promise<
+    Record<FlipkartPaymentSecondarySheetKind, SecondarySheetProcessResult>
+  > {
     const duplicateStrategy = input.duplicateStrategy ?? 'update';
     const uploadedAt = new Date();
     const result = {} as Record<
@@ -54,9 +58,7 @@ export class FlipkartPaymentSecondaryService {
       // Stamp line indexes before mapping so Storage_Recall (and any sheet with
       // repeat NEFT IDs) never collapses to a single upsert key.
       const indexedRows = sheet.rows.map((rawRow, index) =>
-        rawRow.__lineIndex == null
-          ? { ...rawRow, __lineIndex: index }
-          : rawRow,
+        rawRow.__lineIndex == null ? { ...rawRow, __lineIndex: index } : rawRow,
       );
 
       for (const rawRow of indexedRows) {

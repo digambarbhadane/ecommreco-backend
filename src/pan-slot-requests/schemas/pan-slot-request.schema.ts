@@ -130,4 +130,5 @@ export class PanSlotRequest {
   slotsAssigned: boolean;
 }
 
-export const PanSlotRequestSchema = SchemaFactory.createForClass(PanSlotRequest);
+export const PanSlotRequestSchema =
+  SchemaFactory.createForClass(PanSlotRequest);

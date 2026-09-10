@@ -89,7 +89,11 @@ export class OnboardingActivationService {
         .lean()
         .exec();
       if (existing?.onboardingUserStatus === 'ACTIVE') {
-        return { success: true, message: 'Already activated', alreadyActive: true };
+        return {
+          success: true,
+          message: 'Already activated',
+          alreadyActive: true,
+        };
       }
     }
 
@@ -130,7 +134,9 @@ export class OnboardingActivationService {
     const panNumber = String(metadata.panNumber ?? lead.panNumber ?? '')
       .trim()
       .toUpperCase();
-    const gstNumber = String(lead.gstNumber ?? '').trim().toUpperCase();
+    const gstNumber = String(lead.gstNumber ?? '')
+      .trim()
+      .toUpperCase();
     const pricing = computeTrialPayable();
     const now = new Date();
     const trialEnd = addDays(now, TRIAL_DURATION_DAYS);
@@ -351,11 +357,19 @@ export class OnboardingActivationService {
       payload: { orderId },
     });
 
+    const failureMessage = `Trial payment failed for order ${orderId}`;
     void this.notifications
       .createNotification({
         event: 'trial_payment_failed',
         recipientRole: 'sales_manager',
-        message: `Trial payment failed for order ${orderId}`,
+        message: failureMessage,
+      })
+      .catch(() => undefined);
+    void this.notifications
+      .createNotification({
+        event: 'trial_payment_failed',
+        recipientRole: 'super_admin',
+        message: failureMessage,
       })
       .catch(() => undefined);
 

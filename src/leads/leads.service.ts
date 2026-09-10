@@ -86,6 +86,16 @@ export class LeadsService {
     return typeof value === 'string' ? value.trim().toLowerCase() : '';
   }
 
+  private appendActivityTimeline(
+    lead: LeadDocument,
+    entry: Lead['activityTimeline'][number],
+  ) {
+    if (!Array.isArray(lead.activityTimeline)) {
+      lead.activityTimeline = [];
+    }
+    lead.activityTimeline.push(entry);
+  }
+
   private generateMeetLink() {
     const chars = 'abcdefghijklmnopqrstuvwxyz';
     const segment = (length: number) =>
@@ -549,7 +559,7 @@ export class LeadsService {
     followUp.status = status;
 
     // Add to activity timeline
-    lead.activityTimeline.push({
+    this.appendActivityTimeline(lead, {
       action: 'follow_up_status_updated',
       description: `Follow-up status updated to ${status}`,
       performedBy: updatedBy,
@@ -1083,12 +1093,14 @@ export class LeadsService {
       message: `New lead created for ${created.fullName}. Score: ${leadScore}`,
     });
 
-    void this.sendRegistrationWelcomeEmail(dto, created.leadId).catch((error) => {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.error(
-        `Failed to send registration welcome email to ${dto.email}: ${message}`,
-      );
-    });
+    void this.sendRegistrationWelcomeEmail(dto, created.leadId).catch(
+      (error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.error(
+          `Failed to send registration welcome email to ${dto.email}: ${message}`,
+        );
+      },
+    );
 
     return {
       success: true,
@@ -2700,18 +2712,26 @@ export class LeadsService {
 
     let emailSent = false;
     if (sendEmail && recipientEmail) {
-      const fullName = (lead.fullName || '').trim() || 'Seller';
-      await this.emailService.sendEmail({
-        to: recipientEmail,
-        type: EmailType.NOTIFICATION,
-        subject: 'Demo Scheduled - EcommReco',
-        payload: {
-          message: `Hi ${fullName}, your demo is scheduled for ${payload.scheduledAt.toLocaleString()}. Join using this Google Meet link: ${meetLink}`,
-          actionUrl: meetLink,
-          actionText: 'Join Demo',
-        },
-      });
-      emailSent = true;
+      try {
+        const fullName = (lead.fullName || '').trim() || 'Seller';
+        await this.emailService.sendEmail({
+          to: recipientEmail,
+          type: EmailType.NOTIFICATION,
+          subject: 'Demo Scheduled - EcommReco',
+          payload: {
+            message: `Hi ${fullName}, your demo is scheduled for ${payload.scheduledAt.toLocaleString()}. Join using this Google Meet link: ${meetLink}`,
+            actionUrl: meetLink,
+            actionText: 'Join Demo',
+          },
+        });
+        emailSent = true;
+      } catch (error) {
+        this.logger.warn(
+          `Demo invite email failed for lead ${lead.leadId ?? id}: ${
+            error instanceof Error ? error.message : 'unknown error'
+          }`,
+        );
+      }
     }
 
     lead.demos = Array.isArray(lead.demos) ? lead.demos : [];
@@ -2726,7 +2746,7 @@ export class LeadsService {
       updatedAt: new Date(),
     });
     lead.demoStatus = 'scheduled';
-    lead.activityTimeline.push({
+    this.appendActivityTimeline(lead, {
       action: 'demo_scheduled',
       description: `Demo scheduled for ${payload.scheduledAt.toLocaleString()}`,
       performedBy: createdBy,
@@ -2778,7 +2798,7 @@ export class LeadsService {
       lead.demoStatus = 'none';
     }
 
-    lead.activityTimeline.push({
+    this.appendActivityTimeline(lead, {
       action: 'demo_status_updated',
       description: `Demo status updated to ${status}`,
       performedBy: updatedBy,
@@ -3015,7 +3035,8 @@ export class LeadsService {
       await lead.save();
     }
 
-    const leadEmail = typeof lead.email === 'string' ? lead.email.trim().toLowerCase() : '';
+    const leadEmail =
+      typeof lead.email === 'string' ? lead.email.trim().toLowerCase() : '';
     if (!leadEmail) {
       throw new BadRequestException({
         success: false,
@@ -3114,7 +3135,7 @@ export class LeadsService {
     const actorEmail = user?.email || 'system';
 
     lead.leadStatus = 'converted';
-    lead.pipelineStage = 'Converted to Seller';
+    lead.pipelineStage = 'Payment Pending';
     lead.convertedAt = paymentCompletedAt;
     lead.conversionRequestedAt = paymentCompletedAt;
     lead.conversionRequestedBy = actorEmail;
@@ -3123,13 +3144,18 @@ export class LeadsService {
     lead.conversionLeadCreatedAt = leadCreatedAt;
 
     const paymentDetails = lead.paymentDetails ?? {
-      link: 'manual-conversion',
-      status: 'completed' as const,
+      link: '',
+      status: 'pending' as const,
       generatedBy: actorEmail,
       generatedAt: paymentCompletedAt,
     };
-    paymentDetails.status = 'completed';
-    paymentDetails.paymentDate = paymentCompletedAt;
+    if (paymentDetails.status === 'completed') {
+      // Preserve an already-confirmed payment (e.g. Cashfree conversion flow).
+      paymentDetails.paymentDate = paymentDetails.paymentDate ?? paymentCompletedAt;
+    } else {
+      paymentDetails.status = 'pending';
+      paymentDetails.link = paymentDetails.link || '';
+    }
     lead.paymentDetails = paymentDetails;
 
     lead.subscriptionConfig = {
@@ -3186,15 +3212,15 @@ export class LeadsService {
       lead.convertedAt = lead.conversionRequestedAt;
     }
     const paymentDetails = lead.paymentDetails ?? {
-      link: 'manual-conversion',
-      status: 'completed' as const,
+      link: '',
+      status: 'pending' as const,
       generatedBy: actorEmail,
       generatedAt: now,
     };
     if (paymentDetails.status !== 'completed') {
-      paymentDetails.status = 'completed';
+      paymentDetails.status = paymentDetails.status ?? 'pending';
     }
-    if (!paymentDetails.paymentDate) {
+    if (paymentDetails.status === 'completed' && !paymentDetails.paymentDate) {
       paymentDetails.paymentDate = lead.conversionRequestedAt ?? now;
     }
     lead.paymentDetails = paymentDetails;

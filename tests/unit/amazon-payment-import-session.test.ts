@@ -6,6 +6,8 @@ describe('ImportSessionService Amazon payment upload', () => {
       validateOwnership: jest.fn().mockResolvedValue({
         marketplaceIdentifier: 'amazon',
       }),
+      computeFileHash: jest.fn().mockReturnValue('hash-1'),
+      assertMainGstForPaymentUpload: jest.fn().mockResolvedValue(undefined),
     };
     const uploadService = {
       uploadMarketplaceReport: jest.fn().mockResolvedValue({
@@ -28,7 +30,7 @@ describe('ImportSessionService Amazon payment upload', () => {
     };
 
     const created = await service.createSession('amazon', dto);
-    service.addFile(
+    await service.addFile(
       created.sessionId,
       dto.sellerId,
       'paymentReportFile',

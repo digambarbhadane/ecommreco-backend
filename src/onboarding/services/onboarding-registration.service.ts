@@ -5,13 +5,14 @@ import {
 } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import * as bcrypt from 'bcrypt';
-import { Connection, Model } from 'mongoose';
+import { Connection, Model, Types } from 'mongoose';
 import { Lead, LeadDocument } from '../../leads/schemas/lead.schema';
 import { User, UserDocument } from '../../users/schemas/user.schema';
 import { Seller, SellerDocument } from '../../sellers/schemas/seller.schema';
 import { generatePublicId } from '../../common/public-id';
 import {
   extractPanFromGstin,
+  computeTrialPayable,
 } from '../../trial/trial.constants';
 import { OnboardingRegisterDto } from '../dto/onboarding.dto';
 import { ONBOARDING_TIMELINE_EVENTS } from '../constants/onboarding-status';
@@ -39,7 +40,9 @@ export class OnboardingRegistrationService {
       throw new BadRequestException('You must accept the Terms to continue.');
     }
     if (dto.password !== dto.confirmPassword) {
-      throw new BadRequestException('Password and Confirm Password do not match.');
+      throw new BadRequestException(
+        'Password and Confirm Password do not match.',
+      );
     }
 
     const email = dto.email.trim().toLowerCase();
@@ -55,7 +58,17 @@ export class OnboardingRegistrationService {
 
     const existingUser = await this.userModel.findOne({ email }).exec();
     if (existingUser) {
-      return this.handleExistingUser(existingUser);
+      return this.handleExistingUser(existingUser, dto);
+    }
+
+    const pendingLegacyTrial = await this.findPendingLegacyTrialSeller({
+      email,
+      mobile,
+      panNumber,
+      gstNumber,
+    });
+    if (pendingLegacyTrial) {
+      return this.resumePendingLegacyTrial(pendingLegacyTrial, dto.password);
     }
 
     await this.assertIdentityAvailable({ email, mobile, panNumber, gstNumber });
@@ -159,13 +172,17 @@ export class OnboardingRegistrationService {
         payment_session_id: payment.payment_session_id,
         totalAmount: payment.total_amount,
         pricing: payment.pricing,
-        redirectPath: '/onboarding/payment',
+        redirectPath: '/seller/register?mode=trial',
       },
-      message: 'Registration successful. Complete payment to activate your trial.',
+      message:
+        'Registration successful. Complete payment to activate your trial.',
     };
   }
 
-  private async handleExistingUser(user: UserDocument) {
+  private async handleExistingUser(
+    user: UserDocument,
+    dto?: Pick<OnboardingRegisterDto, 'password'>,
+  ) {
     if (user.onboardingUserStatus === 'ACTIVE' && user.sellerId) {
       throw new ConflictException({
         success: false,
@@ -176,21 +193,33 @@ export class OnboardingRegistrationService {
     }
 
     if (user.onboardingUserStatus === 'PENDING_PAYMENT') {
+      if (dto?.password) {
+        const hashedPassword = await bcrypt.hash(dto.password, 10);
+        await this.userModel.updateOne(
+          { _id: user._id },
+          { $set: { password: hashedPassword } },
+        );
+      }
+
+      const resumed = await this.resumePayment(String(user._id));
       const lead = user.leadId
-        ? await this.leadModel.findById(user.leadId).exec()
+        ? await this.leadModel.findById(user.leadId).lean().exec()
         : null;
+
       return {
         success: true,
-        scenario: 'WELCOME_BACK',
+        scenario: 'NEW_REGISTRATION',
         data: {
           leadId: lead ? String(lead._id) : undefined,
           userId: String(user._id),
           leadNumber: lead?.leadNumber,
-          status: lead?.onboardingStatus ?? 'PAYMENT_PENDING',
-          message:
-            'Your registration has already been completed. Your payment is still pending.',
-          actions: ['CONTINUE_PAYMENT', 'FORGOT_PASSWORD'],
+          orderId: resumed.data.orderId,
+          payment_session_id: resumed.data.payment_session_id,
+          totalAmount: resumed.data.totalAmount,
+          pricing: resumed.data.pricing,
+          redirectPath: '/seller/register?mode=trial',
         },
+        message: 'Continue to payment to activate your trial.',
       };
     }
 
@@ -199,6 +228,51 @@ export class OnboardingRegistrationService {
       errorCode: 'ACCOUNT_EXISTS',
       message: 'An account already exists with this email. Please login.',
     });
+  }
+
+  private async findPendingLegacyTrialSeller(input: {
+    email: string;
+    mobile: string;
+    panNumber: string;
+    gstNumber: string;
+  }) {
+    return this.sellerModel
+      .findOne({
+        isTrial: true,
+        trialStatus: 'pending_payment',
+        $or: [
+          { email: input.email },
+          { contactNumber: input.mobile },
+          { panNumber: input.panNumber },
+          { gstNumber: input.gstNumber },
+        ],
+      })
+      .exec();
+  }
+
+  private async resumePendingLegacyTrial(
+    seller: SellerDocument,
+    password?: string,
+  ) {
+    if (password) {
+      const hashedPassword = await bcrypt.hash(password, 10);
+      seller.password = hashedPassword;
+      await seller.save();
+    }
+
+    const pricing = computeTrialPayable();
+    const sellerId = String(seller._id);
+
+    return {
+      success: true,
+      scenario: 'PENDING_TRIAL_PAYMENT',
+      sellerId,
+      status: 'pending_payment',
+      pricing,
+      paymentLink: `/trial/payment/${sellerId}`,
+      message:
+        'Your trial registration is pending payment. Continue to checkout.',
+    };
   }
 
   private async assertIdentityAvailable(input: {
@@ -219,14 +293,6 @@ export class OnboardingRegistrationService {
       .lean()
       .exec();
     if (seller) {
-      if (seller.isTrial && seller.trialStatus === 'pending_payment') {
-        throw new ConflictException({
-          success: false,
-          errorCode: 'PENDING_PAYMENT_LEGACY',
-          message:
-            'A registration with these details is pending payment. Please login or contact support.',
-        });
-      }
       throw new ConflictException(
         'An account already exists with this email, mobile, PAN, or GST.',
       );
@@ -274,7 +340,40 @@ export class OnboardingRegistrationService {
   }
 
   async getStatus(userId: string) {
-    const user = await this.userModel.findById(userId).lean().exec();
+    const id = String(userId ?? '').trim();
+    let user =
+      id && Types.ObjectId.isValid(id)
+        ? await this.userModel.findById(id).lean().exec()
+        : null;
+    if (!user && id && Types.ObjectId.isValid(id)) {
+      user = await this.userModel
+        .findOne({ sellerId: id, role: 'seller' })
+        .lean()
+        .exec();
+    }
+    if (!user && id) {
+      const seller = Types.ObjectId.isValid(id)
+        ? await this.sellerModel.findById(id).lean().exec()
+        : null;
+      if (seller?.email) {
+        const email = String(seller.email).trim().toLowerCase();
+        user = await this.userModel
+          .findOne({ email, role: 'seller' })
+          .lean()
+          .exec();
+      }
+      if (!user && seller) {
+        return {
+          userId: id,
+          sellerId: String(seller._id),
+          onboardingUserStatus: 'ACTIVE' as const,
+          leadStatus: undefined,
+          leadNumber: undefined,
+          canAccessDashboard: true,
+          needsPayment: false,
+        };
+      }
+    }
     if (!user) {
       throw new BadRequestException('User not found');
     }

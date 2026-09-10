@@ -17,6 +17,7 @@ import { UploadReportDto } from '../dto/upload-report.dto';
 import { UploadService } from './upload.service';
 import { ValidationService } from './validation.service';
 import { ImportWorkflowService } from './import-workflow.service';
+import { isPaymentUploadSlot } from '../utils/payment-upload-slot.util';
 
 type SessionFile = { buffer: Buffer; originalname: string };
 
@@ -123,7 +124,7 @@ export class ImportSessionService {
     };
   }
 
-  addFile(
+  async addFile(
     sessionId: string,
     sellerId: string,
     slot: string,
@@ -139,9 +140,13 @@ export class ImportSessionService {
       const contentHash = this.validation.computeFileHash(file.buffer);
       slotKey = buildAmazonPaymentSlotKey(contentHash);
       const paymentCount = [...session.files.keys()].filter(
-        (key) => key === 'paymentReportFile' || key.startsWith('amazonPaymentFile:'),
+        (key) =>
+          key === 'paymentReportFile' || key.startsWith('amazonPaymentFile:'),
       ).length;
-      if (!session.files.has(slotKey) && paymentCount >= AMAZON_MAX_PAYMENT_FILES) {
+      if (
+        !session.files.has(slotKey) &&
+        paymentCount >= AMAZON_MAX_PAYMENT_FILES
+      ) {
         throw new BadRequestException(
           `Amazon allows up to ${AMAZON_MAX_PAYMENT_FILES} payment report files per month`,
         );
@@ -152,12 +157,16 @@ export class ImportSessionService {
       ...REQUIRED_SLOTS[session.marketplaceType],
       ...(OPTIONAL_SLOTS[session.marketplaceType] ?? []),
     ];
-    if (
-      !allowed.includes(slot) &&
-      !slotKey.startsWith('amazonPaymentFile:')
-    ) {
+    if (!allowed.includes(slot) && !slotKey.startsWith('amazonPaymentFile:')) {
       throw new BadRequestException(
         `Unknown file slot "${slot}". Expected one of: ${allowed.join(', ')}`,
+      );
+    }
+
+    if (isPaymentUploadSlot(slot) || isPaymentUploadSlot(slotKey)) {
+      await this.validation.assertMainGstForPaymentUpload(
+        session.gstId,
+        session.sellerId,
       );
     }
 
@@ -188,7 +197,19 @@ export class ImportSessionService {
     }
 
     if (!dto.reportMonth) {
-      throw new BadRequestException('reportMonth is required for marketplace imports');
+      throw new BadRequestException(
+        'reportMonth is required for marketplace imports',
+      );
+    }
+
+    const hasPaymentFile = [...session.files.keys()].some((key) =>
+      isPaymentUploadSlot(key),
+    );
+    if (hasPaymentFile) {
+      await this.validation.assertMainGstForPaymentUpload(
+        session.gstId,
+        session.sellerId,
+      );
     }
 
     const required = REQUIRED_SLOTS[session.marketplaceType];
@@ -206,7 +227,8 @@ export class ImportSessionService {
       const hasMtr =
         session.files.has('mtrB2cFile') || session.files.has('mtrB2bFile');
       const hasPayment = [...session.files.keys()].some(
-        (key) => key === 'paymentReportFile' || key.startsWith('amazonPaymentFile:'),
+        (key) =>
+          key === 'paymentReportFile' || key.startsWith('amazonPaymentFile:'),
       );
       const hasReturn = session.files.has('amazonReturnReportFile');
       if (!hasMtr && !hasReturn && !hasPayment) {
@@ -240,21 +262,29 @@ export class ImportSessionService {
 
     if (session.marketplaceType === 'flipkart') {
       if (session.files.size === 0) {
-        throw new BadRequestException('Upload at least one Flipkart report file');
+        throw new BadRequestException(
+          'Upload at least one Flipkart report file',
+        );
       }
       const hasSales = session.files.has('file');
       const hasPaymentOnly =
-        session.files.has('paymentReportFile') && !hasSales && !session.files.has('returnReportFile');
+        session.files.has('paymentReportFile') &&
+        !hasSales &&
+        !session.files.has('returnReportFile');
       const hasReturnOnly =
-        session.files.has('returnReportFile') && !hasSales && !session.files.has('paymentReportFile');
+        session.files.has('returnReportFile') &&
+        !hasSales &&
+        !session.files.has('paymentReportFile');
       if ((hasPaymentOnly || hasReturnOnly) && !hasSales) {
-        const salesAlreadyUploaded = await this.importWorkflow.hasCompletedSlot({
-          sellerId: dto.sellerId,
-          gstId: dto.gstId,
-          marketplaceId: dto.marketplaceId,
-          reportMonth: dto.reportMonth,
-          slot: 'file',
-        });
+        const salesAlreadyUploaded = await this.importWorkflow.hasCompletedSlot(
+          {
+            sellerId: dto.sellerId,
+            gstId: dto.gstId,
+            marketplaceId: dto.marketplaceId,
+            reportMonth: dto.reportMonth,
+            slot: 'file',
+          },
+        );
         if (!salesAlreadyUploaded) {
           throw new BadRequestException(
             'Sales Report is required before uploading the return or payment report',
@@ -376,7 +406,10 @@ export class ImportSessionService {
     const out: Record<string, SessionFile | SessionFile[]> = {};
     const paymentReportFiles: SessionFile[] = [];
     for (const [slot, file] of session.files.entries()) {
-      if (slot === 'paymentReportFile' || slot.startsWith('amazonPaymentFile:')) {
+      if (
+        slot === 'paymentReportFile' ||
+        slot.startsWith('amazonPaymentFile:')
+      ) {
         paymentReportFiles.push(file);
         continue;
       }
@@ -407,4 +440,3 @@ export class ImportSessionService {
     }
   }
 }
-

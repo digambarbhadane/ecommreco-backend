@@ -84,6 +84,7 @@ export class Lead {
         metadata: { type: Object },
       },
     ],
+    default: [],
   })
   activityTimeline: {
     action: string;
@@ -152,6 +153,10 @@ export class Lead {
     gstSlots: number;
     durationYears: number;
     amount: number;
+    packageId?: string;
+    packageName?: string;
+    planType?: string;
+    selectedMonths?: string[];
     updatedAt: Date;
     updatedBy: string;
   };

@@ -14,4 +14,3 @@ export class Gstr1B2csExportDto {
   @IsString()
   marketplace?: string;
 }
-

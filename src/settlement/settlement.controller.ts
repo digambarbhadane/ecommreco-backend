@@ -54,19 +54,13 @@ export class SettlementController {
 
   @Get()
   @ApiOperation({ summary: 'List dynamically calculated order settlements' })
-  list(
-    @Query() query: ListSettlementsDto,
-    @Req() request: RequestWithUser,
-  ) {
+  list(@Query() query: ListSettlementsDto, @Req() request: RequestWithUser) {
     return this.service.list(this.scopedQuery(query, request));
   }
 
   @Get('summary')
   @ApiOperation({ summary: 'Get settlement dashboard summary' })
-  summary(
-    @Query() query: ListSettlementsDto,
-    @Req() request: RequestWithUser,
-  ) {
+  summary(@Query() query: ListSettlementsDto, @Req() request: RequestWithUser) {
     return this.service.summary(this.scopedQuery(query, request));
   }
 

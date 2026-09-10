@@ -85,8 +85,9 @@ export class NormalizedTransaction {
   metadata?: Record<string, unknown>;
 }
 
-export const NormalizedTransactionSchema =
-  SchemaFactory.createForClass(NormalizedTransaction);
+export const NormalizedTransactionSchema = SchemaFactory.createForClass(
+  NormalizedTransaction,
+);
 
 NormalizedTransactionSchema.index(
   {

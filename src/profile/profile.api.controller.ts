@@ -1,8 +1,4 @@
-import {
-  ApiTags,
-  ApiOperation,
-  ApiBearerAuth,
-} from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import {
   Body,
   Controller,
@@ -49,13 +45,19 @@ export class ApiProfileController {
   constructor(private readonly profileService: ProfileService) {}
 
   @Get('me')
-  @ApiOperation({ summary: 'Get current authenticated user', description: 'Returns the currently authenticated user details.' })
+  @ApiOperation({
+    summary: 'Get current authenticated user',
+    description: 'Returns the currently authenticated user details.',
+  })
   getMe(@Req() req: RequestWithUser) {
     return this.profileService.getMe(req);
   }
 
   @Put('update')
-  @ApiOperation({ summary: 'Update user profile', description: 'Update profile with optional userId for super_admin.' })
+  @ApiOperation({
+    summary: 'Update user profile',
+    description: 'Update profile with optional userId for super_admin.',
+  })
   update(
     @Body() dto: UpdateProfileManagementDto,
     @Query('userId') userId: string | undefined,
@@ -65,7 +67,10 @@ export class ApiProfileController {
   }
 
   @Put('password')
-  @ApiOperation({ summary: 'Change password', description: 'Change the current user password.' })
+  @ApiOperation({
+    summary: 'Change password',
+    description: 'Change the current user password.',
+  })
   changePassword(@Body() dto: ChangePasswordDto, @Req() req: RequestWithUser) {
     return this.profileService.changePassword(dto, req);
   }
@@ -81,7 +86,11 @@ export class ApiProfileController {
   }
 
   @Get('activity')
-  @ApiOperation({ summary: 'Get user activity logs', description: 'Returns activity logs for the current user or specified userId.' })
+  @ApiOperation({
+    summary: 'Get user activity logs',
+    description:
+      'Returns activity logs for the current user or specified userId.',
+  })
   getActivity(
     @Query('userId') userId: string | undefined,
     @Req() req: RequestWithUser,
@@ -90,14 +99,20 @@ export class ApiProfileController {
   }
 
   @Get(':userId')
-  @ApiOperation({ summary: 'Get user by ID', description: 'Super admin only. Get any user profile by ID.' })
+  @ApiOperation({
+    summary: 'Get user by ID',
+    description: 'Super admin only. Get any user profile by ID.',
+  })
   @Roles('super_admin')
   getUser(@Param('userId') userId: string, @Req() req: RequestWithUser) {
     return this.profileService.getUserProfileById(userId, req);
   }
 
   @Put('logout-all')
-  @ApiOperation({ summary: 'Logout all devices', description: 'Revoke all active sessions for the current user.' })
+  @ApiOperation({
+    summary: 'Logout all devices',
+    description: 'Revoke all active sessions for the current user.',
+  })
   logoutAllDevices(@Req() req: RequestWithUser) {
     return this.profileService.logoutAllDevices(req);
   }

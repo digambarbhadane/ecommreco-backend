@@ -251,7 +251,9 @@ export class AmazonPaymentParser {
         return parsedAmazonDate;
       }
     }
-    const isoDate = String(value ?? '').trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    const isoDate = String(value ?? '')
+      .trim()
+      .match(/^(\d{4})-(\d{2})-(\d{2})$/);
     if (isoDate) {
       const parsedIso = new Date(
         Date.UTC(
@@ -299,10 +301,7 @@ export class AmazonPaymentParser {
     }
 
     const received = raw ? ` (received "${raw.slice(0, 80)}")` : '';
-    errors.push(
-      `Row ${rowNumber}: amount is missing or invalid${received}`,
-    );
+    errors.push(`Row ${rowNumber}: amount is missing or invalid${received}`);
     return undefined;
   }
 }
-

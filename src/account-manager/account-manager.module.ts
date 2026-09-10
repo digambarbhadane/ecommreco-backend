@@ -6,6 +6,10 @@ import { Seller, SellerSchema } from '../sellers/schemas/seller.schema';
 import { Lead, LeadSchema } from '../leads/schemas/lead.schema';
 import { User, UserSchema } from '../users/schemas/user.schema';
 import { NotificationsModule } from '../notifications/notifications.module';
+import {
+  PaymentOrder,
+  PaymentOrderSchema,
+} from '../payments/schemas/payment-order.schema';
 
 @Module({
   imports: [
@@ -13,6 +17,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
       { name: Seller.name, schema: SellerSchema },
       { name: Lead.name, schema: LeadSchema },
       { name: User.name, schema: UserSchema },
+      { name: PaymentOrder.name, schema: PaymentOrderSchema },
     ]),
     NotificationsModule,
   ],

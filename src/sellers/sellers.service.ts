@@ -22,6 +22,19 @@ import {
 } from '../profile/schemas/user-security.schema';
 import { LeadsService } from '../leads/leads.service';
 import { generatePublicId } from '../common/public-id';
+import { SessionRevocationService } from '../auth/session-revocation.service';
+import {
+  PaymentOrder,
+  PaymentOrderDocument,
+} from '../payments/schemas/payment-order.schema';
+import {
+  applyQuoteSnapshotToSellerFields,
+  buildSubscriptionPeriodFromMonths,
+  extractQuoteFromPaymentMetadata,
+  groupReportMonthsByFinancialYear,
+  normalizeReportMonths,
+  resolveMarketplaceSlotsInPlan,
+} from '../billing/utils/reconciliation-subscription.util';
 
 type RequestUser = {
   id?: string;
@@ -49,6 +62,9 @@ export class SellersService {
     private readonly userModel: Model<UserDocument>,
     @InjectModel(UserSecurity.name)
     private readonly userSecurityModel: Model<UserSecurityDocument>,
+    @InjectModel(PaymentOrder.name)
+    private readonly paymentOrderModel: Model<PaymentOrderDocument>,
+    private readonly sessionRevocationService: SessionRevocationService,
     private readonly leadsService: LeadsService,
     private readonly notificationsService: NotificationsService,
     private readonly emailService: EmailService,
@@ -84,6 +100,63 @@ export class SellersService {
             : String(id);
     }
     return sanitized;
+  }
+
+  private async enrichSellerSubscriptionFromPaymentOrder(
+    seller: SellerDocument,
+  ) {
+    const existingMonths = normalizeReportMonths(seller.reconciliationMonths ?? []);
+    const needsOrderLookup =
+      !existingMonths.length || !seller.subscriptionPlanLabel;
+
+    if (needsOrderLookup) {
+      const order = await this.paymentOrderModel
+        .findOne({
+          'metadata.checkoutType': 'lead_conversion',
+          $or: [
+            ...(seller.leadId ? [{ 'metadata.leadLeadId': seller.leadId }] : []),
+          ],
+        })
+        .sort({ createdAt: -1 })
+        .lean()
+        .exec();
+
+      const quote = extractQuoteFromPaymentMetadata(
+        (order?.metadata ?? null) as Record<string, unknown> | null,
+      );
+      if (quote) {
+        applyQuoteSnapshotToSellerFields(seller, quote);
+      }
+    }
+
+    const finalMonths = normalizeReportMonths(seller.reconciliationMonths ?? []);
+    if (finalMonths.length) {
+      seller.reconciliationMonths = finalMonths;
+      const anchor =
+        seller.paymentCompletedAt ??
+        seller.paymentVerifiedAt ??
+        seller.paymentDate ??
+        seller.subscriptionStartsAt ??
+        new Date();
+      const period = buildSubscriptionPeriodFromMonths(
+        finalMonths,
+        new Date(anchor),
+      );
+      seller.subscriptionStartsAt = period.startsAt;
+      seller.subscriptionEndsAt = period.endsAt;
+    }
+
+    if (!seller.marketplaceSlotsPurchased) {
+      const marketplaceSlots = resolveMarketplaceSlotsInPlan({
+        marketplaceSlotsPurchased: seller.marketplaceSlotsPurchased,
+        subscriptionPlanType: seller.subscriptionPlanType,
+        gstSlots: seller.gstSlots,
+        gstSlotsPurchased: seller.gstSlotsPurchased,
+      });
+      if (marketplaceSlots > 0) {
+        seller.marketplaceSlotsPurchased = marketplaceSlots;
+      }
+    }
   }
 
   private async findSellerByIdentifier(identifier: string) {
@@ -168,7 +241,8 @@ export class SellersService {
       });
     } else if (role === 'training_and_support_manager') {
       const completedView =
-        requestedStatus === 'active' || requestedStatus === 'training_completed';
+        requestedStatus === 'active' ||
+        requestedStatus === 'training_completed';
       if (completedView) {
         and.push({
           $or: [
@@ -373,12 +447,21 @@ export class SellersService {
       }
     }
 
+    await this.enrichSellerSubscriptionFromPaymentOrder(seller);
+
+    const sellerObject = seller.toObject() as unknown as Record<string, unknown>;
+    const reconciliationMonths = normalizeReportMonths(
+      (sellerObject.reconciliationMonths as string[] | undefined) ?? [],
+    );
+    if (reconciliationMonths.length) {
+      sellerObject.reconciliationMonths = reconciliationMonths;
+      sellerObject.financialYears =
+        groupReportMonthsByFinancialYear(reconciliationMonths);
+    }
+
     return {
       success: true,
-      data: this.sanitizeSellerForRole(
-        seller.toObject() as unknown as Record<string, unknown>,
-        role,
-      ),
+      data: this.sanitizeSellerForRole(sellerObject, role),
     };
   }
 
@@ -482,8 +565,7 @@ export class SellersService {
       });
     }
     const password =
-      dto.password ??
-      require('crypto').randomBytes(6).toString('hex');
+      dto.password ?? require('crypto').randomBytes(6).toString('hex');
     const hashedPassword = await bcrypt.hash(password, 10);
     seller.password = hashedPassword;
     seller.username = seller.email.trim().toLowerCase();
@@ -742,39 +824,7 @@ export class SellersService {
   private async invalidateSellerSessions(
     seller: Pick<Seller, 'email'> & { _id?: unknown },
   ) {
-    const userIds = new Set<string>();
-    if (seller._id) {
-      userIds.add(String(seller._id));
-    }
-
-    const email = String(seller.email ?? '')
-      .trim()
-      .toLowerCase();
-    if (email) {
-      const linkedUser = await this.userModel
-        .findOne({ email, role: 'seller' })
-        .select('_id')
-        .lean()
-        .exec();
-      if (linkedUser?._id) {
-        userIds.add(String(linkedUser._id));
-      }
-    }
-
-    await Promise.all(
-      Array.from(userIds).map((userId) =>
-        this.userSecurityModel
-          .updateOne(
-            { userId },
-            {
-              $inc: { tokenVersion: 1 },
-              $set: { activeSessions: [], refreshTokens: [] },
-            },
-            { upsert: true },
-          )
-          .exec(),
-      ),
-    );
+    await this.sessionRevocationService.revokeForSeller(seller);
   }
 
   async resetCredentials(
@@ -818,6 +868,8 @@ export class SellersService {
       credentialsGeneratedAt,
     });
 
+    await this.invalidateSellerSessions(seller);
+
     await this.notificationsService.createNotification({
       event: 'credentials_reset',
       recipientRole: 'super_admin',
@@ -831,6 +883,7 @@ export class SellersService {
         'super_admin',
       ),
       credentials: { username: email, password },
+      sessionsRevoked: true,
     };
   }
 
@@ -874,7 +927,9 @@ export class SellersService {
     };
 
     if (existing) {
-      await this.userModel.updateOne({ _id: existing._id }, { $set: update }).exec();
+      await this.userModel
+        .updateOne({ _id: existing._id }, { $set: update })
+        .exec();
       return;
     }
 

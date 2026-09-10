@@ -1,4 +1,4 @@
-import { IsIn, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsIn, IsOptional, IsString } from 'class-validator';
 
 const MARKETPLACE_FILTERS = [
   'ALL',
@@ -11,9 +11,9 @@ const MARKETPLACE_FILTERS = [
 const STATUS_FILTERS = ['ALL', 'MAPPED', 'UNMAPPED'] as const;
 
 export class ExportSkuMasterQueryDto {
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  gstId: string;
+  gstId?: string;
 
   @IsOptional()
   @IsIn(MARKETPLACE_FILTERS)

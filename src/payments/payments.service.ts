@@ -5,6 +5,10 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import {
+  buildPaymentNotifyUrl,
+  buildPaymentReturnUrl,
+} from '../config/payment-urls';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Seller, SellerDocument } from '../sellers/schemas/seller.schema';
@@ -20,7 +24,10 @@ import {
   RefundPaymentDto,
   VerifyPaymentDto,
 } from './dto/payment.dto';
-import type { PaymentGateway } from './gateways/payment-gateway.interface';
+import type {
+  GatewayPaymentStatus,
+  PaymentGateway,
+} from './gateways/payment-gateway.interface';
 import { PAYMENT_GATEWAY } from './gateways/payment-gateway.interface';
 import { PaymentActivationService } from './payment-activation.service';
 import { PaymentInvoiceService } from './payment-invoice.service';
@@ -105,15 +112,29 @@ export class PaymentsService {
         })
         .exec();
       if (existing?.paymentSessionId) {
-        return {
-          success: true,
-          data: {
-            order_id: existing.orderId,
-            payment_session_id: existing.paymentSessionId,
-            total_amount: existing.totalAmount,
-          },
-          message: 'Existing pending order returned',
-        };
+        const gatewayStatus = await this.gateway.getOrderStatus(
+          existing.orderId,
+        );
+        if (
+          gatewayStatus.paymentStatus === 'pending' ||
+          gatewayStatus.paymentStatus === 'paid'
+        ) {
+          return {
+            success: true,
+            data: {
+              order_id: existing.orderId,
+              payment_session_id: existing.paymentSessionId,
+              total_amount: existing.totalAmount,
+            },
+            message: 'Existing pending order returned',
+          };
+        }
+
+        existing.paymentStatus =
+          gatewayStatus.paymentStatus === 'failed' ? 'failed' : 'expired';
+        existing.orderStatus =
+          gatewayStatus.paymentStatus === 'failed' ? 'failed' : 'expired';
+        await existing.save();
       }
     }
 
@@ -142,10 +163,13 @@ export class PaymentsService {
         .findOne({ _id: dto.plan_id, isActive: true })
         .exec();
       if (!pkg) {
-        throw new BadRequestException('Subscription plan not found or inactive');
+        throw new BadRequestException(
+          'Subscription plan not found or inactive',
+        );
       }
       plan = pkg;
-      const gstPercentage = quoteOverride.gstPercentage ?? pkg.gstPercentage ?? 18;
+      const gstPercentage =
+        quoteOverride.gstPercentage ?? pkg.gstPercentage ?? 18;
       pricing = {
         baseAmount: quoteOverride.basePrice ?? quoteOverride.totalPayable,
         discountAmount: 0,
@@ -179,17 +203,10 @@ export class PaymentsService {
     }
 
     const orderId = `ECO-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
-    const frontendUrl =
-      this.config.get<string>('PAYMENT_RETURN_BASE_URL')?.trim() ||
-      this.config.get<string>('FRONTEND_URL')?.split(',')[0]?.trim() ||
-      'http://localhost:8080';
-    const apiUrl =
-      this.config.get<string>('API_PUBLIC_URL')?.trim() ||
-      `http://localhost:${this.config.get('PORT') ?? 5000}`;
     const checkoutType = metadata.checkoutType as string | undefined;
     const returnPath =
       checkoutType === 'trial_registration'
-        ? `/trial/payment/${sellerId}?order_id=${orderId}`
+        ? `/seller/register?mode=trial&order_id=${orderId}&seller_id=${sellerId}`
         : `/payment/success?order_id=${orderId}`;
 
     const gatewayResult = await this.gateway.createOrder({
@@ -198,8 +215,8 @@ export class PaymentsService {
       customerId: sellerId,
       customerEmail: seller.email,
       customerPhone: seller.contactNumber || '9999999999',
-      returnUrl: `${frontendUrl.replace(/\/+$/, '')}${returnPath}`,
-      notifyUrl: `${apiUrl.replace(/\/+$/, '')}/api/v1/webhooks/cashfree`,
+      returnUrl: buildPaymentReturnUrl(this.config, returnPath),
+      notifyUrl: buildPaymentNotifyUrl(this.config),
       metadata: { seller_id: sellerId, plan_id: dto.plan_id },
     });
 
@@ -285,7 +302,7 @@ export class PaymentsService {
       };
     }
 
-    const status = await this.gateway.getOrderStatus(order.orderId);
+    const status = await this.pollGatewayPaymentStatus(order.orderId);
     await this.paymentLog.log({
       eventType: 'verification',
       orderId: order.orderId,
@@ -300,14 +317,22 @@ export class PaymentsService {
         order.paymentStatus = 'failed';
         order.orderStatus = 'failed';
         await order.save();
+      } else if (status.paymentStatus === 'expired') {
+        order.paymentStatus = 'expired';
+        order.orderStatus = 'expired';
+        await order.save();
       }
+      const message =
+        status.paymentStatus === 'expired'
+          ? 'Payment session expired. Please start payment again.'
+          : 'Payment not completed yet. Please wait or retry.';
       return {
         success: false,
         data: {
           payment_status: status.paymentStatus,
           order_id: order.orderId,
         },
-        message: 'Payment not completed yet. Please wait or retry.',
+        message,
       };
     }
 
@@ -316,7 +341,8 @@ export class PaymentsService {
     if (
       checkoutType === 'trial_upgrade' ||
       checkoutType === 'trial_registration' ||
-      checkoutType === 'subscription_renewal'
+      checkoutType === 'subscription_renewal' ||
+      checkoutType === 'lead_conversion'
     ) {
       order.paymentStatus = 'paid';
       order.orderStatus = 'paid';
@@ -434,7 +460,8 @@ export class PaymentsService {
         modulesEnabled: (() => {
           const plan = subscription?.planId;
           if (plan && typeof plan === 'object' && 'enabledModules' in plan) {
-            const modules = (plan as { enabledModules?: string[] }).enabledModules;
+            const modules = (plan as { enabledModules?: string[] })
+              .enabledModules;
             return Array.isArray(modules) ? modules : [];
           }
           return [];
@@ -528,9 +555,7 @@ export class PaymentsService {
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const yearStart = new Date(now.getFullYear(), 0, 1);
-    const renewalWindowEnd = new Date(
-      Date.now() + 30 * 24 * 60 * 60 * 1000,
-    );
+    const renewalWindowEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
     const paidSellerStatuses = ['paid', 'payment_completed'];
 
     const paidRevenueWindowMatch = (from: Date) => ({
@@ -622,12 +647,7 @@ export class PaymentsService {
           { $group: { _id: null, total: { $sum: '$totalAmount' } } },
         ])
         .exec(),
-      this.orderModel
-        .find()
-        .sort({ createdAt: -1 })
-        .limit(25)
-        .lean()
-        .exec(),
+      this.orderModel.find().sort({ createdAt: -1 }).limit(25).lean().exec(),
       this.sellerModel
         .countDocuments({
           isTrial: true,
@@ -696,7 +716,7 @@ export class PaymentsService {
 
     const recentPayments = recentOrders.map((order) => {
       const seller = sellerById.get(String(order.sellerId));
-      const metadata = (order.metadata ?? {}) as Record<string, unknown>;
+      const metadata = order.metadata ?? {};
       const paidAt =
         (order as { paidAt?: Date }).paidAt ??
         (order.paymentStatus === 'paid'
@@ -818,5 +838,20 @@ export class PaymentsService {
     }
 
     throw new NotFoundException('Seller not found');
+  }
+
+  private async pollGatewayPaymentStatus(
+    orderId: string,
+    maxAttempts = 5,
+  ): Promise<GatewayPaymentStatus> {
+    let lastStatus = await this.gateway.getOrderStatus(orderId);
+    for (let attempt = 1; attempt < maxAttempts; attempt++) {
+      if (lastStatus.paymentStatus !== 'pending') {
+        return lastStatus;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      lastStatus = await this.gateway.getOrderStatus(orderId);
+    }
+    return lastStatus;
   }
 }

@@ -241,8 +241,9 @@ export class FlipkartPaymentReport {
   uploadedAt: Date;
 }
 
-export const FlipkartPaymentReportSchema =
-  SchemaFactory.createForClass(FlipkartPaymentReport);
+export const FlipkartPaymentReportSchema = SchemaFactory.createForClass(
+  FlipkartPaymentReport,
+);
 
 FlipkartPaymentReportSchema.index(
   { sellerId: 1, marketplace: 1, orderId: 1, neftId: 1, reportMonth: 1 },
@@ -259,4 +260,8 @@ FlipkartPaymentReportSchema.index(
 FlipkartPaymentReportSchema.index(
   { sellerId: 1, invoiceId: 1 },
   { name: 'flipkart_payment_seller_invoice_idx' },
+);
+FlipkartPaymentReportSchema.index(
+  { sellerId: 1, marketplace: 1, neftId: 1 },
+  { name: 'flipkart_payment_neft_idx' },
 );

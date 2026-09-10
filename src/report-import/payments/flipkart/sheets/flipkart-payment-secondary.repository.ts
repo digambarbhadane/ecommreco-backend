@@ -28,12 +28,18 @@ import {
   FlipkartPaymentGoogleAdsServices,
   FlipkartPaymentGoogleAdsServicesDocument,
 } from './schemas/google-ads-services.schema';
-import { FlipkartPaymentAds, FlipkartPaymentAdsDocument } from './schemas/ads.schema';
+import {
+  FlipkartPaymentAds,
+  FlipkartPaymentAdsDocument,
+} from './schemas/ads.schema';
 import {
   FlipkartPaymentTcsRecovery,
   FlipkartPaymentTcsRecoveryDocument,
 } from './schemas/tcs-recovery.schema';
-import { FlipkartPaymentTds, FlipkartPaymentTdsDocument } from './schemas/tds.schema';
+import {
+  FlipkartPaymentTds,
+  FlipkartPaymentTdsDocument,
+} from './schemas/tds.schema';
 
 export type SecondaryUpsertPayload = Record<string, unknown> &
   FlipkartPaymentSecondaryMeta;
@@ -82,7 +88,10 @@ type SecondaryModel = Model<
 
 @Injectable()
 export class FlipkartPaymentSecondaryRepository {
-  private readonly modelsByKind: Record<FlipkartPaymentSecondarySheetKind, SecondaryModel>;
+  private readonly modelsByKind: Record<
+    FlipkartPaymentSecondarySheetKind,
+    SecondaryModel
+  >;
 
   constructor(
     @InjectModel(FlipkartPaymentMpFeeRebate.name)
@@ -136,7 +145,8 @@ export class FlipkartPaymentSecondaryRepository {
     const model = this.getModel(kind);
 
     const dedupeKeys = rows.map(
-      (row) => `${row.sellerId}::${row.marketplace}::${row.rowKey}::${row.reportMonth ?? ''}`,
+      (row) =>
+        `${row.sellerId}::${row.marketplace}::${row.rowKey}::${row.reportMonth ?? ''}`,
     );
     const duplicateRows = dedupeKeys.length - new Set(dedupeKeys).size;
 
@@ -295,14 +305,22 @@ export class FlipkartPaymentSecondaryRepository {
       .sort()
       .map((neftId) => ({
         neftId,
-        totals: totalsByNeft.get(neftId) as Record<FlipkartPaymentSecondarySheetKind, number>,
-        counts: countsByNeft.get(neftId) as Record<FlipkartPaymentSecondarySheetKind, number>,
+        totals: totalsByNeft.get(neftId) as Record<
+          FlipkartPaymentSecondarySheetKind,
+          number
+        >,
+        counts: countsByNeft.get(neftId) as Record<
+          FlipkartPaymentSecondarySheetKind,
+          number
+        >,
       }));
   }
 
   async listByNeftIds(
     query: SecondaryListByNeftIdsQuery,
-  ): Promise<Record<FlipkartPaymentSecondarySheetKind, Array<Record<string, unknown>>>> {
+  ): Promise<
+    Record<FlipkartPaymentSecondarySheetKind, Array<Record<string, unknown>>>
+  > {
     const result = {} as Record<
       FlipkartPaymentSecondarySheetKind,
       Array<Record<string, unknown>>
@@ -310,7 +328,8 @@ export class FlipkartPaymentSecondaryRepository {
 
     const neftIds = query.neftIds.filter(Boolean);
     if (!neftIds.length) {
-      for (const def of FLIPKART_PAYMENT_SECONDARY_SHEETS) result[def.kind] = [];
+      for (const def of FLIPKART_PAYMENT_SECONDARY_SHEETS)
+        result[def.kind] = [];
       return result;
     }
 
@@ -397,7 +416,8 @@ export class FlipkartPaymentSecondaryRepository {
   ): Record<string, unknown> {
     const filter: Record<string, unknown> = {};
     const sellerIds =
-      query.sellerIds?.filter(Boolean) ?? (query.sellerId ? [query.sellerId] : []);
+      query.sellerIds?.filter(Boolean) ??
+      (query.sellerId ? [query.sellerId] : []);
     if (sellerIds.length === 1) {
       filter.sellerId = sellerIds[0];
     } else if (sellerIds.length > 1) {

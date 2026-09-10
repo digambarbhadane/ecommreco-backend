@@ -1,8 +1,4 @@
-import {
-  ApiTags,
-  ApiOperation,
-  ApiBearerAuth,
-} from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import {
   Body,
   Controller,
@@ -28,7 +24,10 @@ export class PlatformMarketplacesController {
   ) {}
 
   @Get()
-  @ApiOperation({ summary: 'List platform marketplaces', description: 'Returns platform marketplace configurations.' })
+  @ApiOperation({
+    summary: 'List platform marketplaces',
+    description: 'Returns platform marketplace configurations.',
+  })
   @Roles(
     'super_admin',
     'sales_manager',
@@ -41,7 +40,10 @@ export class PlatformMarketplacesController {
   }
 
   @Get('all')
-  @ApiOperation({ summary: 'List all platform marketplaces', description: 'Returns all marketplace configs regardless of status.' })
+  @ApiOperation({
+    summary: 'List all platform marketplaces',
+    description: 'Returns all marketplace configs regardless of status.',
+  })
   @Roles(
     'super_admin',
     'sales_manager',
@@ -61,7 +63,11 @@ export class PlatformMarketplacesController {
   }
 
   @Post()
-  @ApiOperation({ summary: 'Create platform marketplace', description: 'Create a new platform marketplace configuration. Super admin only.' })
+  @ApiOperation({
+    summary: 'Create platform marketplace',
+    description:
+      'Create a new platform marketplace configuration. Super admin only.',
+  })
   @Roles('super_admin')
   create(
     @Body()
@@ -101,7 +107,11 @@ export class PlatformMarketplacesController {
   }
 
   @Post(':id/delete')
-  @ApiOperation({ summary: 'Delete platform marketplace (via POST)', description: 'Alternative POST method for deleting marketplace. Super admin only.' })
+  @ApiOperation({
+    summary: 'Delete platform marketplace (via POST)',
+    description:
+      'Alternative POST method for deleting marketplace. Super admin only.',
+  })
   @Roles('super_admin')
   removeViaPost(@Param('id') id: string) {
     return this.platformMarketplacesService.remove(id);

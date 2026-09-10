@@ -24,7 +24,13 @@ import {
 import { PanSlotRequestsService } from './pan-slot-requests.service';
 
 type RequestWithUser = Request & {
-  user?: { id?: string; role?: string; email?: string; fullName?: string; name?: string };
+  user?: {
+    id?: string;
+    role?: string;
+    email?: string;
+    fullName?: string;
+    name?: string;
+  };
 };
 
 @ApiTags('PAN Slot Requests')
@@ -32,7 +38,9 @@ type RequestWithUser = Request & {
 @Controller('pan-slot-requests')
 @UseGuards(AuthGuard('jwt'), RolesGuard)
 export class PanSlotRequestsController {
-  constructor(private readonly panSlotRequestsService: PanSlotRequestsService) {}
+  constructor(
+    private readonly panSlotRequestsService: PanSlotRequestsService,
+  ) {}
 
   @Post()
   @Roles('seller')
@@ -83,7 +91,11 @@ export class PanSlotRequestsController {
     @Body() body: PaymentProofDto,
     @Req() req: RequestWithUser,
   ) {
-    return this.panSlotRequestsService.uploadPaymentProof(req.user ?? {}, id, body);
+    return this.panSlotRequestsService.uploadPaymentProof(
+      req.user ?? {},
+      id,
+      body,
+    );
   }
 
   @Post(':id/mark-payment-completed')

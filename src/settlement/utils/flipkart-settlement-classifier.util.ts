@@ -8,8 +8,12 @@ export function classifyFlipkartSettlementRow(
   documentType: unknown,
   voucherType: unknown,
 ): FlipkartSettlementClassification {
-  const document = String(documentType ?? '').trim().toLowerCase();
-  const voucher = String(voucherType ?? '').trim().toLowerCase();
+  const document = String(documentType ?? '')
+    .trim()
+    .toLowerCase();
+  const voucher = String(voucherType ?? '')
+    .trim()
+    .toLowerCase();
   const combined = `${document} ${voucher}`.replace(/\s+/g, ' ').trim();
 
   if (

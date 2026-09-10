@@ -1,6 +1,8 @@
 export type FlipkartReturnSubType = 'customer_return' | 'courier_return' | 'na';
 
-export function isFlipkartNaTypeOfReturn(typeOfReturn?: string | null): boolean {
+export function isFlipkartNaTypeOfReturn(
+  typeOfReturn?: string | null,
+): boolean {
   const normalized = String(typeOfReturn ?? '')
     .trim()
     .toUpperCase()
@@ -19,7 +21,9 @@ export function classifyFlipkartReturnSubType(
     return 'na';
   }
 
-  const upper = String(typeOfReturn ?? '').trim().toUpperCase();
+  const upper = String(typeOfReturn ?? '')
+    .trim()
+    .toUpperCase();
   if (!upper) {
     return 'na';
   }

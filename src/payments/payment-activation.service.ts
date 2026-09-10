@@ -221,7 +221,10 @@ export class PaymentActivationService {
     subscription: SellerSubscriptionDocument,
     invoice: { invoiceNumber?: string } | null,
   ) {
-    const seller = await this.sellerModel.findById(order.sellerId).lean().exec();
+    const seller = await this.sellerModel
+      .findById(order.sellerId)
+      .lean()
+      .exec();
     if (!seller?.email) return;
 
     try {

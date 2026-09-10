@@ -61,4 +61,9 @@ export class ListAnalyticsPayoutsDto {
   @IsOptional()
   @IsString()
   search?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['all', 'verified', 'pending'])
+  receiptStatus?: 'all' | 'verified' | 'pending';
 }

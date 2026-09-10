@@ -146,6 +146,7 @@ import { MyntraPgRepository } from './payments/myntra/myntra-pg.repository';
 import { MyntraPaymentService } from './payments/myntra/myntra-payment.service';
 import { SettlementModule } from '../settlement/settlement.module';
 import { SettlementBackfillService } from './services/settlement-backfill.service';
+import { GeographyAnalyticsService } from './services/geography-analytics.service';
 import { TrialModule } from '../trial/trial.module';
 
 @Module({
@@ -253,6 +254,7 @@ import { TrialModule } from '../trial/trial.module';
     MyntraPgRepository,
     MyntraPaymentService,
     SettlementBackfillService,
+    GeographyAnalyticsService,
   ],
 })
 export class ReportImportModule {}

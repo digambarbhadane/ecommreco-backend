@@ -22,7 +22,10 @@ export class SettlementService {
   ) {}
 
   async list(query: ListSettlementsDto) {
-    return this.repository.list(query, await this.sellerAliases(query.sellerId));
+    return this.repository.list(
+      query,
+      await this.sellerAliases(query.sellerId),
+    );
   }
 
   async summary(query: ListSettlementsDto) {
@@ -110,9 +113,7 @@ export class SettlementService {
         sheet
           .addRow({
             ...row,
-            orderDate: row.orderDate
-              ? new Date(row.orderDate)
-              : '',
+            orderDate: row.orderDate ? new Date(row.orderDate) : '',
           })
           .commit();
       }
@@ -147,10 +148,6 @@ export class SettlementService {
   }
 
   private sellerAliases(sellerId: string) {
-    return resolveSellerIdAliases(
-      this.sellerModel,
-      this.userModel,
-      sellerId,
-    );
+    return resolveSellerIdAliases(this.sellerModel, this.userModel, sellerId);
   }
 }

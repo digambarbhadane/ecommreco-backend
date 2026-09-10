@@ -1,8 +1,4 @@
-import {
-  ApiTags,
-  ApiOperation,
-  ApiBearerAuth,
-} from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import {
   Body,
   Controller,
@@ -94,7 +90,10 @@ export class GstsController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'List GST entries', description: 'Returns paginated list of GST entries for a seller.' })
+  @ApiOperation({
+    summary: 'List GST entries',
+    description: 'Returns paginated list of GST entries for a seller.',
+  })
   @Roles('seller', 'super_admin')
   list(
     @Query('sellerId') sellerId?: string,

@@ -35,6 +35,7 @@ import { ListImportedRowsDto } from './dto/list-imported-rows.dto';
 import { ListAnalyticsOrdersDto } from './dto/list-analytics-orders.dto';
 import { ListAnalyticsPaymentsDto } from './dto/list-analytics-payments.dto';
 import { ListAnalyticsPayoutsDto } from './dto/list-analytics-payouts.dto';
+import { GetAnalyticsPayoutDetailsDto } from './dto/get-analytics-payout-details.dto';
 import { UpsertPayoutReceiptDto } from './dto/upsert-payout-receipt.dto';
 import { ResetPayoutReceiptDto } from './dto/reset-payout-receipt.dto';
 import { UploadReportDto } from './dto/upload-report.dto';
@@ -46,6 +47,7 @@ import { ImportJobService } from './services/import-job.service';
 import { ReconciliationService } from './services/reconciliation.service';
 import {
   DeleteSlotDto,
+  ImportStatusMatrixDto,
   WorkflowStatusDto,
 } from './dto/import-workflow.dto';
 import {
@@ -57,13 +59,15 @@ import { StateSkuWiseReportService } from './services/state-sku-wise-report.serv
 import { StateWiseExportDto } from './dto/state-wise-export.dto';
 import { Gstr1B2csExportDto } from './dto/gstr1-b2cs-export.dto';
 import { Gstr1B2csReportService } from './services/gstr1-b2cs-report.service';
+import { GeographyAnalyticsService } from './services/geography-analytics.service';
+import { GeographyAnalyticsDto } from './dto/geography-analytics.dto';
 import { MulterExceptionFilter } from './filters/multer-exception.filter';
 import type { Request } from 'express';
 import type { UploadedReportFiles } from './marketplace-upload.routes';
 import { MULTER_UPLOAD_LIMITS } from '../config/upload-limits';
 
 type RequestWithUser = Request & {
-  user?: { id?: string; email?: string; name?: string };
+  user?: { id?: string; email?: string; name?: string; role?: string };
 };
 
 @ApiTags('Report-Import')
@@ -82,6 +86,7 @@ export class ReportImportController {
     private readonly stateWiseReportService: StateWiseReportService,
     private readonly stateSkuWiseReportService: StateSkuWiseReportService,
     private readonly gstr1B2csReportService: Gstr1B2csReportService,
+    private readonly geographyAnalyticsService: GeographyAnalyticsService,
   ) {}
 
   @Post('import-session')
@@ -95,7 +100,9 @@ export class ReportImportController {
     @Query('marketplace') marketplace: string,
     @Body() dto: UploadReportDto,
   ) {
-    const key = (marketplace ?? '').trim().toLowerCase() as MarketplaceUploadKey;
+    const key = (marketplace ?? '')
+      .trim()
+      .toLowerCase() as MarketplaceUploadKey;
     if (!['flipkart', 'amazon', 'meesho', 'myntra'].includes(key)) {
       throw new BadRequestException('marketplace query is required');
     }
@@ -126,10 +133,15 @@ export class ReportImportController {
     if (!sellerId?.trim()) {
       throw new BadRequestException('sellerId is required');
     }
-    return this.importSessionService.addFile(sessionId, sellerId.trim(), slot.trim(), {
-      buffer: file.buffer,
-      originalname: file.originalname,
-    });
+    return this.importSessionService.addFile(
+      sessionId,
+      sellerId.trim(),
+      slot.trim(),
+      {
+        buffer: file.buffer,
+        originalname: file.originalname,
+      },
+    );
   }
 
   @Post('import-session/:sessionId/commit')
@@ -146,7 +158,11 @@ export class ReportImportController {
   }
 
   @Get('config')
-  @ApiOperation({ summary: 'Get import config', description: 'Returns required sheets and columns for a marketplace import.' })
+  @ApiOperation({
+    summary: 'Get import config',
+    description:
+      'Returns required sheets and columns for a marketplace import.',
+  })
   @Roles('seller', 'super_admin', 'accounts_manager')
   getConfig(@Query('marketplace') marketplace?: string) {
     const name = (marketplace ?? '').trim().toLowerCase();
@@ -155,7 +171,10 @@ export class ReportImportController {
         success: true,
         data: {
           marketplace: 'amazon',
-          requiredSheets: ['MTR B2B Report (single sheet)', 'MTR B2C Report (single sheet)'],
+          requiredSheets: [
+            'MTR B2B Report (single sheet)',
+            'MTR B2C Report (single sheet)',
+          ],
           requiredColumns: {
             'MTR B2C Report': [
               'Seller Gstin',
@@ -238,7 +257,10 @@ export class ReportImportController {
               'sgst_amt',
               'customer_delivery_state_code',
             ],
-            'MDirect Orders Report (optional)': ['order_release_id', 'seller_sku_code'],
+            'MDirect Orders Report (optional)': [
+              'order_release_id',
+              'seller_sku_code',
+            ],
             'Sales Revenue Packed B2C': [
               'Sale_Order_Code',
               'Invoice_Number',
@@ -498,10 +520,13 @@ export class ReportImportController {
 
   @Get('analytics/orders/export')
   @ApiOperation({
-    summary: 'Export analytics orders CSV',
-    description: 'Order-focused export without payment columns.',
+    summary: 'Export analytics orders Excel',
+    description:
+      'Order Report export matching the filtered table columns as .xlsx.',
   })
-  @ApiProduces('text/csv')
+  @ApiProduces(
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  )
   @Roles('seller', 'super_admin', 'accounts_manager')
   async exportAnalyticsOrders(
     @Query() query: ListAnalyticsOrdersDto,
@@ -510,11 +535,12 @@ export class ReportImportController {
     if (!query.sellerId?.trim()) {
       throw new BadRequestException('sellerId is required');
     }
-    const result = await this.reportImportService.exportAnalyticsOrdersCsv(query);
+    const result =
+      await this.reportImportService.exportAnalyticsOrdersCsv(query);
     res.setHeader('X-Export-Row-Count', String(result.rowCount));
     res.setHeader('Access-Control-Expose-Headers', 'X-Export-Row-Count');
     return new StreamableFile(result.buffer, {
-      type: 'text/csv; charset=utf-8',
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       disposition: `attachment; filename="${result.filename}"`,
     });
   }
@@ -582,7 +608,8 @@ export class ReportImportController {
   @Get('analytics/payments')
   @ApiOperation({
     summary: 'List analytics payments',
-    description: 'Paginated payment/settlement records (rows with payment data).',
+    description:
+      'Paginated payment/settlement records (rows with payment data).',
   })
   @Roles('seller', 'super_admin', 'accounts_manager')
   listAnalyticsPayments(@Query() query: ListAnalyticsPaymentsDto) {
@@ -601,6 +628,23 @@ export class ReportImportController {
       throw new BadRequestException('sellerId is required');
     }
     return this.reportImportService.listAnalyticsPayouts(query);
+  }
+
+  @Get('analytics/payouts/details')
+  @ApiOperation({
+    summary: 'Load payout expand line items for one NEFT',
+    description:
+      'Returns sheet line items for a single marketplace NEFT. Used when a payout row is expanded.',
+  })
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  getAnalyticsPayoutDetails(@Query() query: GetAnalyticsPayoutDetailsDto) {
+    if (!query.sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
+    if (!query.marketplace?.trim() || !query.neftId?.trim()) {
+      throw new BadRequestException('marketplace and neftId are required');
+    }
+    return this.reportImportService.getAnalyticsPayoutDetails(query);
   }
 
   @Put('analytics/payouts/receipt')
@@ -668,7 +712,10 @@ export class ReportImportController {
   }
 
   @Get('rows')
-  @ApiOperation({ summary: 'List imported rows', description: 'Returns paginated list of imported report rows.' })
+  @ApiOperation({
+    summary: 'List imported rows',
+    description: 'Returns paginated list of imported report rows.',
+  })
   @Roles('seller', 'super_admin', 'accounts_manager')
   listRows(@Query() query: ListImportedRowsDto) {
     return this.reportImportService.listImportedRows(query);
@@ -747,7 +794,10 @@ export class ReportImportController {
   }
 
   @Get('summary')
-  @ApiOperation({ summary: 'Get import summary', description: 'Returns document type summary for imported reports.' })
+  @ApiOperation({
+    summary: 'Get import summary',
+    description: 'Returns document type summary for imported reports.',
+  })
   @Roles('seller', 'super_admin', 'accounts_manager')
   summary(@Query() query: ListImportedRowsDto) {
     return this.reportImportService.getDocumentTypeSummary(query);
@@ -811,7 +861,8 @@ export class ReportImportController {
   @Get('uploads/:uploadId/status')
   @ApiOperation({
     summary: 'Get import upload status',
-    description: 'Poll after Myntra/Meesho/Amazon upload while status is processing.',
+    description:
+      'Poll after Myntra/Meesho/Amazon upload while status is processing.',
   })
   @Roles('seller', 'super_admin', 'accounts_manager')
   uploadStatus(
@@ -908,13 +959,25 @@ export class ReportImportController {
   }
 
   @Get('workflow/upload-overview')
-  @ApiOperation({ summary: 'Seller-wide upload status by GST, month, and marketplace' })
+  @ApiOperation({
+    summary: 'Seller-wide upload status by GST, month, and marketplace',
+  })
   @Roles('seller', 'super_admin', 'accounts_manager')
   workflowUploadOverview(@Query('sellerId') sellerId: string) {
     if (!sellerId?.trim()) {
       throw new BadRequestException('sellerId is required');
     }
     return this.importWorkflowService.getSellerUploadOverview(sellerId.trim());
+  }
+
+  @Post('workflow/import-status-matrix')
+  @ApiOperation({
+    summary:
+      'GST-scoped marketplace × month import status matrix with per-report status',
+  })
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  workflowImportStatusMatrix(@Body() body: ImportStatusMatrixDto) {
+    return this.importWorkflowService.getImportStatusMatrix(body);
   }
 
   @Get('workflow/month-summary')
@@ -927,7 +990,12 @@ export class ReportImportController {
     @Query('marketplace') marketplace: string,
     @Query('reportMonth') reportMonth: string,
   ) {
-    if (!sellerId?.trim() || !gstId?.trim() || !marketplaceId?.trim() || !reportMonth?.trim()) {
+    if (
+      !sellerId?.trim() ||
+      !gstId?.trim() ||
+      !marketplaceId?.trim() ||
+      !reportMonth?.trim()
+    ) {
       throw new BadRequestException(
         'sellerId, gstId, marketplaceId, and reportMonth are required',
       );
@@ -986,7 +1054,9 @@ export class ReportImportController {
     @Query('reportMonth') reportMonth?: string,
   ) {
     if (!sellerId?.trim() || !gstId?.trim() || !marketplace?.trim()) {
-      throw new BadRequestException('sellerId, gstId, and marketplace are required');
+      throw new BadRequestException(
+        'sellerId, gstId, and marketplace are required',
+      );
     }
     return this.reconciliationService.getAdjustmentNotifications({
       sellerId: sellerId.trim(),
@@ -1026,7 +1096,12 @@ export class ReportImportController {
     @Query('reportMonth') reportMonth: string,
     @Query('mode') mode?: string,
   ) {
-    if (!sellerId?.trim() || !gstId?.trim() || !marketplace?.trim() || !reportMonth?.trim()) {
+    if (
+      !sellerId?.trim() ||
+      !gstId?.trim() ||
+      !marketplace?.trim() ||
+      !reportMonth?.trim()
+    ) {
       throw new BadRequestException(
         'sellerId, gstId, marketplace, and reportMonth are required',
       );
@@ -1118,17 +1193,79 @@ export class ReportImportController {
   @ApiOperation({
     summary: 'SKU-wise analytics by master SKU',
     description:
-      'Aggregates imported sales metrics against master SKUs and marketplace SKU mappings.',
+      'Aggregates imported sales metrics against master SKUs and marketplace SKU mappings. Omit gstin to include all GSTINs.',
   })
   @Roles('seller', 'super_admin', 'accounts_manager')
   getSkuWiseAnalytics(@Query() query: StateWiseExportDto) {
     if (!query.sellerId?.trim()) {
       throw new BadRequestException('sellerId is required');
     }
-    if (!query.gstin?.trim()) {
-      throw new BadRequestException('gstin is required');
-    }
     return this.stateSkuWiseReportService.getSkuWiseAnalytics(query);
+  }
+
+  @Get('analytics/geography')
+  @ApiOperation({
+    summary: 'India state-wise sales map overview',
+    description:
+      'Aggregated seller sales by Indian state using invoice/sales date. Tenant-scoped to the authenticated seller.',
+  })
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  getGeographyAnalytics(
+    @Query() query: GeographyAnalyticsDto,
+    @Req() req: RequestWithUser,
+  ) {
+    if (!query.sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
+    return this.geographyAnalyticsService.getOverview(query, {
+      id: req.user?.id,
+      role: req.user?.role,
+    });
+  }
+
+  @Get('analytics/geography/export')
+  @ApiOperation({ summary: 'Export state-wise geographical sales' })
+  @ApiProduces(
+    'text/csv',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  )
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  async exportGeographyAnalytics(
+    @Query() query: GeographyAnalyticsDto,
+    @Req() req: RequestWithUser,
+  ) {
+    if (!query.sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
+    const actor = { id: req.user?.id, role: req.user?.role };
+    const result =
+      query.format === 'xlsx'
+        ? await this.geographyAnalyticsService.exportXlsx(query, actor)
+        : await this.geographyAnalyticsService.exportCsv(query, actor);
+    return new StreamableFile(result.buffer, {
+      type:
+        query.format === 'xlsx'
+          ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+          : 'text/csv',
+      disposition: `attachment; filename="${result.filename}"`,
+    });
+  }
+
+  @Get('analytics/geography/states/:stateCode')
+  @ApiOperation({ summary: 'State-level geographical analytics detail' })
+  @Roles('seller', 'super_admin', 'accounts_manager')
+  getGeographyStateDetail(
+    @Param('stateCode') stateCode: string,
+    @Query() query: GeographyAnalyticsDto,
+    @Req() req: RequestWithUser,
+  ) {
+    if (!query.sellerId?.trim()) {
+      throw new BadRequestException('sellerId is required');
+    }
+    return this.geographyAnalyticsService.getStateDetail(stateCode, query, {
+      id: req.user?.id,
+      role: req.user?.role,
+    });
   }
 
   @Get('export/state-sku-wise')
@@ -1208,7 +1345,10 @@ export class ReportImportController {
   }
 
   @Get('errors-csv')
-  @ApiOperation({ summary: 'Download errors CSV', description: 'Returns CSV file of import errors for a given uploadId.' })
+  @ApiOperation({
+    summary: 'Download errors CSV',
+    description: 'Returns CSV file of import errors for a given uploadId.',
+  })
   @Roles('seller', 'super_admin', 'accounts_manager')
   @Header('Content-Type', 'text/csv')
   async errorsCsv(@Query('uploadId') uploadId: string) {

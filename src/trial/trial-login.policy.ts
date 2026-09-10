@@ -70,12 +70,16 @@ export function evaluateSellerLogin(
   }
 
   const onboarding = seller.onboardingStatus ?? 'payment_pending';
-  const paymentStatus = String(seller.paymentStatus ?? '').trim().toLowerCase();
+  const paymentStatus = String(seller.paymentStatus ?? '')
+    .trim()
+    .toLowerCase();
   const trialStatus = seller.trialStatus;
 
   if (seller.isTrial) {
     if (trialStatus === 'suspended') {
-      const accountStatusReason = String(seller.accountStatusReason ?? '').trim();
+      const accountStatusReason = String(
+        seller.accountStatusReason ?? '',
+      ).trim();
       return {
         allowed: false,
         message: 'Your trial account is suspended. Contact support.',

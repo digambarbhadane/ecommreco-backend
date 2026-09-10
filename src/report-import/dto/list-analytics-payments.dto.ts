@@ -54,6 +54,9 @@ export class ListAnalyticsPaymentsDto {
     'marketplaceFee',
     'commission',
     'sellerSku',
+    'refund',
+    'netSales',
+    'difference',
   ])
   sortBy?:
     | 'paymentDate'
@@ -68,7 +71,10 @@ export class ListAnalyticsPaymentsDto {
     | 'saleAmount'
     | 'marketplaceFee'
     | 'commission'
-    | 'sellerSku';
+    | 'sellerSku'
+    | 'refund'
+    | 'netSales'
+    | 'difference';
 
   @IsOptional()
   @IsString()
@@ -86,4 +92,14 @@ export class ListAnalyticsPaymentsDto {
   @IsOptional()
   @IsString()
   search?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['due', 'overdue', 'settled', 'dispute'])
+  paymentStatus?: 'due' | 'overdue' | 'settled' | 'dispute';
+
+  /** Exact Order ID — returns every payment/settlement row for that order. */
+  @IsOptional()
+  @IsString()
+  orderId?: string;
 }

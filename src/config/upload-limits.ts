@@ -8,7 +8,9 @@ export const UPLOAD_MAX_FILE_BYTES = (() => {
   return Math.floor(mb * 1024 * 1024);
 })();
 
-export const UPLOAD_MAX_FILE_MB = Math.round(UPLOAD_MAX_FILE_BYTES / (1024 * 1024));
+export const UPLOAD_MAX_FILE_MB = Math.round(
+  UPLOAD_MAX_FILE_BYTES / (1024 * 1024),
+);
 
 export const MULTER_UPLOAD_LIMITS = {
   fileSize: UPLOAD_MAX_FILE_BYTES,

@@ -40,7 +40,8 @@ export class MeeshoPaymentParser {
   constructor(private readonly fileParser: FileParserService) {}
 
   parse(buffer: Buffer): MeeshoPaymentParseResult {
-    const workbook = this.fileParser.parseMeeshoPaymentAllSheetsWorkbook(buffer);
+    const workbook =
+      this.fileParser.parseMeeshoPaymentAllSheetsWorkbook(buffer);
 
     const skippedBySheet: Record<MeeshoPaymentSheetKind, number> = {
       orderPayments: 0,
@@ -79,7 +80,9 @@ export class MeeshoPaymentParser {
 
     const secondary = workbook.sheets
       .filter(
-        (sheet): sheet is MeeshoPaymentParsedSheet & {
+        (
+          sheet,
+        ): sheet is MeeshoPaymentParsedSheet & {
           kind: Exclude<MeeshoPaymentSheetKind, 'orderPayments'>;
         } => sheet.kind !== 'orderPayments',
       )

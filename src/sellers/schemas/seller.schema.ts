@@ -298,7 +298,10 @@ export class Seller {
 
   /** single_gst | multi_gst_pan — set on trial→paid conversion */
   @Prop({ type: String, enum: ['single_gst', 'multi_gst_pan'] })
-  subscriptionPlanType?: 'single_gst' | 'multi_gst_pan' | 'single_gst_multi_marketplace';
+  subscriptionPlanType?:
+    | 'single_gst'
+    | 'multi_gst_pan'
+    | 'single_gst_multi_marketplace';
 
   /** Total marketplace links purchased on the current subscription. */
   @Prop({ default: 0 })
@@ -311,6 +314,26 @@ export class Seller {
   /** YYYY-MM months purchased for reconciliation access */
   @Prop({ type: [String], default: [] })
   reconciliationMonths?: string[];
+
+  /** Perione verification id captured at trial registration. */
+  @Prop()
+  gstVerificationId?: string;
+  @Prop()
+  subscriptionPlanLabel?: string;
+
+  /** PAN-level pricing breakdown captured at purchase for billing display. */
+  @Prop({ type: [Object] })
+  subscriptionPanBreakdown?: Array<{
+    panNumber: string;
+    gstNumbers: string[];
+    gstCount: number;
+    marketplaceCount: number;
+    monthlyRate: number;
+    tierLabel: string;
+    selectedMonthCount: number;
+    billableMonthCount: number;
+    lineSubtotal: number;
+  }>;
 }
 
 export const SellerSchema = SchemaFactory.createForClass(Seller);

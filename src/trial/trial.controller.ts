@@ -8,13 +8,10 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import {
-  ApiBearerAuth,
-  ApiOperation,
-  ApiTags,
-} from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
 import { ConfigService } from '@nestjs/config';
+import { Throttle } from '@nestjs/throttler';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import {
@@ -24,28 +21,82 @@ import {
   ListTrialsQueryDto,
   PurchaseTrialSubscriptionDto,
   RegisterTrialDto,
+  SendTrialOtpDto,
+  VerifyTrialGstDto,
+  VerifyTrialOtpDto,
 } from './dto/trial.dto';
 import { TrialService } from './trial.service';
+import { TrialOtpService } from './trial-otp.service';
 import { OnboardingRegistrationService } from '../onboarding/services/onboarding-registration.service';
 import { isOnboardingV2Enabled } from '../onboarding/constants/onboarding-status';
+
+function actorSellerId(user?: {
+  sellerId?: unknown;
+  sub?: string;
+  id?: string;
+}): string {
+  const raw = user?.sellerId ?? user?.sub ?? user?.id;
+  if (raw == null) return '';
+  return String(raw).trim();
+}
 
 @ApiTags('Trial')
 @Controller('trial')
 export class TrialController {
   constructor(
     private readonly trialService: TrialService,
+    private readonly trialOtpService: TrialOtpService,
     private readonly onboardingRegistration: OnboardingRegistrationService,
     private readonly config: ConfigService,
   ) {}
 
   private useOnboardingV2() {
-    return isOnboardingV2Enabled(this.config.get<string>('ONBOARDING_V2_ENABLED'));
+    return isOnboardingV2Enabled(
+      this.config.get<string>('ONBOARDING_V2_ENABLED'),
+    );
   }
 
   @Get('pricing')
   @ApiOperation({ summary: 'Public trial and plan pricing info' })
   getPricing() {
     return this.trialService.getPricing();
+  }
+
+  @Post('verify-gst')
+  @ApiOperation({
+    summary: 'Verify GSTIN during trial registration (public)',
+    description:
+      'Verifies a GST number via Perione before trial signup. No verify button needed on the client — call when the user enters a complete GSTIN.',
+  })
+  verifyGst(@Body() dto: VerifyTrialGstDto) {
+    return this.trialService.verifyGstForRegistration(dto);
+  }
+
+  @Post('otp/send')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @ApiOperation({
+    summary: 'Send OTP to email or mobile for trial registration',
+  })
+  sendOtp(@Body() dto: SendTrialOtpDto) {
+    return this.trialOtpService.sendOtp(dto);
+  }
+
+  @Post('otp/verify')
+  @Throttle({ default: { limit: 20, ttl: 60000 } })
+  @ApiOperation({
+    summary: 'Verify email or mobile OTP for trial registration',
+  })
+  verifyOtp(@Body() dto: VerifyTrialOtpDto) {
+    return this.trialOtpService.verifyOtp(dto);
+  }
+
+  @Get('otp/status')
+  @ApiOperation({ summary: 'Check email and mobile OTP verification status' })
+  otpStatus(@Query('email') email: string, @Query('mobile') mobile: string) {
+    return this.trialOtpService.getVerificationStatus(
+      email ?? '',
+      mobile ?? '',
+    );
   }
 
   @Get('packages')
@@ -58,11 +109,16 @@ export class TrialController {
   @ApiOperation({ summary: 'Self-service trial registration' })
   register(@Body() dto: RegisterTrialDto) {
     if (this.useOnboardingV2()) {
-      return this.onboardingRegistration.register({
-        ...dto,
-        ownerName: dto.ownerName,
-        source: 'self_service_trial',
-      });
+      return this.trialService
+        .enrichTrialRegisterForOnboarding(dto)
+        .then(async (payload) => {
+          const result = await this.onboardingRegistration.register({
+            ...payload,
+            source: 'self_service_trial',
+          });
+          await this.trialService.consumeRegistrationOtp(dto.mobile.trim());
+          return result;
+        });
     }
     return this.trialService.register(dto);
   }
@@ -74,7 +130,9 @@ export class TrialController {
   }
 
   @Post('payment/:sellerId/init')
-  @ApiOperation({ summary: 'Create Cashfree order for trial registration payment' })
+  @ApiOperation({
+    summary: 'Create Cashfree order for trial registration payment',
+  })
   initTrialPayment(@Param('sellerId') sellerId: string) {
     return this.trialService.initTrialPayment(sellerId);
   }
@@ -96,7 +154,7 @@ export class TrialController {
   myStatus(
     @Req() req: { user?: { sellerId?: string; sub?: string; id?: string } },
   ) {
-    const sellerId = req.user?.sellerId || req.user?.sub || req.user?.id;
+    const sellerId = actorSellerId(req.user);
     return this.trialService.getSellerTrialStatus(String(sellerId));
   }
 
@@ -108,7 +166,7 @@ export class TrialController {
     @Req() req: { user?: { sellerId?: string; sub?: string; id?: string } },
     @Body() dto: PurchaseTrialSubscriptionDto,
   ) {
-    const sellerId = req.user?.sellerId || req.user?.sub || req.user?.id;
+    const sellerId = actorSellerId(req.user);
     return this.trialService.quotePurchase(String(sellerId), dto);
   }
 
@@ -123,7 +181,7 @@ export class TrialController {
     @Req() req: { user?: { sellerId?: string; sub?: string; id?: string } },
     @Body() dto: PurchaseTrialSubscriptionDto,
   ) {
-    const sellerId = req.user?.sellerId || req.user?.sub || req.user?.id;
+    const sellerId = actorSellerId(req.user);
     return this.trialService.initPurchaseSubscription(String(sellerId), dto);
   }
 
@@ -138,7 +196,7 @@ export class TrialController {
     @Req() req: { user?: { sellerId?: string; sub?: string; id?: string } },
     @Body() dto: ConfirmSubscriptionPurchaseDto,
   ) {
-    const sellerId = req.user?.sellerId || req.user?.sub || req.user?.id;
+    const sellerId = actorSellerId(req.user);
     return this.trialService.confirmPurchaseSubscription(String(sellerId), dto);
   }
 
@@ -153,7 +211,7 @@ export class TrialController {
     @Req() req: { user?: { sellerId?: string; sub?: string; id?: string } },
     @Body() dto: PurchaseTrialSubscriptionDto,
   ) {
-    const sellerId = req.user?.sellerId || req.user?.sub || req.user?.id;
+    const sellerId = actorSellerId(req.user);
     return this.trialService.purchaseSubscription(String(sellerId), dto);
   }
 

@@ -62,7 +62,7 @@ import { OnboardingModule } from '../onboarding/onboarding.module';
   controllers: [PaymentsController],
   providers: [
     CashfreeGateway,
-  {
+    {
       provide: PAYMENT_GATEWAY,
       useExisting: CashfreeGateway,
     },

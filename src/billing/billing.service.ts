@@ -30,9 +30,24 @@ import {
 import { Gst, GstDocument } from '../gsts/schemas/gst.schema';
 import { computeSlotUsageFromGstRecords } from '../common/utils/seller-slot-usage.util';
 import {
-  buildInvoiceHtml,
-  InvoiceDocument,
-} from './utils/invoice-html.util';
+  buildSubscriptionInvoiceDescription,
+  resolveSubscriptionDisplaySnapshot,
+  type SubscriptionDisplaySnapshot,
+} from './utils/billing-subscription-display.util';
+import {
+  applyQuoteSnapshotToSellerFields,
+  buildSubscriptionPeriodFromMonths,
+  extractQuoteFromPaymentMetadata,
+  groupReportMonthsByFinancialYear,
+  normalizeReportMonths,
+  resolveMarketplaceSlotsInPlan,
+} from './utils/reconciliation-subscription.util';
+import {
+  PaymentOrder,
+  PaymentOrderDocument,
+} from '../payments/schemas/payment-order.schema';
+import { buildInvoiceHtml, InvoiceDocument } from './utils/invoice-html.util';
+import type { GstCheckoutSelection } from '../trial/subscription-checkout.pricing';
 import { getTrialAllowedReportMonthsForSeller } from '../trial/trial.constants';
 import {
   formatPlanDurationLabel,
@@ -88,7 +103,66 @@ export class BillingService {
     private readonly gstModel: Model<GstDocument>,
     @InjectModel(Marketplace.name)
     private readonly marketplaceModel: Model<MarketplaceDocument>,
+    @InjectModel(PaymentOrder.name)
+    private readonly paymentOrderModel: Model<PaymentOrderDocument>,
   ) {}
+
+  private async enrichSellerSubscriptionFromPaymentOrder(
+    seller: SellerDocument,
+  ) {
+    const existingMonths = normalizeReportMonths(seller.reconciliationMonths ?? []);
+    const needsOrderLookup =
+      !existingMonths.length || !seller.subscriptionPlanLabel;
+
+    if (needsOrderLookup) {
+      const order = await this.paymentOrderModel
+        .findOne({
+          'metadata.checkoutType': 'lead_conversion',
+          $or: [
+            ...(seller.leadId ? [{ 'metadata.leadLeadId': seller.leadId }] : []),
+          ],
+        })
+        .sort({ createdAt: -1 })
+        .lean()
+        .exec();
+
+      const quote = extractQuoteFromPaymentMetadata(
+        (order?.metadata ?? null) as Record<string, unknown> | null,
+      );
+      if (quote) {
+        applyQuoteSnapshotToSellerFields(seller, quote);
+      }
+    }
+
+    const finalMonths = normalizeReportMonths(seller.reconciliationMonths ?? []);
+    if (finalMonths.length) {
+      seller.reconciliationMonths = finalMonths;
+      const anchor =
+        seller.paymentCompletedAt ??
+        seller.paymentVerifiedAt ??
+        seller.paymentDate ??
+        seller.subscriptionStartsAt ??
+        new Date();
+      const period = buildSubscriptionPeriodFromMonths(
+        finalMonths,
+        new Date(anchor),
+      );
+      seller.subscriptionStartsAt = period.startsAt;
+      seller.subscriptionEndsAt = period.endsAt;
+    }
+
+    if (!seller.marketplaceSlotsPurchased) {
+      const marketplaceSlots = resolveMarketplaceSlotsInPlan({
+        marketplaceSlotsPurchased: seller.marketplaceSlotsPurchased,
+        subscriptionPlanType: seller.subscriptionPlanType,
+        gstSlots: seller.gstSlots,
+        gstSlotsPurchased: seller.gstSlotsPurchased,
+      });
+      if (marketplaceSlots > 0) {
+        seller.marketplaceSlotsPurchased = marketplaceSlots;
+      }
+    }
+  }
 
   private async resolveLiveSlotUsage(sellerId: string) {
     const gstRecords = await this.gstModel
@@ -101,7 +175,11 @@ export class BillingService {
     });
     const { gstUsed, panUsed } = computeSlotUsageFromGstRecords(gstRecords);
     const activeGstNumbers = gstRecords
-      .map((row) => String(row.gstNumber ?? '').trim().toUpperCase())
+      .map((row) =>
+        String(row.gstNumber ?? '')
+          .trim()
+          .toUpperCase(),
+      )
       .filter(Boolean);
 
     return {
@@ -144,7 +222,10 @@ export class BillingService {
   private getUserId(user?: RequestUser): string {
     const id = typeof user?.id === 'string' ? user.id.trim() : '';
     if (!id) {
-      throw new BadRequestException({ success: false, message: 'Invalid user' });
+      throw new BadRequestException({
+        success: false,
+        message: 'Invalid user',
+      });
     }
     return id;
   }
@@ -187,7 +268,10 @@ export class BillingService {
   private async getSellerForUser(user?: RequestUser) {
     const seller = await this.findSellerByUser(user);
     if (!seller) {
-      throw new NotFoundException({ success: false, message: 'Seller not found' });
+      throw new NotFoundException({
+        success: false,
+        message: 'Seller not found',
+      });
     }
     const sellerId =
       seller._id instanceof Types.ObjectId
@@ -213,7 +297,11 @@ export class BillingService {
     const isTrialAccount = isTrialSellerAccount(seller);
 
     if (isTrialAccount) {
-      if (seller.trialStatus === 'active' && trialEnd && trialEnd.getTime() >= now) {
+      if (
+        seller.trialStatus === 'active' &&
+        trialEnd &&
+        trialEnd.getTime() >= now
+      ) {
         return 'active';
       }
       if (
@@ -257,6 +345,7 @@ export class BillingService {
   private buildPrimarySubscriptionInvoice(
     seller: Seller,
     sellerId: string,
+    snapshot?: SubscriptionDisplaySnapshot,
   ): BillingInvoiceSummary | null {
     const amount = Number(seller.paymentAmount ?? seller.amount ?? 0) || 0;
     const paidAt =
@@ -282,12 +371,18 @@ export class BillingService {
       seller.transactionId ||
       `SUB-${sellerId.slice(-8).toUpperCase()}`;
 
+    const description = snapshot
+      ? this.buildSubscriptionInvoiceDescription(seller, snapshot)
+      : `EcommReco subscription (${seller.gstSlots ?? 0} GST profile(s))`;
+
     return {
       id: 'sub-primary',
       invoiceNumber,
       type: 'subscription',
-      description: `EcommReco subscription (${seller.gstSlots ?? 0} GST slots, ${seller.durationYears ?? seller.subscriptionDuration ?? 1} year(s))`,
-      issueDate: issueDate ? new Date(issueDate).toISOString() : new Date().toISOString(),
+      description,
+      issueDate: issueDate
+        ? new Date(issueDate).toISOString()
+        : new Date().toISOString(),
       amount: totalAmount,
       baseAmount,
       gstAmount,
@@ -301,9 +396,13 @@ export class BillingService {
   private async buildSubscriptionRecordInvoices(
     seller: Seller,
     sellerId: string,
+    snapshot?: SubscriptionDisplaySnapshot,
   ): Promise<BillingInvoiceSummary[]> {
     const filter: Record<string, unknown> = {
-      $or: [{ sellerId }, ...(seller.leadId ? [{ leadId: seller.leadId }] : [])],
+      $or: [
+        { sellerId },
+        ...(seller.leadId ? [{ leadId: seller.leadId }] : []),
+      ],
     };
     const records = await this.subscriptionModel
       .find(filter)
@@ -335,13 +434,17 @@ export class BillingService {
       const gstAmount = Number(record.gstAmount ?? totalAmount - baseAmount);
       const status = this.mapPaymentStatus(record.paymentStatus);
 
+      const description = snapshot
+        ? this.buildSubscriptionInvoiceDescription(seller, snapshot)
+        : pkg
+          ? `${pkg.name} (${record.gstSlots} GST profile(s))`
+          : `Subscription (${record.gstSlots} GST profile(s))`;
+
       return {
         id: `subscription-${String(record._id)}`,
         invoiceNumber: `SUB-${String(record._id).slice(-8).toUpperCase()}`,
         type: 'subscription' as const,
-        description: pkg
-          ? `${pkg.name} (${record.gstSlots} GST slot(s), ${record.duration} year(s))`
-          : `Subscription (${record.gstSlots} GST slot(s))`,
+        description,
         issueDate: new Date(
           record.startDate ??
             (record as { createdAt?: Date }).createdAt ??
@@ -454,17 +557,37 @@ export class BillingService {
       }
     }
     return Array.from(byNumber.values()).sort(
-      (a, b) => new Date(b.issueDate).getTime() - new Date(a.issueDate).getTime(),
+      (a, b) =>
+        new Date(b.issueDate).getTime() - new Date(a.issueDate).getTime(),
     );
   }
 
   async getSummary(user?: RequestUser) {
     const { userId, seller } = await this.getSellerForUser(user);
+    await this.enrichSellerSubscriptionFromPaymentOrder(seller);
 
-    const primary = this.buildPrimarySubscriptionInvoice(seller, userId);
+    const reconciliationMonths = Array.isArray(seller.reconciliationMonths)
+      ? [...seller.reconciliationMonths].sort()
+      : [];
+    const financialYears = groupReportMonthsByFinancialYear(reconciliationMonths);
+    const checkoutSelections = await this.resolveCheckoutSelectionsForSeller(
+      userId,
+      reconciliationMonths,
+    );
+    const subscriptionSnapshot = resolveSubscriptionDisplaySnapshot(
+      seller,
+      checkoutSelections,
+    );
+
+    const primary = this.buildPrimarySubscriptionInvoice(
+      seller,
+      userId,
+      subscriptionSnapshot,
+    );
     const subscriptionRecords = await this.buildSubscriptionRecordInvoices(
       seller,
       userId,
+      subscriptionSnapshot,
     );
     const panInvoices = await this.buildPanSlotInvoices(userId);
 
@@ -490,13 +613,14 @@ export class BillingService {
     const liveUsage = await this.resolveLiveSlotUsage(userId);
     await this.syncSellerSlotCountersIfNeeded(seller, liveUsage);
 
-    const gstTotal = Math.max(
-      0,
-      Number(seller.gstSlots ?? seller.gstSlotsPurchased ?? 0),
-    );
-    const gstUsed = liveUsage.gstUsed;
-    const panTotal = totalPanSlots;
-    const panUsed = liveUsage.panUsed;
+    const gstInPlan = subscriptionSnapshot.gstProfilesInPlan;
+    const gstActive = liveUsage.gstUsed;
+    const panInPlan = subscriptionSnapshot.panProfilesInPlan;
+    const panActive = liveUsage.panUsed;
+    const panTotal = Math.max(panInPlan, panActive, totalPanSlots);
+    const marketplacePurchased = subscriptionSnapshot.marketplaceLinksPurchased;
+    const marketplaceUsed = liveUsage.marketplaceUsed;
+    const marketplaceTotal = Math.max(marketplacePurchased, marketplaceUsed);
 
     const addressParts = [seller.address, seller.city, seller.state].filter(
       Boolean,
@@ -542,24 +666,27 @@ export class BillingService {
             ? new Date(seller.trialEnd).toISOString()
             : validity.endsAt?.toISOString(),
           subscriptionPlanType: seller.subscriptionPlanType,
-          reconciliationMonths: Array.isArray(seller.reconciliationMonths)
-            ? [...seller.reconciliationMonths].sort()
-            : [],
+          subscriptionPlanLabel: subscriptionSnapshot.planLabel,
+          reconciliationMonths,
+          financialYears,
           allowedImportMonths,
           startsAt: validity.startsAt?.toISOString(),
           endsAt: validity.endsAt?.toISOString(),
           durationYears:
             seller.durationYears ?? seller.subscriptionDuration ?? undefined,
-          gstSlots: gstTotal,
-          gstSlotsUsed: gstUsed,
-          gstSlotsPurchased: seller.gstSlotsPurchased ?? 0,
+          gstSlots: gstInPlan,
+          gstSlotsUsed: gstActive,
+          gstSlotsPurchased: gstInPlan,
           panSlots: {
             allocated: seller.allocatedPanSlots ?? 0,
-            purchased: seller.purchasedPanSlots ?? 0,
-            used: panUsed,
+            purchased: panInPlan,
+            used: panActive,
             total: panTotal,
           },
-          marketplaceLinksUsed: liveUsage.marketplaceUsed,
+          marketplaceLinksUsed: marketplaceUsed,
+          marketplaceLinksPurchased: marketplacePurchased,
+          billableMonthCount: subscriptionSnapshot.billableMonthCount,
+          totalMonthlyRate: subscriptionSnapshot.totalMonthlyRate,
           amount: Number(seller.paymentAmount ?? seller.amount ?? 0),
           paymentDate: seller.paymentDate
             ? new Date(seller.paymentDate).toISOString()
@@ -577,28 +704,119 @@ export class BillingService {
         },
         usage: {
           gst: {
-            total: gstTotal,
-            used: gstUsed,
-            purchased: seller.gstSlotsPurchased ?? 0,
-            available: Math.max(0, gstTotal - gstUsed),
+            total: Math.max(gstInPlan, gstActive),
+            used: gstActive,
+            purchased: gstInPlan,
+            inPlan: gstInPlan,
+            available: Math.max(0, gstInPlan - gstActive),
           },
           pan: {
             allocated: seller.allocatedPanSlots ?? 0,
-            purchased: seller.purchasedPanSlots ?? 0,
-            used: panUsed,
+            purchased: panInPlan,
+            used: panActive,
             total: panTotal,
-            available: Math.max(0, panTotal - panUsed),
+            inPlan: panInPlan,
+            available: Math.max(0, panInPlan - panActive),
           },
+          marketplace: {
+            total: marketplaceTotal,
+            used: marketplaceUsed,
+            purchased: marketplacePurchased,
+            available: Math.max(0, marketplacePurchased - marketplaceUsed),
+          },
+        },
+        subscription: {
+          planLabel: subscriptionSnapshot.planLabel,
+          planType: subscriptionSnapshot.planType,
+          reconciliationMonths: subscriptionSnapshot.reconciliationMonths,
+          financialYears: groupReportMonthsByFinancialYear(
+            subscriptionSnapshot.reconciliationMonths,
+          ),
+          billableMonthCount: subscriptionSnapshot.billableMonthCount,
+          totalMonthlyRate: subscriptionSnapshot.totalMonthlyRate,
+          gstProfilesInPlan: subscriptionSnapshot.gstProfilesInPlan,
+          panProfilesInPlan: subscriptionSnapshot.panProfilesInPlan,
+          marketplaceLinksPurchased:
+            subscriptionSnapshot.marketplaceLinksPurchased,
+          panBreakdown: subscriptionSnapshot.panBreakdown,
         },
         totals: {
           totalPaid,
           totalPending,
           invoiceCount: invoices.length,
-          lastPaymentDate: lastPaidInvoice?.paymentDate ?? lastPaidInvoice?.issueDate,
+          lastPaymentDate:
+            lastPaidInvoice?.paymentDate ?? lastPaidInvoice?.issueDate,
         },
         invoices,
       },
     };
+  }
+
+  private async resolveCheckoutSelectionsForSeller(
+    sellerId: string,
+    reconciliationMonths: string[],
+  ): Promise<GstCheckoutSelection[]> {
+    const gstRecords = await this.gstModel
+      .find({ sellerId })
+      .select('gstNumber')
+      .lean()
+      .exec();
+    if (!gstRecords.length) {
+      return [];
+    }
+
+    const marketplaces = await this.marketplaceModel
+      .find({ sellerId })
+      .select('gstId platformMarketplaceId')
+      .lean()
+      .exec();
+
+    const platformIdsByGstId = new Map<string, string[]>();
+    for (const link of marketplaces) {
+      const gstId = String(link.gstId ?? '').trim();
+      const platformId = String(link.platformMarketplaceId ?? '').trim();
+      if (!gstId || !platformId) {
+        continue;
+      }
+      const bucket = platformIdsByGstId.get(gstId) ?? [];
+      bucket.push(platformId);
+      platformIdsByGstId.set(gstId, bucket);
+    }
+
+    const selections: GstCheckoutSelection[] = [];
+    for (const record of gstRecords) {
+      const gstNumber = String(record.gstNumber ?? '')
+        .trim()
+        .toUpperCase();
+      if (!gstNumber) {
+        continue;
+      }
+      const gstId = String(record._id);
+      const marketplacePlatformIds = Array.from(
+        new Set(platformIdsByGstId.get(gstId) ?? []),
+      );
+      selections.push({
+        gstNumber,
+        verificationId: '',
+        marketplacePlatformIds,
+        selectedMonths: reconciliationMonths,
+      });
+    }
+    return selections;
+  }
+
+  private buildSubscriptionInvoiceDescription(
+    seller: Seller,
+    snapshot: SubscriptionDisplaySnapshot,
+  ): string {
+    return buildSubscriptionInvoiceDescription({
+      planLabel: snapshot.planLabel,
+      reconciliationMonths: snapshot.reconciliationMonths,
+      billableMonthCount: snapshot.billableMonthCount,
+      totalMonthlyRate: snapshot.totalMonthlyRate,
+      gstProfilesInPlan: snapshot.gstProfilesInPlan,
+      marketplaceLinksPurchased: snapshot.marketplaceLinksPurchased,
+    });
   }
 
   private async resolveInvoiceDocument(
@@ -622,6 +840,19 @@ export class BillingService {
     const sellerGstNumber = liveUsage.activeGstNumbers.length
       ? liveUsage.activeGstNumbers.join(', ')
       : undefined;
+
+    const reconciliationMonths = Array.isArray(seller.reconciliationMonths)
+      ? [...seller.reconciliationMonths].sort()
+      : [];
+    const checkoutSelections = await this.resolveCheckoutSelectionsForSeller(
+      sellerId,
+      reconciliationMonths,
+    );
+    const snapshot = resolveSubscriptionDisplaySnapshot(
+      seller,
+      checkoutSelections,
+    );
+
     const lineItems =
       invoice.type === 'pan_slot_addon'
         ? [
@@ -632,15 +863,24 @@ export class BillingService {
               amount: invoice.baseAmount,
             },
           ]
-        : [
-            {
-              description: invoice.description,
-              quantity: seller.gstSlots ?? 1,
+        : snapshot.panBreakdown.length
+          ? snapshot.panBreakdown.map((row) => ({
+              description: `${row.tierLabel} (PAN ${row.panNumber}) · ${row.billableMonthCount} billable month(s)`,
+              quantity: row.billableMonthCount,
               unitPrice:
-                invoice.baseAmount / Math.max(Number(seller.gstSlots ?? 1), 1),
-              amount: invoice.baseAmount,
-            },
-          ];
+                row.billableMonthCount > 0
+                  ? row.lineSubtotal / row.billableMonthCount
+                  : row.lineSubtotal,
+              amount: row.lineSubtotal,
+            }))
+          : [
+              {
+                description: invoice.description,
+                quantity: 1,
+                unitPrice: invoice.baseAmount,
+                amount: invoice.baseAmount,
+              },
+            ];
 
     return {
       invoiceNumber: invoice.invoiceNumber,
@@ -666,7 +906,10 @@ export class BillingService {
 
   async buildInvoiceDownload(user?: RequestUser, invoiceId?: string) {
     if (!invoiceId?.trim()) {
-      throw new BadRequestException({ success: false, message: 'Invoice id required' });
+      throw new BadRequestException({
+        success: false,
+        message: 'Invoice id required',
+      });
     }
     const { userId, seller } = await this.getSellerForUser(user);
     const invoice = await this.resolveInvoiceDocument(
